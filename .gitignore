@@ -4,3 +4,4 @@
 /services/case-api-go/server
 /services/*/server
 /services/*/*.exe
+__pycache__/
