@@ -97,6 +97,7 @@
   const DEFAULT_TERMS = {
     case_noun: "Case", case_plural: "Disputes", party_a: "Provider",
     party_b: "Health Plan", neutral: "Arbitrator", intake_noun: "Intake request",
+    amount_label: "QPA", service_label: "Service",
   };
   window.App = {
     manifest: null,
@@ -118,7 +119,7 @@
     ["#/dashboard", "▤", "Home"], ["#/cases", "▦", App.t("case_plural")], ["#/pipeline", "▥", "Pipeline"],
     ["#/crm/accounts", "◈", "Accounts"], ["#/crm/leads", "◎", "Leads"], ["#/crm/tasks", "☑", "Tasks"],
   ];
-  if (has("PARTY", "CASE_MANAGER")) links.push(["#/new", "＋", "New dispute"]);
+  if (has("PARTY", "CASE_MANAGER")) links.push(["#/new", "＋", `New ${App.t("case_noun").toLowerCase()}`]);
   links.push(["#/ask", "✦", "Ask the graph"]);
   if (has("CASE_MANAGER", "ARBITRATOR", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
     links.push(["#/qa", "✓", "QA gate"]);

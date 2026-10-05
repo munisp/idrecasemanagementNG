@@ -10,7 +10,9 @@
     "neutral": "Umpire",
     "intake_noun": "Demand",
     "party_a_code": "POLICYHOLDER",
-    "party_b_code": "INSURER"
+    "party_b_code": "INSURER",
+    "amount_label": "Estimate",
+    "service_label": "Loss type"
   },
   "lifecycle": {
     "intake_statuses": [

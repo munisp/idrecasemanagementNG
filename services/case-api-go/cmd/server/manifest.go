@@ -47,6 +47,12 @@ type ProgramManifest struct {
 		// Sectors declare their own: POLICYHOLDER/INSURER, CLAIMANT/RESPONDENT…
 		PartyACode string `json:"party_a_code,omitempty"`
 		PartyBCode string `json:"party_b_code,omitempty"`
+		// Display labels for the two healthcare-shaped data fields every
+		// dispute has: the disputed AMOUNT and the service/subject line.
+		// Healthcare: "QPA"/"Service line"; appraisal: "Estimate"/"Loss type";
+		// tax: "Assessed value"/"Parcel"…
+		AmountLabel  string `json:"amount_label,omitempty"`
+		ServiceLabel string `json:"service_label,omitempty"`
 	} `json:"terminology"`
 	// IntakeFields: sector-specific intake form fields, rendered dynamically
 	// by the portal and stored verbatim in intake_requests.details.

@@ -38,7 +38,7 @@ const Views = (() => {
       const [{ cases }, summary, clocks] = await Promise.all([Api.cases.list({ limit: 200 }), Api.reports.summary(), clockMap()]);
       html += `<div class="cards">` + summary.map((s) =>
         `<div class="card"><div class="num">${s.count}</div><div class="lbl">${badge(s.status)}</div>
-         <div class="muted">avg QPA $${s.avg_qpa_usd.toFixed(0)}</div></div>`).join("") + `</div>`;
+         <div class="muted">avg ${esc(App.t("amount_label"))} $${s.avg_qpa_usd.toFixed(0)}</div></div>`).join("") + `</div>`;
       const open = cases.filter((c) => !String(c.status).startsWith("CLOSED"));
       const attention = open.filter((c) => clocks[c.id] && clocks[c.id].length)
         .sort((a, b) => nearestClock(clocks[a.id]).remaining - nearestClock(clocks[b.id].remaining));
@@ -48,7 +48,7 @@ const Views = (() => {
             const cl = nearestClock(clocks[c.id]);
             return `<div class="att-item" onclick="location.hash='#/cases/${c.id}'">
               <span class="att-id">${esc(c.case_number)}</span>
-              <span class="att-title">${esc(c.service_line)} · QPA $${(c.qpa_cents / 100).toLocaleString()}</span>
+              <span class="att-title">${esc(c.service_line)} · ${esc(App.t("amount_label"))} $${(c.qpa_cents / 100).toLocaleString()}</span>
               ${badge(c.status)} ${clockChip(cl)}</div>`;
           }).join("") + `</div>`
         : `<p class="muted">Nothing needs you right now. New assignments and deadline risk appear here.</p>`;
@@ -83,7 +83,7 @@ const Views = (() => {
     <div class="dg-wrap">
       <table class="dg"><thead><tr>
         <th class="selcol"><input type="checkbox" id="sel-all" aria-label="Select all"></th>
-        ${[["case_number", "Case #"], ["status", "Status"], ["service_line", "Service"], ["qpa_cents", "QPA"]]
+        ${[["case_number", "Case #"], ["status", "Status"], ["service_line", App.t("service_label")], ["qpa_cents", App.t("amount_label")]]
           .map(([c, l]) => sortableTh(c, l, sort)).join("")}
         <th>Statutory clock</th>${sortableTh("opened_at", "Opened", sort)}<th></th></tr></thead><tbody>` +
       rows.map((c) => `<tr class="click" data-case="${c.id}">
@@ -225,7 +225,7 @@ const Views = (() => {
         };
         $("#more")?.addEventListener("click", loadMore);
       });
-      return `<div class="view-head"><h1>Disputes</h1><span class="muted">${total} total</span>
+      return `<div class="view-head"><h1>${esc(App.t("case_plural"))}</h1><span class="muted">${total} total</span>
         <span style="flex:1"></span>
         <button class="mini" id="grab">⇪ Grab next</button>
         <button class="mini" id="density">Density: ${density}</button></div>
@@ -235,7 +235,7 @@ const Views = (() => {
           <button class="mini" onclick="Views.saveCurrentView()">Save current view</button>
           ${sv ? `<span class="muted">filter: status = ${esc(sv.filters.status)}</span>` : ""}</p>` +
         caseTable(loaded, clocks, sort || "opened_at") + `<div id="pg">${pager()}</div>`;
-    } catch (e) { return `<h1>Disputes</h1>` + err(e); }
+    } catch (e) { return `<h1>${esc(App.t("case_plural"))}</h1>` + err(e); }
   }
 
   // ---- Actions (all modal-based now) ----------------------------------------------
@@ -364,7 +364,7 @@ const Views = (() => {
       Palette.remember("case", c.id, c.case_number);
       let html = `<div class="view-head"><h1><span class="mono">${esc(c.case_number)}</span></h1>
         ${badge(c.status)}</div>
-        <p class="muted">${esc(c.service_line)} · QPA $${(c.qpa_cents / 100).toLocaleString()} · opened ${fmtDate(c.opened_at)}</p>`;
+        <p class="muted">${esc(c.service_line)} · ${esc(App.t("amount_label"))} $${(c.qpa_cents / 100).toLocaleString()} · opened ${fmtDate(c.opened_at)}</p>`;
 
       // Statutory clock cluster (server-projected)
       if (clocks.length)
@@ -538,7 +538,7 @@ const Views = (() => {
         } catch (e) { UI.toast(e.message, { kind: "warn", duration: 9000 }); }
       }, "Initiating…");
     }));
-    return `<h1>New dispute</h1><form id="nd" class="form">
+    return `<h1>New ${esc(App.t("case_noun").toLowerCase())}</h1><form id="nd" class="form">
       <label>CMS case number <input name="case_number" required placeholder="CMS-TX-2026-00002" /></label>
       <label>Service line <select name="service_line"><option>ER</option><option>AIR_AMBULANCE</option><option>ANESTHESIA</option><option>RADIOLOGY</option><option>LAB</option><option>OTHER</option></select></label>
       <label>Plan type <select name="plan_type"><option>SELF_FUNDED</option><option>FULLY_INSURED</option></select></label>

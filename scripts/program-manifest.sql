@@ -13,7 +13,8 @@ SET config = jsonb_set(config, '{manifest}', $$
   "terminology": {
     "case_noun": "Dispute", "case_plural": "Disputes",
     "party_a": "Provider", "party_b": "Health Plan",
-    "neutral": "Reviewer", "intake_noun": "Intake Request"
+    "neutral": "Reviewer", "intake_noun": "Intake Request",
+    "amount_label": "QPA", "service_label": "Service line"
   },
   "lifecycle": {
     "intake_statuses": [
@@ -58,7 +59,9 @@ VALUES ('tx', 'tx-auto-appraisal', $$
     "terminology": {
       "case_noun": "Appraisal", "case_plural": "Appraisals",
       "party_a": "Policyholder", "party_b": "Insurer",
-      "neutral": "Umpire", "intake_noun": "Demand"
+      "neutral": "Umpire", "intake_noun": "Demand",
+      "party_a_code": "POLICYHOLDER", "party_b_code": "INSURER",
+      "amount_label": "Estimate", "service_label": "Loss type"
     },
     "lifecycle": {
       "intake_statuses": [
