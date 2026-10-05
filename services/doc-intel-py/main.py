@@ -23,6 +23,26 @@ from pipeline import bytes_to_pages, ooxml_safe, run_pipeline, sniff_doc_kind
 from rules_engine import expand_template, fire_rules, load_rules
 
 
+def load_manifest_schemas(tenant: str) -> dict:
+    """Extraction schemas declared by the tenant's Program Manifest
+    (config.manifest.documents.schemas). Fresh read per document — a schema
+    edit in the admin UI applies to the next analysis with no redeploy.
+    Empty/missing = built-in healthcare schemas (unchanged behavior)."""
+    try:
+        with psycopg.connect(DSN) as c:
+            row = c.execute(
+                "SELECT config->'manifest'->'documents'->'schemas' "
+                "FROM public.program_rules WHERE tenant=%s",
+                (tenant,),
+            ).fetchone()
+        if row and isinstance(row[0], dict):
+            return row[0]
+    except psycopg.Error as exc:
+        print(f"doc-intel: manifest schema load failed for {tenant}: {exc}",
+              file=sys.stderr, flush=True)
+    return {}
+
+
 def is_blocked(evt: dict, kind: str, subj_id: str) -> bool:
     """case-api quarantines rule-blocked uploads (analysis_status='BLOCKED')
     AFTER publishing doc.uploaded — doc-intel must honor the quarantine and
@@ -250,7 +270,8 @@ def process(evt: dict) -> None:
         "content_type": evt.get("content_type", ""),
         "pages": pages,                                     # for OCR fallback + VLM image
     }
-    ctx = run_pipeline(ctx, case=load_case(evt["tenant"], subj_id) if kind == "case" else None)
+    ctx = run_pipeline(ctx, case=load_case(evt["tenant"], subj_id) if kind == "case" else None,
+                       schema_overrides=load_manifest_schemas(evt["tenant"]))
     if truncated:
         # Page-capped render: analysis covers the first DOC_INTEL_MAX_PAGES
         # pages; a human must look at the rest.

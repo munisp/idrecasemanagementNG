@@ -12,9 +12,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 )
 
 type manifestStage struct {
@@ -43,7 +43,40 @@ type ProgramManifest struct {
 		PartyB     string `json:"party_b"`
 		Neutral    string `json:"neutral"`
 		IntakeNoun string `json:"intake_noun"`
+		// Filing-party codes (legacy healthcare default: PROVIDER/HEALTH_PLAN).
+		// Sectors declare their own: POLICYHOLDER/INSURER, CLAIMANT/RESPONDENT…
+		PartyACode string `json:"party_a_code,omitempty"`
+		PartyBCode string `json:"party_b_code,omitempty"`
 	} `json:"terminology"`
+	// IntakeFields: sector-specific intake form fields, rendered dynamically
+	// by the portal and stored verbatim in intake_requests.details.
+	IntakeFields []struct {
+		Name     string   `json:"name"`
+		Label    string   `json:"label"`
+		Type     string   `json:"type"` // text|email|number|date|select
+		Required bool     `json:"required,omitempty"`
+		Options  []string `json:"options,omitempty"`
+	} `json:"intake_fields,omitempty"`
+	// Documents: doc-intel extraction schemas per doc_type (phase 2).
+	Documents struct {
+		Schemas map[string]struct {
+			Fields []string `json:"fields"`
+		} `json:"schemas,omitempty"`
+	} `json:"documents,omitempty"`
+	// Determination: which valuation engine this program uses (phase 3).
+	Determination struct {
+		Engine string `json:"engine"` // qpa|fee_schedule|comparable|final_offer
+	} `json:"determination,omitempty"`
+	// Letters: statutory notice template pack (phase 4).
+	Letters struct {
+		Pack      string   `json:"pack"` // object-store prefix, e.g. packs/fl-ahca/letters
+		Templates []string `json:"templates,omitempty"`
+	} `json:"letters,omitempty"`
+	// Roster: neutral eligibility requirements (phase 5).
+	Roster struct {
+		Certifications []string `json:"certifications,omitempty"`
+		MinCases       int      `json:"min_cases,omitempty"`
+	} `json:"roster,omitempty"`
 	Lifecycle struct {
 		IntakeStatuses []manifestStage `json:"intake_statuses"`
 		CaseStatuses   []manifestStage `json:"case_statuses"`
@@ -55,9 +88,9 @@ type ProgramManifest struct {
 // (nil, nil) when no manifest is configured — callers use legacy defaults.
 // A syntactically present but invalid manifest returns an error so callers
 // can fail closed.
-func (s *server) manifestFor(r *http.Request, tenant string) (*ProgramManifest, error) {
+func (s *server) manifestFor(ctx context.Context, tenant string) (*ProgramManifest, error) {
 	var raw []byte
-	err := s.db.QueryRow(r.Context(),
+	err := s.db.QueryRow(ctx,
 		`SELECT coalesce(config->'manifest','null'::jsonb) FROM public.program_rules WHERE tenant=$1`,
 		tenant).Scan(&raw)
 	if err != nil || string(raw) == "null" {
@@ -135,6 +168,33 @@ func validateManifest(m *ProgramManifest) error {
 		if c.Basis == "" {
 			return fmt.Errorf("clocks.%s: basis (anchor fact) is required", c.Name)
 		}
+	}
+	// Intake field declarations (phase 2): known types, select needs options.
+	fieldSeen := map[string]bool{}
+	for _, f := range m.IntakeFields {
+		if !ruleDetailKey.MatchString(f.Name) {
+			return fmt.Errorf("intake_fields: invalid field name %q", f.Name)
+		}
+		if fieldSeen[f.Name] {
+			return fmt.Errorf("intake_fields: duplicate field %q", f.Name)
+		}
+		fieldSeen[f.Name] = true
+		if f.Label == "" {
+			return fmt.Errorf("intake_fields.%s: label required", f.Name)
+		}
+		switch f.Type {
+		case "text", "email", "number", "date":
+		case "select":
+			if len(f.Options) == 0 {
+				return fmt.Errorf("intake_fields.%s: select field needs options", f.Name)
+			}
+		default:
+			return fmt.Errorf("intake_fields.%s: unknown type %q", f.Name, f.Type)
+		}
+	}
+	// Determination engine (phase 3): must be a registered implementation.
+	if m.Determination.Engine != "" && !knownEngines[m.Determination.Engine] {
+		return fmt.Errorf("determination.engine %q unknown (registered: qpa, fee_schedule, comparable, final_offer)", m.Determination.Engine)
 	}
 	return nil
 }

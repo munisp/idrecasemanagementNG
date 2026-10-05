@@ -270,29 +270,60 @@ func (s *server) listClaims(w http.ResponseWriter, r *http.Request) {
 func (s *server) createIntake(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	var in struct {
-		Email           string `json:"email"`
-		ContactName     string `json:"contact_name"`
-		Org             string `json:"org"`
-		Notes           string `json:"notes"`
-		FilingPartyType string `json:"filing_party_type"` // PROVIDER|HEALTH_PLAN (default PROVIDER)
+		Email           string         `json:"email"`
+		ContactName     string         `json:"contact_name"`
+		Org             string         `json:"org"`
+		Notes           string         `json:"notes"`
+		FilingPartyType string         `json:"filing_party_type"`
+		Fields          map[string]any `json:"fields"` // manifest intake_fields (sector-specific)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Email == "" {
 		http.Error(w, `{"error":"email required"}`, http.StatusBadRequest)
 		return
 	}
+	// Filing-party codes come from the manifest when configured
+	// (POLICYHOLDER/INSURER, CLAIMANT/RESPONDENT…); healthcare legacy default
+	// is PROVIDER/HEALTH_PLAN.
+	codeA, codeB := "PROVIDER", "HEALTH_PLAN"
+	var manifest *ProgramManifest
+	if m, err := s.manifestFor(r.Context(), tenant); err == nil && m != nil {
+		manifest = m
+		if m.Terminology.PartyACode != "" {
+			codeA = m.Terminology.PartyACode
+		}
+		if m.Terminology.PartyBCode != "" {
+			codeB = m.Terminology.PartyBCode
+		}
+	}
 	fpt := strings.ToUpper(strings.TrimSpace(in.FilingPartyType))
 	if fpt == "" {
-		fpt = "PROVIDER"
+		fpt = codeA
 	}
-	if fpt != "PROVIDER" && fpt != "HEALTH_PLAN" {
-		http.Error(w, `{"error":"filing_party_type must be PROVIDER or HEALTH_PLAN"}`, http.StatusBadRequest)
+	if fpt != codeA && fpt != codeB {
+		http.Error(w, fmt.Sprintf(`{"error":"filing_party_type must be %s or %s"}`, codeA, codeB), http.StatusBadRequest)
 		return
 	}
+	// Sector intake fields: keep only DECLARED fields (never trust free-form
+	// keys), enforce required, store verbatim in details.
+	details := map[string]any{}
+	if manifest != nil {
+		for _, f := range manifest.IntakeFields {
+			v, present := in.Fields[f.Name]
+			if f.Required && (!present || fmt.Sprint(v) == "") {
+				http.Error(w, fmt.Sprintf(`{"error":"intake field %q required"}`, f.Name), http.StatusBadRequest)
+				return
+			}
+			if present {
+				details[f.Name] = v
+			}
+		}
+	}
+	detailsJSON, _ := json.Marshal(details)
 	var id string
 	_ = s.db.QueryRow(r.Context(), `
-		INSERT INTO public.intake_requests (tenant, email, contact_name, org, notes, outreach_at, filing_party_type)
-		VALUES ($1,$2,$3,$4,$5, now(), $6) RETURNING id`,
-		tenant, in.Email, in.ContactName, in.Org, in.Notes, fpt).Scan(&id)
+		INSERT INTO public.intake_requests (tenant, email, contact_name, org, notes, outreach_at, filing_party_type, details)
+		VALUES ($1,$2,$3,$4,$5, now(), $6, $7) RETURNING id`,
+		tenant, in.Email, in.ContactName, in.Org, in.Notes, fpt, detailsJSON).Scan(&id)
 	writeJSON(w, http.StatusOK, map[string]any{"intake_id": id, "status": "INSTRUCTED", "filing_party_type": fpt})
 }
 
@@ -321,7 +352,7 @@ func (s *server) advanceIntake(w http.ResponseWriter, r *http.Request) {
 	// the built-in FL/NSA set. A present-but-invalid manifest fails CLOSED —
 	// transitions are blocked rather than guessed.
 	machine := &intakeMachine{allowed: intakeStatuses, terminal: intakeTerminal, list: intakeStatusList}
-	if m, err := s.manifestFor(r, tenant); err != nil {
+	if m, err := s.manifestFor(r.Context(), tenant); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"tenant manifest invalid — transitions blocked until fixed: %s"}`, err.Error()), http.StatusConflict)
 		return
 	} else if mm := m.intakeMachine(); mm != nil {
@@ -687,31 +718,54 @@ func (s *server) sweepIntakeDay13() int {
 
 	total := 0
 	for tenant, rc := range perTenant {
-		rows, err := s.db.Query(context.Background(), fmt.Sprintf(`
-			UPDATE public.intake_requests
-			SET status=$3
-			WHERE tenant=$1 AND status = ANY($4)
+		ctx := context.Background()
+		// Calendar engine (phase 4): the manifest may count this clock in
+		// BUSINESS days with jurisdiction holidays. Calendar-day SQL remains
+		// the prefilter (a business-day threshold is never reached earlier
+		// than the same count of calendar days), then Go counts precisely.
+		business := s.clockDayType(ctx, tenant, "outreach_at") == "business"
+		var holidays map[string]bool
+		if business {
+			holidays = s.holidaysFor(ctx, tenant)
+		}
+		rows, err := s.db.Query(ctx, `
+			SELECT id, email, outreach_at FROM public.intake_requests
+			WHERE tenant=$1 AND status = ANY($3)
 			  AND packet_complete_at IS NULL
-			  AND outreach_at < now() - ($2 || ' days')::interval
-			RETURNING id, email`), tenant, fmt.Sprint(rc.days), rc.target, rc.sources)
+			  AND outreach_at < now() - ($2 || ' days')::interval`,
+			tenant, fmt.Sprint(rc.days), rc.sources)
 		if err != nil {
 			continue
 		}
-		type hit struct{ id, email string }
+		type hit struct {
+			id, email string
+		}
 		var hits []hit
+		now := time.Now()
 		for rows.Next() {
-			var h hit
-			if rows.Scan(&h.id, &h.email) == nil {
-				hits = append(hits, h)
+			var id, email string
+			var outreach time.Time
+			if rows.Scan(&id, &email, &outreach) != nil {
+				continue
 			}
+			if business && businessDaysBetween(outreach, now, holidays) < rc.days {
+				continue // calendar threshold passed but business-day count hasn't
+			}
+			hits = append(hits, hit{id, email})
 		}
 		rows.Close()
 		for _, h := range hits {
+			if _, err := s.db.Exec(ctx, `
+				UPDATE public.intake_requests SET status=$3
+				WHERE tenant=$1 AND id=$2 AND packet_complete_at IS NULL`,
+				tenant, h.id, rc.target); err != nil {
+				continue
+			}
 			body := expandTemplate(rc.template, map[string]any{
 				"id": h.id, "email": h.email, "days": rc.days, "tenant": tenant})
 			// Staff-facing notification so the ineligibility letter is drafted
 			// and sent (letter content needs the program's DOCX template).
-			_, _ = s.db.Exec(context.Background(), `
+			_, _ = s.db.Exec(ctx, `
 				INSERT INTO public.notifications (tenant, user_sub, type, body)
 				VALUES ($1,'*','SLA_BREACH',$2)`, tenant, body)
 		}

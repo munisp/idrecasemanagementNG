@@ -969,15 +969,57 @@ const Views = (() => {
   }
 
   // Intake statuses that end the lifecycle — no further advancement.
-  const INTAKE_TERMINAL = ["CONVERTED", "CLOSED_REFUNDED", "INELIGIBLE"];
+  // Terminal/advance sets come from the manifest's intake lifecycle when
+  // configured (sector-agnostic); legacy FL/NSA set is the fallback.
+  const LEGACY_INTAKE_TERMINAL = ["CONVERTED", "CLOSED_REFUNDED", "INELIGIBLE"];
+  const intakeTerminalSet = () => {
+    const st = (App.manifest && App.manifest.lifecycle && App.manifest.lifecycle.intake_statuses) || [];
+    const t = st.filter((x) => x.terminal).map((x) => x.name);
+    return t.length ? t : LEGACY_INTAKE_TERMINAL;
+  };
+  const intakeAdvanceOptions = (current) => {
+    const st = (App.manifest && App.manifest.lifecycle && App.manifest.lifecycle.intake_statuses) || [];
+    if (!st.length) return `<option value="">advance…</option><option>DOCS_RECEIVED</option>
+                <option value="PACKET_COMPLETE">PACKET_COMPLETE (starts 10-day review)</option>
+                <option>PAID</option><option>CONVERTED</option>
+                <option>INELIGIBLE</option><option>CLOSED_REFUNDED</option>`;
+    return `<option value="">advance…</option>` + st.filter((x) => x.name !== current)
+      .map((x) => `<option value="${esc(x.name)}">${esc(x.name)} — ${esc(x.label)}</option>`).join("");
+  };
   // Day-13 completeness gate (AHCA): docs not received within 13 days of
   // outreach => case found incomplete, ineligible letter issues. The backend
   // sweep enforces it; this countdown makes it visible before it bites.
   function day13Countdown(i) {
-    if (i.packet_complete_at || INTAKE_TERMINAL.includes(i.status) || !i.outreach_at) return "";
+    if (i.packet_complete_at || intakeTerminalSet().includes(i.status) || !i.outreach_at) return "";
     const left = 13 - Math.floor((Date.now() - new Date(i.outreach_at)) / 864e5);
     if (left < 0) return `<span class="badge warn">past day 13</span>`;
     return `<span class="${left <= 3 ? "badge warn" : "muted"}">day 13 in ${left}d</span>`;
+  }
+
+  // Filing-party select labeled from the manifest's party codes/terminology
+  // (POLICYHOLDER/INSURER for appraisal; PROVIDER/HEALTH_PLAN legacy default).
+  function intakePartySelect() {
+    const t = (App.manifest && App.manifest.terminology) || {};
+    const a = t.party_a_code || "PROVIDER", b = t.party_b_code || "HEALTH_PLAN";
+    const la = t.party_a || "Provider", lb = t.party_b || "Health Plan";
+    return `<select name="filing_party_type" title="filing party">
+      <option value="${esc(a)}">${esc(la)} files</option>
+      <option value="${esc(b)}">${esc(lb)} files</option></select>`;
+  }
+
+  // Sector-specific intake fields declared by the manifest (phase 2) —
+  // rendered dynamically; the API enforces required + stores in details.
+  function intakeExtraFields() {
+    const fields = (App.manifest && App.manifest.intake_fields) || [];
+    return fields.map((f) => {
+      const req = f.required ? "required" : "";
+      if (f.type === "select")
+        return `<select name="fld_${esc(f.name)}" title="${esc(f.label)}" ${req}>
+          <option value="">${esc(f.label)}…</option>
+          ${f.options.map((o) => `<option>${esc(o)}</option>`).join("")}</select>`;
+      return `<input name="fld_${esc(f.name)}" type="${f.type === "number" ? "number" : f.type === "date" ? "date" : f.type === "email" ? "email" : "text"}"
+        placeholder="${esc(f.label)}${f.required ? " *" : ""}" title="${esc(f.label)}" ${req} />`;
+    }).join("");
   }
 
   async function intake() {
@@ -989,30 +1031,31 @@ const Views = (() => {
         <form class="inline-form" onsubmit="return Views.newIntake(this)">
           <input name="email" type="email" placeholder="requester email" required />
           <input name="contact_name" placeholder="contact" /><input name="org" placeholder="organization" />
-          <select name="filing_party_type" title="filing party">
-            <option value="PROVIDER">Provider files</option>
-            <option value="HEALTH_PLAN">Health plan files</option></select>
-          <button>New intake request</button></form>` +
+          ${intakePartySelect()}
+          ${intakeExtraFields()}
+          <button>New ${esc(App.t("intake_noun").toLowerCase())}</button></form>` +
         (rows.length ? `<table><thead><tr><th>Email</th><th>Org</th><th>Filing party</th><th>Status</th><th>Outreach</th><th>Packet complete</th><th></th></tr></thead><tbody>` +
           rows.map((i) => `<tr><td>${esc(i.email)}</td><td>${esc(i.org || "")}</td>
             <td>${i.filing_party_type === "HEALTH_PLAN" ? badge("HEALTH_PLAN") : `<span class="muted">Provider</span>`}</td>
             <td>${badge(i.status)} ${day13Countdown(i)}</td>
             <td class="muted">${fmtDate(i.outreach_at)}</td>
             <td class="muted">${i.packet_complete_at ? fmtDate(i.packet_complete_at) : "—"}</td>
-            <td>${!INTAKE_TERMINAL.includes(i.status) ?
+            <td>${!intakeTerminalSet().includes(i.status) ?
               `<select onchange="Views.advanceIntake('${i.id}', this.value, this)">
-                <option value="">advance…</option><option>DOCS_RECEIVED</option>
-                <option value="PACKET_COMPLETE">PACKET_COMPLETE (starts 10-day review)</option>
-                <option>PAID</option><option>CONVERTED</option>
-                <option>INELIGIBLE</option><option>CLOSED_REFUNDED</option></select>` : ""}</td></tr>`).join("") +
+                ${intakeAdvanceOptions(i.status)}</select>` : ""}</td></tr>`).join("") +
           `</tbody></table>` : `<p class="muted">No intake requests.</p>`);
     } catch (e) { return err(e); }
   }
 
   async function newIntake(form) {
     try {
-      await Api.program.createIntake({ email: form.email.value, contact_name: form.contact_name.value, org: form.org.value, filing_party_type: form.filing_party_type.value });
-      UI.toast(`Intake request opened (${form.filing_party_type.value === "HEALTH_PLAN" ? "health plan" : "provider"} filing) — submission instructions queued`); App.rerender();
+      const fields = {};
+      ((App.manifest && App.manifest.intake_fields) || []).forEach((f) => {
+        const el = form.elements["fld_" + f.name];
+        if (el && el.value !== "") fields[f.name] = el.value;
+      });
+      await Api.program.createIntake({ email: form.email.value, contact_name: form.contact_name.value, org: form.org.value, filing_party_type: form.filing_party_type.value, fields });
+      UI.toast(`${App.t("intake_noun")} opened — submission instructions queued`); App.rerender();
     } catch (e) { UI.toast(e.message, { kind: "warn" }); }
     return false;
   }
@@ -1148,17 +1191,65 @@ const Views = (() => {
   const condText = (c) => `${esc(c.field)} ${esc(c.op)} ${c.value === undefined ? "" : esc(JSON.stringify(c.value))}`;
   const actText = (a) => `${esc(a.type)} ${Object.entries(a.params || {}).map(([k, v]) => `${esc(k)}=${esc(String(v))}`).join(" ")}`;
 
+  // Manifest summary card: the program's sector-agnostic definition
+  // (terminology, lifecycle, clocks) with admin edit + audit. 404 = legacy tenant.
+  function manifestCard(m) {
+    if (!m) return `<div class="rule-card"><div class="rule-head"><b>Program manifest</b> ${badge("legacy")}</div>
+      <p class="muted">No manifest configured — this tenant runs the built-in lifecycle and terminology.
+      Install one via a sector pack or paste JSON below.</p>
+      <button class="mini" onclick="Views.manifestEdit()">Install manifest</button></div>`;
+    const t = m.terminology || {}, lc = m.lifecycle || {};
+    const stageList = (stages) => (stages || []).map((s) =>
+      `<span class="chip">${esc(s.label)}${s.terminal ? " · terminal" : ""}${s.completed ? " · completed" : ""}</span>`).join(" ");
+    return `<div class="rule-card"><div class="rule-head"><b>Program manifest</b> ${badge(m.sector || "program")}
+      <span class="muted mono">${esc(m.program)}@${esc(m.version)}</span><span style="flex:1"></span>
+      <button class="mini" onclick="Views.manifestEdit()">edit manifest</button></div>
+      <p class="fact-row">${["case_noun", "party_a", "party_b", "neutral", "intake_noun"].map((k) =>
+        `<span class="chip">${k.replace(/_/g, " ")}: <b>${esc(t[k] || "—")}</b></span>`).join("")}</p>
+      <div class="rule-cols"><div><h4>Intake lifecycle</h4><p>${stageList(lc.intake_statuses)}</p></div>
+      <div><h4>${esc(t.case_noun || "Case")} lifecycle</h4><p>${stageList(lc.case_statuses)}</p></div></div>
+      ${(m.clocks || []).length ? `<h4>Statutory clocks</h4><p>${m.clocks.map((c) =>
+        `<span class="chip">${esc(c.name)}: ${c.days} ${esc(c.day_type)} days from ${esc(c.basis)}</span>`).join(" ")}</p>` : ""}
+      <p class="fact-row">
+        ${m.determination && m.determination.engine ? `<span class="chip">valuation engine: <b>${esc(m.determination.engine)}</b></span>` : ""}
+        ${m.roster && (m.roster.certifications || []).length ? `<span class="chip">${esc(m.neutral_label || (m.terminology||{}).neutral || "Neutral")} roster: ${m.roster.certifications.map(esc).join(", ")}${m.roster.min_cases ? `, ${m.roster.min_cases}+ cases` : ""}</span>` : ""}
+        ${m.letters && (m.letters.templates || []).length ? `<span class="chip">letter pack: ${(m.letters.templates).map(esc).join(", ")}</span>` : ""}
+        ${m.intake_fields && m.intake_fields.length ? `<span class="chip">${m.intake_fields.length} sector intake field(s)</span>` : ""}
+      </p>
+    </div>`;
+  }
+
+  async function manifestEdit() {
+    const cur = App.manifest ? JSON.stringify(App.manifest, null, 2) : "";
+    const v = await UI.modal({ title: "Program manifest", submitLabel: "Validate & save", wide: true,
+      fields: [
+        { name: "json", label: "Manifest (JSON)", type: "textarea", required: true, value: cur,
+          hint: "terminology · lifecycle (intake/case statuses, terminal flags) · clocks · intake_fields · documents.schemas · determination.engine · letters · roster — validated before save; every save is audited" },
+        { name: "note", label: "Change note (audit trail)", required: true, placeholder: "e.g. Install TX auto appraisal pack v1.0.2026" }] });
+    if (v === null) return;
+    let parsed;
+    try { parsed = JSON.parse(v.json); } catch (e) { UI.toast(`Invalid JSON: ${e.message}`, { kind: "error", sticky: true }); return; }
+    try {
+      const r = await Api.program.saveManifest(parsed, v.note);
+      await App.loadManifest();
+      UI.toast(`Manifest ${r.program}@${r.version} installed — change recorded in the audit trail`);
+      App.rerender();
+    } catch (e) { UI.toast(e.message, { kind: "error", sticky: true }); }
+  }
+
   async function rulesAdmin() {
     try {
       const [lr, ar] = await Promise.all([Api.program.rules(), Api.program.rulesAudit().catch(() => ({ changes: [] }))]);
       rulesDraft = (lr.rules || []).map((r) => ({ ...r }));
       afterRender(bindRulesAdmin);
       const audit = ar.changes || [];
+      const manifestHtml = manifestCard(App.manifest);
       return `<div class="view-head"><h1>Program rules</h1>
         <span class="muted">live policy — changes take effect immediately and are permanently audited</span></div>
         <p><button id="rule-add">＋ New rule</button>
-           <button id="rules-save" class="btn-primary">Save all changes</button></p>
-        <div id="rules-list">` +
+           <button id="rules-save" class="btn-primary">Save all changes</button></p>` +
+        manifestHtml +
+        `<div id="rules-list">` +
         (rulesDraft.length ? rulesDraft.map((r, i) => `
           <div class="rule-card ${r.enabled === false ? "rule-off" : ""}">
             <div class="rule-head"><b>${esc(r.name || "(unnamed)")}</b> ${badge(r.event)}
@@ -1231,5 +1322,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit };
 })();

@@ -17,7 +17,7 @@ import (
 // has no manifest (legacy behavior).
 func (s *server) getManifest(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
-	m, err := s.manifestFor(r, tenant)
+	m, err := s.manifestFor(r.Context(), tenant)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusConflict)
 		return

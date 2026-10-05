@@ -637,8 +637,16 @@ def load_pipeline(path: str = "pipeline.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def run_pipeline(ctx: dict, case: dict | None = None) -> dict:
+def run_pipeline(ctx: dict, case: dict | None = None, schema_overrides: dict | None = None) -> dict:
     spec = load_pipeline()
+    # Sector-agnostic schemas: the tenant's Program Manifest may declare
+    # extraction schemas per doc_type (documents.schemas); they override/extend
+    # the built-in healthcare set so a new sector's evidence forms are config,
+    # not code. Malformed entries are ignored (built-ins still apply).
+    schemas = dict(spec["schemas"])
+    for doc_type, schema in (schema_overrides or {}).items():
+        if isinstance(schema, dict) and isinstance(schema.get("fields"), list) and schema["fields"]:
+            schemas[doc_type] = schema
     for st in spec["stages"]:
         if not st.get("enabled", True):
             continue
@@ -649,7 +657,7 @@ def run_pipeline(ctx: dict, case: dict | None = None) -> dict:
             continue
         name, cfg = st["name"], st.get("config", {})
         if name == "vlm_extract":
-            ctx = stage_vlm_extract(ctx, cfg, spec["schemas"])
+            ctx = stage_vlm_extract(ctx, cfg, schemas)
         elif name == "validate":
             ctx = stage_validate(ctx, cfg, case)
         else:

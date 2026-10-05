@@ -503,6 +503,7 @@ func main() {
 		r.Get("/rules", s.listRules)
 		r.Put("/rules", s.putRules)
 		r.Get("/manifest", s.getManifest)
+		r.Get("/cases/{caseId}/valuation", s.getValuation)
 		r.Put("/manifest", s.putManifest)
 		r.Get("/rules/audit", s.rulesAudit)
 		r.Get("/deliverables", s.listDeliverables)                    // contract schedule (G7)
@@ -600,11 +601,12 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 // Case initiation: DB row (tenant schema) + Temporal workflow + outbox event
 // ---------------------------------------------------------------------------
 
-// businessDaysBetween counts business days (Mon–Fri) from a (exclusive) to b (inclusive).
-func businessDaysBetween(a, b time.Time) int {
+// businessDaysBetween counts business days (Mon–Fri, minus tenant holidays when
+// provided — NG phase 4 calendar engine) from a (exclusive) to b (inclusive).
+func businessDaysBetween(a, b time.Time, holidays map[string]bool) int {
 	days := 0
 	for d := a.AddDate(0, 0, 1); !d.After(b); d = d.AddDate(0, 0, 1) {
-		if wd := d.Weekday(); wd != time.Saturday && wd != time.Sunday {
+		if isBusinessDay(d, holidays) {
 			days++
 		}
 	}
@@ -731,7 +733,7 @@ func (s *server) initiateCase(w http.ResponseWriter, r *http.Request) {
 	// late filings are allowed but flagged for compliance review.
 	var lateInitiation bool
 	if !negEnd.After(today) {
-		if bd := businessDaysBetween(negEnd, today); bd > initiationWindowBD {
+		if bd := businessDaysBetween(negEnd, today, nil); bd > initiationWindowBD {
 			lateInitiation = true
 			detail := fmt.Sprintf("initiated %d business days after open negotiation ended %s (statutory window: %d bd)",
 				bd, req.OpenNegotiationEnd, initiationWindowBD)

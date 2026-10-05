@@ -1,0 +1,216 @@
+{
+  "program": "tx-auto-appraisal",
+  "version": "1.0.2026",
+  "sector": "insurance-appraisal",
+  "terminology": {
+    "case_noun": "Appraisal",
+    "case_plural": "Appraisals",
+    "party_a": "Policyholder",
+    "party_b": "Insurer",
+    "neutral": "Umpire",
+    "intake_noun": "Demand",
+    "party_a_code": "POLICYHOLDER",
+    "party_b_code": "INSURER"
+  },
+  "lifecycle": {
+    "intake_statuses": [
+      {
+        "name": "DEMAND_RECEIVED",
+        "label": "Demand received"
+      },
+      {
+        "name": "DOCS_RECEIVED",
+        "label": "Evidence received"
+      },
+      {
+        "name": "PACKET_COMPLETE",
+        "label": "Demand complete",
+        "anchors_clock": "packet_complete_at"
+      },
+      {
+        "name": "CONVERTED",
+        "label": "Appraisal opened",
+        "terminal": true
+      },
+      {
+        "name": "INELIGIBLE",
+        "label": "Ineligible",
+        "terminal": true
+      },
+      {
+        "name": "CLOSED_REFUNDED",
+        "label": "Closed (refunded)",
+        "terminal": true
+      }
+    ],
+    "case_statuses": [
+      {
+        "name": "APPRAISERS_APPOINTED",
+        "label": "Appraisers appointed"
+      },
+      {
+        "name": "NEGOTIATING",
+        "label": "Appraisers negotiating"
+      },
+      {
+        "name": "UMPIRE_ASSIGNED",
+        "label": "Umpire assigned"
+      },
+      {
+        "name": "AWARDED",
+        "label": "Award signed"
+      },
+      {
+        "name": "PAID",
+        "label": "Award paid",
+        "terminal": true,
+        "completed": true
+      },
+      {
+        "name": "DISMISSED",
+        "label": "Dismissed",
+        "terminal": true
+      },
+      {
+        "name": "WITHDRAWN",
+        "label": "Withdrawn",
+        "terminal": true
+      }
+    ]
+  },
+  "clocks": [
+    {
+      "name": "demand_window",
+      "days": 120,
+      "day_type": "calendar",
+      "basis": "loss_notice_at"
+    },
+    {
+      "name": "negotiation_window",
+      "days": 75,
+      "day_type": "calendar",
+      "basis": "demand_at"
+    },
+    {
+      "name": "umpire_award",
+      "days": 180,
+      "day_type": "calendar",
+      "basis": "umpire_assigned_at"
+    }
+  ],
+  "intake_fields": [
+    {
+      "name": "policy_number",
+      "label": "Policy number",
+      "type": "text",
+      "required": true
+    },
+    {
+      "name": "claim_number",
+      "label": "Claim number",
+      "type": "text",
+      "required": true
+    },
+    {
+      "name": "loss_date",
+      "label": "Date of loss",
+      "type": "date",
+      "required": true
+    },
+    {
+      "name": "loss_type",
+      "label": "Loss type",
+      "type": "select",
+      "required": true,
+      "options": [
+        "COLLISION",
+        "COMPREHENSIVE",
+        "HAIL",
+        "WIND",
+        "WATER",
+        "FIRE",
+        "OTHER"
+      ]
+    }
+  ],
+  "documents": {
+    "schemas": {
+      "repair_estimate": {
+        "fields": [
+          "shop_name",
+          "estimate_number",
+          "vehicle_vin",
+          "line_items_total_usd",
+          "labor_hours",
+          "parts_total_usd",
+          "estimate_date"
+        ]
+      },
+      "valuation_report": {
+        "fields": [
+          "vehicle_vin",
+          "actual_cash_value_usd",
+          "valuation_source",
+          "valuation_date",
+          "comparable_vehicles"
+        ]
+      },
+      "umpire_award": {
+        "fields": [
+          "award_amount_usd",
+          "umpire_name",
+          "award_date",
+          "appraiser_a_signature",
+          "appraiser_b_signature"
+        ]
+      }
+    }
+  },
+  "determination": {
+    "engine": "comparable"
+  },
+  "letters": {
+    "pack": "packs/tx-auto-appraisal/letters",
+    "templates": [
+      "demand_acceptance",
+      "umpire_assignment",
+      "award_cover"
+    ]
+  },
+  "roster": {
+    "certifications": [
+      "TX_LICENSED_ADJUSTER",
+      "I-CAR_APPRAISER"
+    ],
+    "min_cases": 25
+  },
+  "rules": [
+    {
+      "name": "umpire-deadline-breach",
+      "event": "sweep.case",
+      "enabled": true,
+      "_basis": "TX SB 458: property appraisal umpire award due within 180 days of umpire selection",
+      "conditions": [
+        {
+          "field": "status",
+          "op": "eq",
+          "value": "UMPIRE_ASSIGNED"
+        },
+        {
+          "field": "days_since_assignment",
+          "op": "gte",
+          "value": 170
+        }
+      ],
+      "actions": [
+        {
+          "type": "notify",
+          "params": {
+            "kind": "SLA_BREACH",
+            "body": "Appraisal {{case_id}}: umpire award due in 10 days \u2014 escalate"
+          }
+        }
+      ]
+    }
+  ]
+}

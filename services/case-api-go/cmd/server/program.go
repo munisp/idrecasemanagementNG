@@ -129,7 +129,7 @@ func projectProgramClocks(rules []ClockRule, dates map[string]string, today time
 		var remaining int
 		if rl.DayType == "business" {
 			due = addBusinessDays(basis, rl.Days)
-			remaining = businessDaysBetween(today, due)
+			remaining = businessDaysBetween(today, due, nil)
 		} else {
 			due = basis.AddDate(0, 0, rl.Days)
 			remaining = int(due.Sub(today).Hours() / 24)

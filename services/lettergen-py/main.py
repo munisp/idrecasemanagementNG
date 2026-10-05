@@ -128,14 +128,25 @@ def vault_seal(tenant: str, key: str, pt: bytes) -> bytes:
 
 
 def template_config(tenant: str, key: str) -> dict:
+    """Resolve a letter template. Precedence:
+    1. config.letter_templates[] (tenant-specific overrides, as before)
+    2. the Program Manifest's letter pack (letters.templates + letters.pack) —
+       sector packs ship their statutory notice set; tenants override per key.
+    """
     with psycopg.connect(DSN) as c:
         row = c.execute(
-            "SELECT config->'letter_templates' FROM public.program_rules WHERE tenant=%s",
+            "SELECT config->'letter_templates', config->'manifest'->'letters' "
+            "FROM public.program_rules WHERE tenant=%s",
             (tenant,),
         ).fetchone()
-    for t in (row[0] if row and row[0] else []):
+    for t in ((row[0] if row and row[0] else []) or []):
         if t.get("key") == key:
             return t
+    letters = row[1] if row and row[1] else None
+    if letters and key in (letters.get("templates") or []):
+        # Pack entry: template object lives under the pack prefix.
+        return {"key": key, "pack": letters.get("pack", ""),
+                "filename": "{case_number}-" + key + ".pdf", "folder": "CORRESPONDENCE"}
     raise KeyError(f"no letter template {key} for tenant {tenant}")
 
 
@@ -145,7 +156,12 @@ def handle(evt: dict) -> None:
     tpl = template_config(tenant, key)
     fields = load_case(tenant, case_id)
 
-    obj = minio.get_object(TEMPLATE_BUCKET, f"{tenant}/{key}.docx")
+    # Tenant override wins; otherwise the sector pack's copy (letters.pack prefix).
+    if tpl.get("pack"):
+        template_key = f"{tpl['pack']}/{key}.docx"
+    else:
+        template_key = f"{tenant}/{key}.docx"
+    obj = minio.get_object(TEMPLATE_BUCKET, template_key)
     merged = merge_docx(obj.read(), fields)
     pdf = to_pdf(merged)
 

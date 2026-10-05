@@ -70,9 +70,9 @@ func projectClocks(c clockRow, today time.Time) []ClockView {
 		rem := 0
 		if basis == "business" {
 			if due.After(today) {
-				rem = businessDaysBetween(today, due)
+				rem = businessDaysBetween(today, due, nil)
 			} else {
-				rem = -businessDaysBetween(due, today)
+				rem = -businessDaysBetween(due, today, nil)
 			}
 		} else {
 			rem = int(due.Sub(today).Hours() / 24)
