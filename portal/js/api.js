@@ -126,6 +126,8 @@ const Api = (() => {
     },
     program: {
       get: () => req("GET", `${t()}/program`),
+      manifest: () => req("GET", `${t()}/manifest`),
+      saveManifest: (manifest, note) => req("PUT", `${t()}/manifest`, { manifest, note }),
       rules: () => req("GET", `${t()}/rules`),
       saveRules: (rules, note) => req("PUT", `${t()}/rules`, { rules, note }),
       rulesAudit: () => req("GET", `${t()}/rules/audit`),

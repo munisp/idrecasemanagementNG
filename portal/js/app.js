@@ -90,10 +90,32 @@
     document.getElementById("body").insertBefore(bar, view);
   }
 
+  // ---- Program Manifest: sector-agnostic terminology + lifecycle ----------
+  // The manifest (fetched per tenant) declares every user-facing noun and the
+  // lifecycle pipeline — "Case"/"Provider"/"Health Plan" never live in code.
+  // No manifest (404) = legacy FL/NSA defaults, identical to prior behavior.
+  const DEFAULT_TERMS = {
+    case_noun: "Case", case_plural: "Disputes", party_a: "Provider",
+    party_b: "Health Plan", neutral: "Arbitrator", intake_noun: "Intake request",
+  };
+  window.App = {
+    manifest: null,
+    t: (key) => (App.manifest && App.manifest.terminology && App.manifest.terminology[key]) || DEFAULT_TERMS[key] || key,
+    // Pipeline stages for kanban views: [[STATUS, label], ...] or null = legacy
+    pipeline: () => {
+      const cs = App.manifest && App.manifest.lifecycle && App.manifest.lifecycle.case_statuses;
+      return cs && cs.length ? cs.map((s) => [s.name, s.label]) : null;
+    },
+    loadManifest: async () => {
+      App.manifest = await Api.program.manifest().catch(() => null);
+    },
+  };
+  await App.loadManifest();
+
   // Role-aware rail navigation (mirrors docs/STAKEHOLDERS.md coverage matrix)
   const has = (...rs) => rs.some((r) => me.roles.includes(r));
   const links = [
-    ["#/dashboard", "▤", "Home"], ["#/cases", "▦", "Disputes"], ["#/pipeline", "▥", "Pipeline"],
+    ["#/dashboard", "▤", "Home"], ["#/cases", "▦", App.t("case_plural")], ["#/pipeline", "▥", "Pipeline"],
     ["#/crm/accounts", "◈", "Accounts"], ["#/crm/leads", "◎", "Leads"], ["#/crm/tasks", "☑", "Tasks"],
   ];
   if (has("PARTY", "CASE_MANAGER")) links.push(["#/new", "＋", "New dispute"]);
@@ -186,7 +208,7 @@
   }
   // Soft refresh: re-render the current route without a full page reload
   // (no Keycloak round-trip, no shell flash, preserves rail/scroll context).
-  window.App = { rerender: render };
+  window.App.rerender = render;
   // Last-resort feedback net: any async handler that still throws without its
   // own try/catch surfaces as an error toast instead of failing silently.
   addEventListener("unhandledrejection", (e) => {

@@ -297,6 +297,25 @@
       { id: "in1", email: "revcycle@memorial.example", org: "Memorial Regional", status: "DOCS_RECEIVED", outreach_at: d(48), created_at: d(50), filing_party_type: "PROVIDER", packet_complete_at: null },
       { id: "in4", email: "disputes@bayfront.example", org: "Bayfront Medical", status: "PACKET_COMPLETE", outreach_at: d(200), created_at: d(202), filing_party_type: "PROVIDER", packet_complete_at: d(100) },
       { id: "in3", email: "claims@sunhealth.example", org: "Sun Health Plan", status: "PAID", outreach_at: d(120), created_at: d(122), filing_party_type: "HEALTH_PLAN", packet_complete_at: null }] });
+    if (/\/manifest$/.test(p)) return json({
+      program: "fl-ahca-claims-dispute", version: "1.0.2026", sector: "healthcare",
+      terminology: { case_noun: "Dispute", case_plural: "Disputes", party_a: "Provider", party_b: "Health Plan", neutral: "Reviewer", intake_noun: "Intake request" },
+      lifecycle: {
+        intake_statuses: [
+          { name: "INSTRUCTED", label: "Packet requested" }, { name: "DOCS_RECEIVED", label: "Docs received" },
+          { name: "PACKET_COMPLETE", label: "Packet complete", anchors_clock: "packet_complete_at" },
+          { name: "PAID", label: "Fee paid" },
+          { name: "CONVERTED", label: "Converted to dispute", terminal: true },
+          { name: "INELIGIBLE", label: "Ineligible", terminal: true },
+          { name: "CLOSED_REFUNDED", label: "Closed (refunded)", terminal: true }],
+        case_statuses: ["ACCEPTED","PLAN_NOTIFICATION","IN_REVIEW","DECIDED","PLAN_OPT_OUT","INELIGIBLE","DISMISSED","WITHDRAWN"]
+          .map((n) => ({ name: n, label: n.replace(/_/g, " ") }))
+      },
+      clocks: [
+        { name: "initial_review", days: 10, day_type: "calendar", basis: "packet_complete_at" },
+        { name: "agency_determination", days: 60, day_type: "calendar", basis: "initiation_at" },
+        { name: "completeness_gate", days: 13, day_type: "calendar", basis: "outreach_at" }]
+    });
     if (/\/rules\/audit$/.test(p)) return json({ changes: [
       { id: 2, changed_by: "f3a1c9e2-admin-4b7d", note: "AHCA memo: day-13 completeness gate", before: [], after: [{ name: "intake-day13-incomplete" }], changed_at: d(72) },
       { id: 1, changed_by: "f3a1c9e2-admin-4b7d", note: "Initial rule set", before: [], after: [], changed_at: d(200) }] });

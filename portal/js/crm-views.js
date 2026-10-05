@@ -46,11 +46,14 @@ const CrmViews = (() => {
   async function pipeline() {
     try {
       const { cases } = await Api.cases.list({ limit: 200 });
-      const known = new Set(PIPELINE.map(([s]) => s));
+      // Sector-agnostic: a configured Program Manifest supplies the board's
+      // stages + labels; legacy tenants fall back to the built-in pipeline.
+      const stages = (window.App && App.pipeline && App.pipeline()) || PIPELINE;
+      const known = new Set(stages.map(([s]) => s));
       // Safety net: a status the board doesn't know yet still gets a column
       // instead of its cases disappearing silently.
       const extra = [...new Set(cases.filter((c) => !known.has(c.status)).map((c) => c.status))];
-      const layout = [...PIPELINE, ...extra.map((s) => [s, s.replace(/_/g, " ").toLowerCase()])];
+      const layout = [...stages, ...extra.map((s) => [s, s.replace(/_/g, " ").toLowerCase()])];
       const cols = layout.map(([status, label]) => {
         const items = cases.filter((c) => c.status === status);
         return `<div class="kanban-col"><h3>${label} <span class="muted">${items.length}</span></h3>` +

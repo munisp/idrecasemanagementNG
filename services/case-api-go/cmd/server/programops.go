@@ -316,10 +316,19 @@ func (s *server) advanceIntake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"status required"}`, http.StatusBadRequest)
 		return
 	}
-	// Whitelist + transition guard: free-text status writes would silently
-	// corrupt the intake lifecycle (and bypass the PACKET_COMPLETE anchor).
-	if !intakeStatuses[in.Status] {
-		http.Error(w, fmt.Sprintf(`{"error":"status must be one of: %s"}`, intakeStatusList), http.StatusBadRequest)
+	// State machine: a configured Program Manifest declares the valid statuses
+	// and terminal states (sector-agnostic); tenants without a manifest use
+	// the built-in FL/NSA set. A present-but-invalid manifest fails CLOSED —
+	// transitions are blocked rather than guessed.
+	machine := &intakeMachine{allowed: intakeStatuses, terminal: intakeTerminal, list: intakeStatusList}
+	if m, err := s.manifestFor(r, tenant); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"tenant manifest invalid — transitions blocked until fixed: %s"}`, err.Error()), http.StatusConflict)
+		return
+	} else if mm := m.intakeMachine(); mm != nil {
+		machine = mm
+	}
+	if !machine.allowed[in.Status] {
+		http.Error(w, fmt.Sprintf(`{"error":"status must be one of: %s"}`, machine.list), http.StatusBadRequest)
 		return
 	}
 	var current string
@@ -328,7 +337,7 @@ func (s *server) advanceIntake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"intake not found"}`, http.StatusNotFound)
 		return
 	}
-	if intakeTerminal[current] {
+	if machine.terminal[current] {
 		http.Error(w, fmt.Sprintf(`{"error":"intake is %s — terminal; open a new intake request to resubmit"}`, current), http.StatusConflict)
 		return
 	}

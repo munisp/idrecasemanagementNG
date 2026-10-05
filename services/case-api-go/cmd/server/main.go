@@ -502,6 +502,8 @@ func main() {
 		// Rule engine administration (admin roles only; every write audited).
 		r.Get("/rules", s.listRules)
 		r.Put("/rules", s.putRules)
+		r.Get("/manifest", s.getManifest)
+		r.Put("/manifest", s.putManifest)
 		r.Get("/rules/audit", s.rulesAudit)
 		r.Get("/deliverables", s.listDeliverables)                    // contract schedule (G7)
 		r.Post("/deliverables", s.submitDeliverable)

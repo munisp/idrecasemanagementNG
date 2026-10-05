@@ -20,6 +20,7 @@ import (
 var knownRuleEvents = map[string]bool{
 	"intake.advance": true, "doc.upload": true, "doc.analyzed": true,
 	"claims.imported": true, "invoice.settled": true, "sweep.intake": true,
+	"sweep.case": true,
 }
 var knownRuleOps = map[string]bool{
 	"eq": true, "neq": true, "in": true, "contains": true,
@@ -46,7 +47,7 @@ func validateRules(rules []Rule) error {
 		}
 		names[ru.Name] = true
 		if !knownRuleEvents[ru.Event] {
-			return fmt.Errorf("%s: unknown event %q (known: intake.advance, doc.upload, doc.analyzed, claims.imported, invoice.settled, sweep.intake)", where, ru.Event)
+			return fmt.Errorf("%s: unknown event %q (known: intake.advance, doc.upload, doc.analyzed, claims.imported, invoice.settled, sweep.intake, sweep.case)", where, ru.Event)
 		}
 		for _, c := range ru.Conditions {
 			if c.Field == "" || !knownRuleOps[c.Op] {
