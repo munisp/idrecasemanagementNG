@@ -292,15 +292,25 @@ func (s *server) logCorrespondence(r *http.Request, tenant, caseID, direction, t
 func (s *server) listCorrespondence(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	caseID := chi.URLParam(r, "caseId")
-	rows, err := s.queryRows(r, `
+	limit, offset := pageParams(r, 50, 500)
+	var total int
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT count(*) FROM public.correspondence_log WHERE tenant=$1 AND case_id=$2`,
+		tenant, caseID).Scan(&total); err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	rows, err := s.queryRows(r, fmt.Sprintf(`
 		SELECT id, direction, template, subject, recipients, sent_by, created_at
-		FROM public.correspondence_log WHERE tenant=$1 AND case_id=$2 ORDER BY created_at DESC`,
+		FROM public.correspondence_log WHERE tenant=$1 AND case_id=$2
+		ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`, limit, offset),
 		tenant, caseID)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"correspondence": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"correspondence": rows,
+		"total": total, "next_offset": nextOffset(offset, limit, total)})
 }
 
 // ---- Share links (G9: ShareFile replacement) --------------------------------

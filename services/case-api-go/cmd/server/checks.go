@@ -218,16 +218,25 @@ func (s *server) clearCheck(w http.ResponseWriter, r *http.Request) {
 func (s *server) listChecks(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	status := r.URL.Query().Get("status")
-	rows, err := s.queryRows(r, `
+	limit, offset := pageParams(r, 50, 500)
+	var total int
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT count(*) FROM public.checks WHERE tenant=$1 AND ($2='' OR status=$2)`,
+		tenant, status).Scan(&total); err != nil {
+		http.Error(w, `{"error":"query"}`, http.StatusInternalServerError)
+		return
+	}
+	rows, err := s.queryRows(r, fmt.Sprintf(`
 		SELECT id, status, check_number, amount_cents AS courtesy_amount_cents, legal_amount_cents, memo,
 		       COALESCE(to_char(check_date,'YYYY-MM-DD'),'') AS check_date,
 		       routing_number, account_number, confidence, amount_mismatch,
 		       invoice_id, case_id, payer_name, created_at
 		FROM public.checks WHERE tenant=$1 AND ($2='' OR status=$2)
-		ORDER BY created_at DESC LIMIT 200`, tenant, status)
+		ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`, limit, offset), tenant, status)
 	if err != nil {
 		http.Error(w, `{"error":"query"}`, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"checks": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"checks": rows,
+		"total": total, "next_offset": nextOffset(offset, limit, total)})
 }

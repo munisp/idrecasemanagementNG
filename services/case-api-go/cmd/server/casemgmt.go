@@ -37,11 +37,12 @@ func (s *server) logActivity(ctx context.Context, tenant, caseID, typ, body stri
 func (s *server) listNotifications(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	p := r.Context().Value(ctxPrincipal{}).(principal)
-	rows, err := s.db.Query(r.Context(), `
+	limit, offset := pageParams(r, 50, 500)
+	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
 		SELECT id, type, body, COALESCE(link,''), created_at
 		FROM public.notifications
 		WHERE tenant=$1 AND (user_sub=$2 OR user_sub='*') AND read_at IS NULL
-		ORDER BY created_at DESC LIMIT 50`, tenant, p.Subject)
+		ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`, limit, offset), tenant, p.Subject)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
@@ -161,9 +162,11 @@ func (s *server) escalateCase(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) listEscalations(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
-	out, _ := s.queryRows(r, `
+	limit, offset := pageParams(r, 100, 500)
+	out, _ := s.queryRows(r, fmt.Sprintf(`
 		SELECT case_id, clock, level, escalated_to, detail, created_at
-		FROM public.escalations WHERE tenant=$1 ORDER BY created_at DESC LIMIT 100`, tenant)
+		FROM public.escalations WHERE tenant=$1 ORDER BY created_at DESC
+		LIMIT %d OFFSET %d`, limit, offset), tenant)
 	writeJSON(w, http.StatusOK, out)
 }
 

@@ -78,14 +78,23 @@ func (s *server) listInvoices(w http.ResponseWriter, r *http.Request) {
 		where += ` AND case_id=$2`
 		args = append(args, caseID)
 	}
-	rows, err := s.queryRows(r, `
+	limit, offset := pageParams(r, 50, 500)
+	var total int
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT count(*) FROM public.invoices WHERE `+where, args...).Scan(&total); err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	rows, err := s.queryRows(r, fmt.Sprintf(`
 		SELECT id, case_id, invoice_no, party, kind, amount_cents, status, due_date, paid_at, remittance_ref, created_at
-		FROM public.invoices WHERE `+where+` ORDER BY created_at DESC`, args...)
+		FROM public.invoices WHERE `+where+` ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`,
+		limit, offset), args...)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"invoices": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"invoices": rows,
+		"total": total, "next_offset": nextOffset(offset, limit, total)})
 }
 
 // settleInvoice records a payment, void, or refund (remittance reference kept
@@ -458,15 +467,24 @@ func (s *server) advanceIntake(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) listIntake(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
-	rows, err := s.queryRows(r, `
+	limit, offset := pageParams(r, 50, 500)
+	var total int
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT count(*) FROM public.intake_requests WHERE tenant=$1`, tenant).Scan(&total); err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	rows, err := s.queryRows(r, fmt.Sprintf(`
 		SELECT id, email, contact_name, org, status, outreach_at, case_id, created_at,
 		       filing_party_type, packet_complete_at
-		FROM public.intake_requests WHERE tenant=$1 ORDER BY created_at DESC LIMIT 200`, tenant)
+		FROM public.intake_requests WHERE tenant=$1 ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`,
+		limit, offset), tenant)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"intake": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"intake": rows,
+		"total": total, "next_offset": nextOffset(offset, limit, total)})
 }
 
 // ---- Deliverables schedule (G7) ----------------------------------------------

@@ -301,6 +301,7 @@ func (s *server) moveDocument(w http.ResponseWriter, r *http.Request) {
 // listDocuments + analysis status.
 func (s *server) listDocuments(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
+	limit, offset := pageParams(r, 200, 1000)
 	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
 		SELECT d.id, d.content_type, d.size_bytes, d.sealed, d.created_at,
 		       COALESCE(a.status,'QUEUED'), COALESCE(a.doc_type,''),
@@ -308,7 +309,8 @@ func (s *server) listDocuments(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(d.scan_status,'PENDING'), COALESCE(d.uploaded_by,'')
 		FROM tenant_%s.documents d
 		LEFT JOIN public.doc_analysis a ON a.doc_id = d.id
-		WHERE d.case_id=$1 ORDER BY d.folder, d.created_at DESC`, sanitizeTenant(tenant)),
+		WHERE d.case_id=$1 ORDER BY d.folder, d.created_at DESC, d.id DESC
+		LIMIT %d OFFSET %d`, sanitizeTenant(tenant), limit, offset),
 		chi.URLParam(r, "caseId"))
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)

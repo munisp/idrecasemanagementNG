@@ -24,6 +24,11 @@ const Api = (() => {
   }
 
   const t = () => `/v1/tenants/${tenant}`;
+  // query-string builder: drops empty values, returns "" or "?a=1&b=2"
+  const qs = (params) => {
+    const s = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v != null)).toString();
+    return s ? `?${s}` : "";
+  };
   return {
     setTenant, getTenant,
     cases: {
@@ -146,14 +151,14 @@ const Api = (() => {
       settleInvoice: (invId, action, ref) => req("POST", `${t()}/invoices/${invId}/settle`, { action, remittance_ref: ref }),
       receivables: () => req("GET", `${t()}/reports/receivables`),
       financial: () => req("GET", `${t()}/reports/financial`),
-      payments: (caseId) => req("GET", caseId ? `${t()}/cases/${caseId}/payments` : `${t()}/payments`),
+      payments: (caseId, opts) => req("GET", (caseId ? `${t()}/cases/${caseId}/payments` : `${t()}/payments`) + qs(opts || {})),
       checkout: (invId) => req("POST", `${t()}/invoices/${invId}/checkout`),
       claims: (caseId) => req("GET", `${t()}/cases/${caseId}/claims`),
       importClaims: (caseId, claims) => req("POST", `${t()}/cases/${caseId}/claims`, { claims }),
       qaQueue: () => req("GET", `${t()}/qa`),
       qaGet: (id) => req("GET", `${t()}/qa/${id}`),
       qaDecision: (id, decision, note) => req("POST", `${t()}/qa/${id}/decision`, { decision, note }),
-      intake: () => req("GET", `${t()}/intake`),
+      intake: (opts) => req("GET", `${t()}/intake${qs(opts || {})}`),
       createIntake: (p) => req("POST", `${t()}/intake`, p),
       advanceIntake: (id, status, caseId) => req("POST", `${t()}/intake/${id}/advance`, { status, case_id: caseId }),
       deliverables: () => req("GET", `${t()}/deliverables`),

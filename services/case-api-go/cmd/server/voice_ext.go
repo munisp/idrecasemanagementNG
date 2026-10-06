@@ -46,9 +46,11 @@ func (s *server) recordVoiceActivity(r *http.Request, tenant, caseNumber, summar
 // listActivities: case timeline (CRM record feed) for the portal.
 func (s *server) listActivities(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
-	rows, err := s.db.Query(r.Context(), `
+	limit, offset := pageParams(r, 100, 500)
+	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
 		SELECT type, body, created_at FROM public.case_activities
-		WHERE tenant=$1 AND case_id=$2 ORDER BY created_at DESC LIMIT 100`,
+		WHERE tenant=$1 AND case_id=$2 ORDER BY created_at DESC
+		LIMIT %d OFFSET %d`, limit, offset),
 		tenant, chi.URLParam(r, "caseId"))
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)

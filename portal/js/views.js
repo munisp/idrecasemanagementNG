@@ -1201,8 +1201,11 @@ const Views = (() => {
 
   async function intake() {
     try {
-      const r = await Api.program.intake();
+      const r = await Api.program.intake({ limit: 50 });
       const rows = r.intake || [];
+      const intakeNext = r.next_offset ?? -1;
+      const intakeTotal = r.total ?? rows.length;
+      window._intakePager = { next: intakeNext }; // reset on every view render
       return `<div class="view-head"><h1>Pre-case intake</h1>
         <span class="muted">instruction requests awaiting documents and fees — the 10-day initial review starts at PACKET_COMPLETE</span></div>
         <form class="inline-form" onsubmit="return Views.newIntake(this)">
@@ -1220,8 +1223,34 @@ const Views = (() => {
             <td>${!intakeTerminalSet().includes(i.status) ?
               `<select onchange="Views.advanceIntake('${i.id}', this.value, this)">
                 ${intakeAdvanceOptions(i.status)}</select>` : ""}</td></tr>`).join("") +
-          `</tbody></table>` : `<p class="muted">No intake requests.</p>`);
+          `</tbody></table>` : `<p class="muted">No intake requests.</p>`) +
+        (intakeNext >= 0 ? `<p class="pager" id="intake-pg"><span class="muted">Showing ${rows.length} of ${intakeTotal}</span>
+          <button class="mini" onclick="Views.intakeMore(this)">Load more (${Math.min(50, intakeTotal - rows.length)} remaining)</button></p>` : "");
     } catch (e) { return err(e); }
+  }
+
+  async function intakeMore(btn) {
+    const st = window._intakePager || { next: 50 };
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.intake({ limit: 50, offset: st.next });
+        const rows = r.intake || [];
+        st.next = r.next_offset ?? -1;
+        window._intakePager = st;
+        const body = document.querySelector("#intake-pg")?.previousElementSibling?.querySelector("tbody");
+        if (body) body.insertAdjacentHTML("beforeend", rows.map((i) => `<tr><td>${esc(i.email)}</td><td>${esc(i.org || "")}</td>
+            <td>${i.filing_party_type === "HEALTH_PLAN" ? badge("HEALTH_PLAN") : `<span class="muted">Provider</span>`}</td>
+            <td>${badge(i.status)} ${day13Countdown(i)}</td>
+            <td class="muted">${fmtDate(i.outreach_at)}</td>
+            <td class="muted">${i.packet_complete_at ? fmtDate(i.packet_complete_at) : "—"}</td>
+            <td>${!intakeTerminalSet().includes(i.status) ?
+              `<select onchange="Views.advanceIntake('${i.id}', this.value, this)">
+                ${intakeAdvanceOptions(i.status)}</select>` : ""}</td></tr>`).join(""));
+        const pg = document.getElementById("intake-pg");
+        if (pg && st.next < 0) pg.outerHTML = "";
+        else if (pg) pg.querySelector("button").textContent = "Load more";
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Loading…");
   }
 
   async function newIntake(form) {
@@ -1319,13 +1348,46 @@ const Views = (() => {
     });
   }
 
+  // finance() pager state — survives only for the rendered page
+  let finPager = null;
+  let payRow = null;
+
+  async function financeMore(kind, btn) {
+    const st = finPager?.[kind];
+    if (!st || st.next < 0) return;
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.payments(null, { limit: 25, offset: st.next });
+        const rows = r.payments || [];
+        st.rows = st.rows.concat(rows);
+        st.next = r.next_offset ?? -1;
+        st.total = r.total ?? st.total;
+        const body = document.getElementById("fin-pay-body");
+        if (body && payRow) body.insertAdjacentHTML("beforeend", rows.map(payRow).join(""));
+        const pg = document.getElementById("fin-pay-pg");
+        if (pg) pg.outerHTML = st.next >= 0
+          ? `<p class="pager" id="fin-pay-pg"><span class="muted">Showing ${st.rows.length} of ${st.total}</span>
+             <button class="mini" onclick="Views.financeMore('payments', this)">Load more (${Math.min(25, st.total - st.rows.length)} remaining)</button></p>`
+          : `<p class="pager"><span class="muted">Showing ${st.rows.length} of ${st.total}</span></p>`;
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Loading…");
+  }
+
   // ---- Financial dashboard (all money movement through the platform) -------
 
   async function finance() {
     try {
+      const FIN_PAGE = 25;
       const [fin, pays] = await Promise.all([
-        Api.program.financial(), Api.program.payments().catch(() => ({ payments: [] })),
+        Api.program.financial(),
+        Api.program.payments(null, { limit: FIN_PAGE }).catch(() => ({ payments: [] })),
       ]);
+      payRow = (p) => `<tr><td class="mono">${esc((p.case_id || "").slice(0, 8))}…</td>
+            <td>${esc(p.payer_email || "—")}</td><td>${usd(p.amount_cents)}</td><td>${badge(p.status)}</td>
+            <td class="mono">${esc(p.payment_intent || p.session_id || "")}</td>
+            <td class="muted">${fmtDate(p.created_at)}</td></tr>`;
+      finPager = { payments: { rows: pays.payments || [], next: pays.next_offset ?? -1,
+        total: pays.total ?? (pays.payments || []).length } };
       const k = fin.kpi || {};
       const usd = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
       let html = `<div class="view-head"><h1>Financials</h1>
@@ -1362,13 +1424,13 @@ const Views = (() => {
           `</tbody></table>`;
 
       // Card payments
-      const plist = pays.payments || [];
+      const plist = finPager.payments.rows;
       if (plist.length)
-        html += `<h2>Card payments</h2><table><thead><tr><th>Case</th><th>Payer</th><th>Amount</th><th>Status</th><th>Stripe ref</th><th>When</th></tr></thead><tbody>` +
-          plist.slice(0, 25).map((p) => `<tr><td class="mono">${esc((p.case_id || "").slice(0, 8))}…</td>
-            <td>${esc(p.payer_email || "—")}</td><td>${usd(p.amount_cents)}</td><td>${badge(p.status)}</td>
-            <td class="mono">${esc(p.payment_intent || p.session_id || "")}</td>
-            <td class="muted">${fmtDate(p.created_at)}</td></tr>`).join("") + `</tbody></table>`;
+        html += `<h2>Card payments</h2><table><thead><tr><th>Case</th><th>Payer</th><th>Amount</th><th>Status</th><th>Stripe ref</th><th>When</th></tr></thead><tbody id="fin-pay-body">` +
+          plist.map(payRow).join("") + `</tbody></table>` +
+          (finPager.payments.next >= 0
+            ? `<p class="pager" id="fin-pay-pg"><span class="muted">Showing ${plist.length} of ${finPager.payments.total}</span>
+               <button class="mini" onclick="Views.financeMore('payments', this)">Load more (${Math.min(FIN_PAGE, finPager.payments.total - plist.length)} remaining)</button></p>` : "");
 
       // Unified event stream
       const ev = fin.events || [];
@@ -1665,5 +1727,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

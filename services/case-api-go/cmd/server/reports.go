@@ -34,11 +34,12 @@ func (s *server) listVoiceIntake(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) listVoiceLogs(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
-	rows, err := s.db.Query(r.Context(), `
+	limit, offset := pageParams(r, 100, 500)
+	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
 		SELECT id, direction, COALESCE(tool,''), COALESCE(caller_phone,''),
 		       COALESCE(case_number,''), status, created_at
 		FROM public.voice_call_logs WHERE tenant=$1
-		ORDER BY created_at DESC LIMIT 100`, tenant)
+		ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`, limit, offset), tenant)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return

@@ -337,15 +337,24 @@ func (s *server) listPayments(w http.ResponseWriter, r *http.Request) {
 		where += ` AND case_id=$2`
 		args = append(args, caseID)
 	}
-	rows, err := s.queryRows(r, `
+	limit, offset := pageParams(r, 50, 500)
+	var total int
+	if err := s.db.QueryRow(r.Context(),
+		`SELECT count(*) FROM public.payments WHERE `+where, args...).Scan(&total); err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	rows, err := s.queryRows(r, fmt.Sprintf(`
 		SELECT id, case_id, invoice_id, provider, session_id, payment_intent,
 		       amount_cents, currency, payer_email, status, stripe_fee_cents, created_at
-		FROM public.payments WHERE `+where+` ORDER BY created_at DESC LIMIT 200`, args...)
+		FROM public.payments WHERE `+where+` ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`,
+		limit, offset), args...)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"payments": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"payments": rows,
+		"total": total, "next_offset": nextOffset(offset, limit, total)})
 }
 
 // finEvent appends to the unified financial event stream.

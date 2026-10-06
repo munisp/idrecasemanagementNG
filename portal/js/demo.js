@@ -298,9 +298,9 @@ if (/\/cases\/[\w-]+\/eligibility$/.test(p) && opts.method === "POST") return js
       recent: [
         { id: "qa0", case_id: "c3", subject: "Determination letter FL26-014", status: "SENT", drafted_by: "maria.chen", reviewed_by: "atty.rogers", reviewed_at: d(26) },
         { id: "qa9", case_id: "c5", subject: "Payment chase FL26-009", status: "REJECTED", drafted_by: "sam.ortiz", reviewed_by: "atty.rogers", reviewed_at: d(50) }] });
-    if (/\/intake$/.test(p) && opts.method === "POST") return json({ intake_id: "in2", status: "INSTRUCTED" });
+    if (/\/intake(\?.*)?$/.test(p) && opts.method === "POST") return json({ intake_id: "in2", status: "INSTRUCTED" });
     if (/\/intake\/[\w-]+\/advance$/.test(p)) return json({ status: JSON.parse(opts.body || "{}").status });
-    if (/\/intake$/.test(p)) return json({ intake: [
+    if (/\/intake(\?.*)?$/.test(p)) return json({ intake: [
       { id: "in1", email: "revcycle@memorial.example", org: "Memorial Regional", status: "DOCS_RECEIVED", outreach_at: d(48), created_at: d(50), filing_party_type: "PROVIDER", packet_complete_at: null },
       { id: "in4", email: "disputes@bayfront.example", org: "Bayfront Medical", status: "PACKET_COMPLETE", outreach_at: d(200), created_at: d(202), filing_party_type: "PROVIDER", packet_complete_at: d(100) },
       { id: "in3", email: "claims@sunhealth.example", org: "Sun Health Plan", status: "PAID", outreach_at: d(120), created_at: d(122), filing_party_type: "HEALTH_PLAN", packet_complete_at: null }] });
@@ -403,7 +403,7 @@ if (/\/cases\/[\w-]+\/eligibility$/.test(p) && opts.method === "POST") return js
       collections_trend: Array.from({ length: 30 }, (_, i) => ({ day: d((29 - i) * 24).slice(0, 10),
         collected_cents: [41200,0,12359,88750,41200,0,0,152300,41200,66000,0,23410,98000,41200,0,12359,41200,88750,0,41200,152300,66000,41200,0,98000,41200,23410,12359,88750,152300][i], refunded_cents: 0 })),
       throughput_trend: Array.from({ length: 14 }, (_, i) => ({ day: d((13 - i) * 24).slice(0, 10), done: [3,5,2,6,4,1,0,4,6,3,5,7,4,5][i] })) });
-    if (/\/payments$/.test(p) || /\/cases\/[\w-]+\/payments$/.test(p)) return json({ payments: [
+    if (/\/payments(\?.*)?$/.test(p) || /\/cases\/[\w-]+\/payments(\?.*)?$/.test(p)) return json({ payments: [
       { id: "pay1", case_id: "c1", invoice_id: "inv3", provider: "stripe", session_id: "cs_test_demo1", payment_intent: "pi_3Qf2demo1", amount_cents: 41200, currency: "usd", payer_email: "ap@sunhealth.example", status: "PAID", created_at: d(4) },
       { id: "pay3", case_id: "c2", invoice_id: "inv1", provider: "stripe", session_id: "cs_test_demo2", payment_intent: null, amount_cents: 12359, currency: "usd", payer_email: null, status: "PENDING", created_at: d(1) }] });
     if (/\/cases\/[\w-]+\/assign$/.test(p)) return json({ assigned_to: "m.chen" });
