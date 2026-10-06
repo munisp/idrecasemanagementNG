@@ -121,6 +121,17 @@ BEGIN
             ADD COLUMN IF NOT EXISTS parent_case_id uuid,
             ADD COLUMN IF NOT EXISTS duplicate_of uuid;
         CREATE INDEX IF NOT EXISTS cases_assignee ON %I.cases (assigned_to) WHERE assigned_to IS NOT NULL;
+        -- Hot-path indexes (kept in sync with db-optimization.sql, which
+        -- backfills the same set onto pre-existing tenants):
+        CREATE INDEX IF NOT EXISTS cases_open_keyset ON %I.cases (opened_at DESC, id)
+            WHERE status NOT LIKE 'CLOSED%%' AND status <> 'SETTLED_IN_NEGOTIATION';
+        CREATE INDEX IF NOT EXISTS cases_opened_id ON %I.cases (opened_at DESC, id);
+        CREATE INDEX IF NOT EXISTS cases_provider ON %I.cases (provider_id, opened_at DESC) WHERE provider_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS cases_payer ON %I.cases (payer_id, opened_at DESC) WHERE payer_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS cases_batch ON %I.cases (batch_id) WHERE batch_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS cases_details_gin ON %I.cases USING gin (details jsonb_path_ops);
+        CREATE INDEX IF NOT EXISTS cases_subject_line ON %I.cases (subject_line, opened_at DESC) WHERE subject_line IS NOT NULL;
+        ALTER TABLE %I.cases SET (fillfactor = 90);
         CREATE TABLE IF NOT EXISTS %I.sealed_offers (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
             case_id uuid NOT NULL,
@@ -150,7 +161,15 @@ BEGIN
             published_at timestamptz,
             created_at timestamptz NOT NULL DEFAULT now()
         );
-    $ddl$, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant);
+        CREATE INDEX IF NOT EXISTS documents_case ON %I.documents (case_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS sealed_offers_case ON %I.sealed_offers (case_id);
+        CREATE INDEX IF NOT EXISTS outbox_unpublished ON %I.outbox (id) WHERE published_at IS NULL;
+        ALTER TABLE %I.outbox SET (
+            autovacuum_vacuum_scale_factor = 0.01,
+            autovacuum_analyze_scale_factor = 0.005);
+    $ddl$, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant,
+           'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant,
+           'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant, 'tenant_'||p_tenant);
 END;
 $$ LANGUAGE plpgsql;
 

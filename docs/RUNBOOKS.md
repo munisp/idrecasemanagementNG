@@ -30,9 +30,11 @@
    replicas and raise `RELAY_BATCH` (lock contention beats parallelism past 8).
 4. If topics are missing for a new tenant: re-run `provision-tenant.sh $st`
    (idempotent) — relay skips unknown tenants only until migrated.
-5. Never delete outbox rows. If a poison payload blocks ordering, quarantine:
-   mark it published with a `poison:` comment in a compensating audit row,
-   and emit the event manually after fixing the payload.
+5. Never delete *unpublished* outbox rows. If a poison payload blocks
+   ordering, quarantine: mark it published with a `poison:` comment in a
+   compensating audit row, and emit the event manually after fixing the
+   payload. Published rows older than 7 days are safe to purge (durable copy
+   is in Kafka → bronze Parquet) — see §5.
 
 ## 3. Temporal workflow storm (matching backlog / timer fires spiking)
 
@@ -60,3 +62,33 @@
    encrypts on write; background re-seal job touches each sealed blob once.
 3. Only after `sealed_blobs` all report new key version: drop the old key.
 4. **Never** lose the only copy — there is no recovery path (by design).
+
+## 5. Database index & storage maintenance
+
+**Apply after any deploy that touches schema (idempotent, safe to re-run):**
+
+```bash
+psql "$DATABASE_URL" -f scripts/db-optimization.sql
+```
+
+This stamps the hot-path indexes (cases keyset/open partials, provider/payer
+lookups, `subject_line`, `details` GIN, outbox unpublished partial) onto every
+existing tenant schema and tunes fillfactor/autovacuum per table churn
+profile. `provision_tenant()` stamps the same set for tenants created later.
+
+**Nightly outbox retention** (schedule via the existing Dapr cron binding or
+a CNPG scheduled backup-style Job):
+
+```sql
+SELECT public.purge_published_outbox('7 days');   -- returns rows deleted
+```
+
+Published rows have already reached Kafka (and bronze Parquet within
+minutes); keeping them forever just bloats every tenant's outbox and slows
+the relay's `SKIP LOCKED` claim scan.
+
+**Watch:** `pg_stat_statements` is preloaded — top-by-total-time queries
+should stay dominated by `outbox … FOR UPDATE SKIP LOCKED` and keyset case
+lists. If a sequential scan on `cases` appears, run `ANALYZE tenant_<st>.cases`
+and check whether a new filter column needs a partial index (add it in
+db-optimization.sql, not ad-hoc, so every tenant gets it).
