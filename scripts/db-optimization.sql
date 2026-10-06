@@ -190,6 +190,16 @@ ALTER TABLE public.notifications SET (
     autovacuum_vacuum_scale_factor = 0.02,
     autovacuum_analyze_scale_factor = 0.01);
 
+-- presence — upsert per active user every 45s: pure churn on a tiny table.
+ALTER TABLE public.presence SET (
+    fillfactor = 70,
+    autovacuum_vacuum_scale_factor = 0.05,
+    autovacuum_analyze_scale_factor = 0.02);
+
+-- tasks — completed_at trend query for the ops throughput sparkline.
+CREATE INDEX IF NOT EXISTS tasks_done_recent ON public.tasks (tenant, completed_at DESC)
+    WHERE status = 'DONE' AND completed_at IS NOT NULL;
+
 -- intake_requests — intake board by status.
 CREATE INDEX IF NOT EXISTS intake_tenant_status ON public.intake_requests (tenant, status, created_at DESC);
 

@@ -379,3 +379,30 @@ th.sorted{color:var(--accent-fg);font-weight:700}
 .rule-diff{max-height:300px;overflow:auto;font-size:11px;background:var(--surface-sunken);padding:8px;border-radius:8px}
 button.mini.danger{color:#991b1b;border-color:#fecaca}
 @media(max-width:720px){.rule-cols{grid-template-columns:1fr}}
+
+/* ---------- Ops dashboard charts ---------- */
+.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px;margin:14px 0}
+.chart-card{border:1px solid var(--border-default);border-radius:12px;padding:14px 16px;background:var(--surface-raised)}
+.chart-card h2{margin:0 0 10px;font-size:14px}
+.chart-foot{margin:8px 0 0;font-size:12px}
+.chart-empty{padding:24px;text-align:center}
+.donut-wrap{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.donut-n{font-size:26px;font-weight:700;fill:var(--text-primary)}
+.donut-l{font-size:11px;fill:var(--text-tertiary)}
+.legend{display:flex;flex-direction:column;gap:4px;font-size:12px}
+.legend-item i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+.hbars{display:flex;flex-direction:column;gap:7px}
+.hbar-row{display:grid;grid-template-columns:130px 1fr 90px;gap:10px;align-items:center;font-size:12.5px}
+.hbar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hbar-track{position:relative;height:14px;background:var(--surface-sunken);border-radius:7px;overflow:hidden}
+.hbar-fill{position:absolute;left:0;top:0;bottom:0;background:var(--brand-300);border-radius:7px}
+.hbar-fill.bad{background:var(--red-700);opacity:.85}
+.hbar-val{color:var(--text-secondary)}
+.bad-t{color:var(--red-700)}
+.area-chart{width:100%;height:auto}
+.axis{font-size:10px;fill:var(--text-tertiary)}
+.axis-line{stroke:var(--border-default);stroke-width:1}
+.presence-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#2f9e44;box-shadow:0 0 0 3px #2f9e4433}
+.ops-alerts{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 4px}
+.ops-alert{display:inline-flex;gap:6px;align-items:center;padding:6px 12px;border-radius:10px;background:var(--amber-50);color:var(--amber-700);border:1px solid #e8d9b0;text-decoration:none;font-size:12.5px}
+.ops-alert b{font-size:14px}

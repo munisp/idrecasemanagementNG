@@ -90,6 +90,19 @@ CREATE TABLE IF NOT EXISTS public.escalations (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Live presence: portal pings POST /presence/ping every 45s while active;
+-- "online" = last_seen within 3 minutes. Postgres (not Redis) so presence
+-- survives cache flushes and joins the ops dashboard in one query.
+CREATE TABLE IF NOT EXISTS public.presence (
+    tenant       text NOT NULL,
+    user_sub     text NOT NULL,
+    display_name text,
+    roles        jsonb NOT NULL DEFAULT '[]',
+    last_seen    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant, user_sub)
+);
+CREATE INDEX IF NOT EXISTS presence_seen ON public.presence (tenant, last_seen DESC);
+
 -- User preferences: theme, density, last tenant, palette recents — the
 -- portal keeps a device-local copy for offline/instant paint, but this table
 -- is the source of truth so prefs follow the user across PWA/desktop/native.

@@ -498,6 +498,10 @@ func main() {
 		r.Get("/reports/sla", s.slaReport)
 		r.Get("/reports/summary", s.summaryReport)
 
+		// Operations dashboard: live presence heartbeat + manager KPI board.
+		r.Post("/presence/ping", s.presencePing)     // any authenticated user
+		r.Get("/ops/dashboard", s.opsDashboard)      // staff roles only
+
 		// Program rules (per-state customization; federal NSA is the no-config default).
 		r.Get("/program", s.getProgram)
 		r.Post("/cases/{caseId}/program-date", s.setProgramDate)      // record clock-basis events

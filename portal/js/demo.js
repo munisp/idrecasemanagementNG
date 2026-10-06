@@ -365,6 +365,37 @@
         { id: 6, case_id: "c3", kind: "REFUND_ISSUED", direction: "OUT", amount_cents: 41200, party: "PROVIDER", ref: "pi_3Qe9demo7", actor: "stripe-webhook", created_at: d(12) },
         { id: 5, case_id: "c3", kind: "PAYMENT_PAID", direction: "IN", amount_cents: 41200, party: "PROVIDER", ref: "pi_3Qe9demo7", actor: "stripe-webhook", created_at: d(30) }],
       stripe_enabled: true });
+    if (/\/presence\/ping$/.test(p)) return json({ status: "seen" });
+    if (/\/ops\/dashboard$/.test(p)) return json({
+      tenant: "tx",
+      online: [
+        { user_sub: "demo-maria", display_name: "maria.chen", roles: ["CASE_MANAGER"], last_seen: new Date().toISOString() },
+        { user_sub: "demo-james", display_name: "j.osei", roles: ["ARBITRATOR"], last_seen: new Date(Date.now() - 60e3).toISOString() },
+        { user_sub: "demo-priya", display_name: "priya.nair", roles: ["FINANCE"], last_seen: new Date(Date.now() - 110e3).toISOString() }],
+      tasks_by_assignee: [
+        { assignee: "maria.chen", open: 9, overdue: 2, done_30d: 21 },
+        { assignee: "j.osei", open: 6, overdue: 0, done_30d: 14 },
+        { assignee: "priya.nair", open: 4, overdue: 1, done_30d: 11 },
+        { assignee: "(unassigned)", open: 5, overdue: 3, done_30d: 0 }],
+      task_kpis: [{ open: 24, overdue: 6, done_30d: 46, created_30d: 61, completion_pct_30d: 75.4 }],
+      cases: [
+        { status: "IN_REVIEW", n: 18 }, { status: "ACCEPTED", n: 11 },
+        { status: "DECIDED", n: 27 }, { status: "PLAN_NOTIFICATION", n: 6 },
+        { status: "DISMISSED", n: 4 }, { status: "WITHDRAWN", n: 2 }],
+      case_kpis: [{ unassigned_open: 7, opened_7d: 9, opened_30d: 34, avg_open_age_days: 16.2 }],
+      sla: [{ breaches_7d: 1, breaches_total: 5, determination_breaches: 3, payment_breaches: 2 }],
+      outstanding: [
+        { party: "HEALTH_PLAN", open_invoices: 9, open_cents: 1240800, overdue_cents: 261160 },
+        { party: "PROVIDER", open_invoices: 14, open_cents: 1730260, overdue_cents: 76000 }],
+      financial: [{ collected_cents: 4812300, collected_30d_cents: 918400, refunded_cents: 41200 }],
+      queues: [{ checks_review: 1, checks_awaiting_clear: 1, qa_pending: 3, intake_open: 4, onboarding_pending: 2 }],
+      escalations: [
+        { case_id: "c2-demo-8871", clock: "DETERMINATION_30BD", level: 1, escalated_to: "SUPERVISOR", created_at: d(20) },
+        { case_id: "c7-demo-1120", clock: "PAYMENT_30CD", level: 2, escalated_to: "FEDERAL_ADMIN", created_at: d(70) }],
+      cases_trend: Array.from({ length: 30 }, (_, i) => ({ day: d((29 - i) * 24).slice(0, 10), opened: [2,3,1,0,4,2,5,3,2,1,3,4,2,0,1,3,2,4,5,3,2,1,4,3,2,6,4,3,5,4][i] })),
+      collections_trend: Array.from({ length: 30 }, (_, i) => ({ day: d((29 - i) * 24).slice(0, 10),
+        collected_cents: [41200,0,12359,88750,41200,0,0,152300,41200,66000,0,23410,98000,41200,0,12359,41200,88750,0,41200,152300,66000,41200,0,98000,41200,23410,12359,88750,152300][i], refunded_cents: 0 })),
+      throughput_trend: Array.from({ length: 14 }, (_, i) => ({ day: d((13 - i) * 24).slice(0, 10), done: [3,5,2,6,4,1,0,4,6,3,5,7,4,5][i] })) });
     if (/\/payments$/.test(p) || /\/cases\/[\w-]+\/payments$/.test(p)) return json({ payments: [
       { id: "pay1", case_id: "c1", invoice_id: "inv3", provider: "stripe", session_id: "cs_test_demo1", payment_intent: "pi_3Qf2demo1", amount_cents: 41200, currency: "usd", payer_email: "ap@sunhealth.example", status: "PAID", created_at: d(4) },
       { id: "pay3", case_id: "c2", invoice_id: "inv1", provider: "stripe", session_id: "cs_test_demo2", payment_intent: null, amount_cents: 12359, currency: "usd", payer_email: null, status: "PENDING", created_at: d(1) }] });

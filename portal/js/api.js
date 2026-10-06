@@ -127,6 +127,8 @@ const Api = (() => {
     program: {
       get: () => req("GET", `${t()}/program`),
       manifest: () => req("GET", `${t()}/manifest`),
+      opsDashboard: () => req("GET", `${t()}/ops/dashboard`),
+      pingPresence: (name) => req("POST", `${t()}/presence/ping`, { name }),
       saveManifest: (manifest, note) => req("PUT", `${t()}/manifest`, { manifest, note }),
       rules: () => req("GET", `${t()}/rules`),
       saveRules: (rules, note) => req("PUT", `${t()}/rules`, { rules, note }),

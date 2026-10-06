@@ -354,7 +354,7 @@ func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
 func (s *server) completeTask(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	_, err := s.db.Exec(r.Context(), `
-		UPDATE public.tasks SET status='DONE' WHERE tenant=$1 AND id=$2`,
+		UPDATE public.tasks SET status='DONE', completed_at=now() WHERE tenant=$1 AND id=$2`,
 		tenant, chi.URLParam(r, "taskId"))
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)

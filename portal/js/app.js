@@ -135,6 +135,7 @@
     links.push(["#/deliverables", "⎘", "Deliverables"]);
   }
   if (has("FINANCE", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR")) links.push(["#/finance", "◍", "Financials"]);
+  if (has("CASE_MANAGER", "ARBITRATOR", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR")) links.push(["#/ops", "◔", "Ops"]);
   links.push(["#/calendar", "▨", "Calendar"]);
   links.push(["#/onboarding", "⚑", "Onboarding"]);
   if (has("CASE_MANAGER") && App.feature("voice_console")) links.push(["#/voice", "☎", "Voice console"]);
@@ -188,6 +189,7 @@
     [/^#\/intake$/, Views.intake],
     [/^#\/deliverables$/, Views.deliverables],
     [/^#\/finance$/, Views.finance],
+    [/^#\/ops$/, Views.opsDashboard],
     [/^#\/calendar$/, CrmViews.calendar],
     [/^#\/onboarding$/, Views.onboarding],
     [/^#\/onboarding\/new$/, Views.onboardingNew],
@@ -232,4 +234,10 @@
   addEventListener("hashchange", render);
   if (!location.hash) location.hash = "#/dashboard";
   render();
+
+  // Presence heartbeat: report this user as active every 45s; the ops
+  // dashboard counts anyone seen within the last 3 minutes as online.
+  const pingPresence = () => Api.program.pingPresence(me?.name).catch(() => {});
+  pingPresence();
+  setInterval(pingPresence, 45000);
 })();

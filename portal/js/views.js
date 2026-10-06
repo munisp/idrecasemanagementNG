@@ -1185,6 +1185,150 @@ const Views = (() => {
     } catch (e) { return err(e); }
   }
 
+  // ---- Inline SVG charts (dependency-free; match the app palette) ---------
+  const CH_COLORS = ["#2E6B52", "#B08D3E", "#1D4E7E", "#5B3E8C", "#9C2B1F", "#1E5B3C", "#8A5E10", "#6E6A5E"];
+
+  function chartDonut(segs, size = 180) {
+    const total = segs.reduce((a, s) => a + s.value, 0);
+    if (!total) return `<div class="chart-empty muted">No data yet</div>`;
+    const R = 70, C = 2 * Math.PI * R;
+    let off = 0;
+    const arcs = segs.filter((s) => s.value > 0).map((s, i) => {
+      const frac = s.value / total, len = frac * C;
+      const el = `<circle r="${R}" cx="${size/2}" cy="${size/2}" fill="none"
+        stroke="${s.color || CH_COLORS[i % CH_COLORS.length]}" stroke-width="26"
+        stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}"
+        transform="rotate(-90 ${size/2} ${size/2})"><title>${esc(s.label)}: ${s.value}</title></circle>`;
+      off += len;
+      return el;
+    }).join("");
+    const legend = segs.filter((s) => s.value > 0).map((s, i) =>
+      `<span class="legend-item"><i style="background:${s.color || CH_COLORS[i % CH_COLORS.length]}"></i>${esc(s.label)} <b>${s.value}</b></span>`).join("");
+    return `<div class="donut-wrap"><svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img">
+      ${arcs}<text x="${size/2}" y="${size/2 - 4}" text-anchor="middle" class="donut-n">${total}</text>
+      <text x="${size/2}" y="${size/2 + 16}" text-anchor="middle" class="donut-l">total</text></svg>
+      <div class="legend">${legend}</div></div>`;
+  }
+
+  function chartHBars(rows, fmt = (v) => v) {
+    const max = Math.max(...rows.map((r) => r.value), 1);
+    return `<div class="hbars">` + rows.map((r) => `<div class="hbar-row">
+      <span class="hbar-label" title="${esc(r.label)}">${esc(r.label)}</span>
+      <span class="hbar-track"><span class="hbar-fill${r.warn ? " warn" : ""}" style="width:${Math.max(2, (r.value / max) * 100)}%"></span>
+        ${r.warnValue ? `<span class="hbar-fill bad" style="width:${(r.warnValue / max) * 100}%"></span>` : ""}</span>
+      <span class="hbar-val">${esc(String(fmt(r.value)))}${r.warnValue ? ` <b class="bad-t">${fmt(r.warnValue)} overdue</b>` : ""}</span>
+      </div>`).join("") + `</div>`;
+  }
+
+  function chartArea(points, { w = 560, h = 150, color = "#2E6B52", fmt = (v) => v, label = "" } = {}) {
+    if (!points.length) return `<div class="chart-empty muted">No data yet</div>`;
+    const max = Math.max(...points.map((p) => p.y), 1);
+    const px = (i) => (i / Math.max(points.length - 1, 1)) * (w - 44) + 36;
+    const py = (v) => h - 24 - (v / max) * (h - 40);
+    const line = points.map((p, i) => `${i ? "L" : "M"}${px(i).toFixed(1)},${py(p.y).toFixed(1)}`).join(" ");
+    const area = `${line} L${px(points.length - 1).toFixed(1)},${h - 24} L${px(0).toFixed(1)},${h - 24} Z`;
+    const gid = "g" + Math.abs(label.split("").reduce((a, c) => a + c.charCodeAt(0), 0));
+    const ticks = [0, Math.floor(points.length / 2), points.length - 1].map((i) =>
+      `<text x="${px(i)}" y="${h - 8}" text-anchor="middle" class="axis">${esc(points[i].x)}</text>`).join("");
+    return `<svg viewBox="0 0 ${w} ${h}" class="area-chart" role="img" aria-label="${esc(label)}">
+      <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${color}" stop-opacity="0.35"/><stop offset="1" stop-color="${color}" stop-opacity="0.02"/>
+      </linearGradient></defs>
+      <line x1="36" y1="${h - 24}" x2="${w - 8}" y2="${h - 24}" class="axis-line"/>
+      <text x="4" y="${py(max) + 4}" class="axis">${fmt(max)}</text>
+      <path d="${area}" fill="url(#${gid})"/>
+      <path d="${line}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>
+      ${points.map((p, i) => `<circle cx="${px(i)}" cy="${py(p.y)}" r="2.4" fill="${color}"><title>${esc(p.x)}: ${fmt(p.y)}</title></circle>`).join("")}
+      ${ticks}</svg>`;
+  }
+
+  // ---- Operations dashboard (staff roles; presence + workload + KPIs) -----
+
+  async function opsDashboard() {
+    try {
+      const d = await Api.program.opsDashboard();
+      const usd = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
+      const tk = (d.task_kpis && d.task_kpis[0]) || {};
+      const ck = (d.case_kpis && d.case_kpis[0]) || {};
+      const sla = (d.sla && d.sla[0]) || {};
+      const fin = (d.financial && d.financial[0]) || {};
+      const q = (d.queues && d.queues[0]) || {};
+
+      // Auto-refresh every 30s while the view stays open (presence + queues move).
+      afterRender(() => setTimeout(() => { if (location.hash === "#/ops") App.rerender(); }, 30000));
+
+      let html = `<div class="view-head"><h1>Operations dashboard</h1>
+        <span class="muted">live workload, presence and stakeholder KPIs · tenant <b>${esc(Api.getTenant()).toUpperCase()}</b> · refreshes every 30s</span></div>
+        <div class="kpi-row">
+          <div class="kpi"><span class="kpi-n">${tk.completion_pct_30d ?? "—"}%</span><span class="kpi-l">Task completion (30d)</span></div>
+          <div class="kpi"><span class="kpi-n">${tk.open ?? 0}</span><span class="kpi-l">Open tasks${tk.overdue ? ` · <b class="bad-t">${tk.overdue} overdue</b>` : ""}</span></div>
+          <div class="kpi"><span class="kpi-n">${ck.unassigned_open ?? 0}</span><span class="kpi-l">Unassigned open ${App.t("case_plural").toLowerCase()}</span></div>
+          <div class="kpi"><span class="kpi-n">${sla.breaches_7d ?? 0}</span><span class="kpi-l">SLA breaches (7d) · ${sla.breaches_total ?? 0} total</span></div>
+          <div class="kpi"><span class="kpi-n">${usd(fin.collected_30d_cents)}</span><span class="kpi-l">Collected (30d)</span></div>
+          <div class="kpi"><span class="kpi-n">${(d.online || []).length}</span><span class="kpi-l">Staff online now</span></div>
+        </div>`;
+
+      // Queue alerts strip
+      const alerts = [
+        [q.checks_review, "checks awaiting OCR review", "#/finance"],
+        [q.checks_awaiting_clear, "matched checks awaiting clearing", "#/finance"],
+        [q.qa_pending, "letters in the QA gate", "#/qa"],
+        [q.intake_open, "pre-case intake requests open", "#/intake"],
+        [q.onboarding_pending, "onboarding applications pending", "#/onboarding"],
+      ].filter(([n]) => Number(n) > 0);
+      if (alerts.length)
+        html += `<div class="ops-alerts">` + alerts.map(([n, label, href]) =>
+          `<a class="ops-alert" href="${href}"><b>${n}</b> ${label}</a>`).join("") + `</div>`;
+
+      // Charts row 1: pipeline donut + intake trend
+      const statuses = (d.cases || []).map((c) => ({ label: c.status, value: Number(c.n) }));
+      const opened = (d.cases_trend || []).map((x) => ({ x: String(x.day).slice(5), y: Number(x.opened) }));
+      html += `<div class="chart-grid">
+        <div class="chart-card"><h2>${App.t("case_noun")} pipeline by status</h2>${chartDonut(statuses)}
+          <p class="muted chart-foot">${ck.opened_7d ?? 0} opened in 7d · ${ck.opened_30d ?? 0} in 30d${ck.avg_open_age_days ? ` · avg open age ${ck.avg_open_age_days}d` : ""}</p></div>
+        <div class="chart-card"><h2>Intake pace — ${App.t("case_plural").toLowerCase()} opened, 30 days</h2>
+          ${chartArea(opened, { label: "cases opened", color: "#2E6B52" })}</div></div>`;
+
+      // Charts row 2: workload by assignee + throughput
+      const byAssignee = (d.tasks_by_assignee || []).map((a) => ({
+        label: a.assignee, value: Number(a.open), warnValue: Number(a.overdue) || 0, warn: Number(a.overdue) > 0 }));
+      const done = (d.throughput_trend || []).map((x) => ({ x: String(x.day).slice(5), y: Number(x.done) }));
+      html += `<div class="chart-grid">
+        <div class="chart-card"><h2>Workload by assignee (open tasks${byAssignee.some((a) => a.warn) ? ", red = overdue" : ""})</h2>
+          ${byAssignee.length ? chartHBars(byAssignee) : '<p class="muted">No tasks yet.</p>'}</div>
+        <div class="chart-card"><h2>Throughput — tasks completed, 14 days</h2>
+          ${chartArea(done, { label: "tasks completed", color: "#B08D3E" })}</div></div>`;
+
+      // Collections trend (full width)
+      const coll = (d.collections_trend || []).map((x) => ({ x: String(x.day).slice(5), y: Math.round(Number(x.collected_cents) / 100) }));
+      html += `<div class="chart-card"><h2>Collections — payments settled per day, 30 days</h2>
+        ${chartArea(coll, { label: "collections", color: "#1D4E7E", fmt: (v) => "$" + v.toLocaleString(), w: 1120 })}</div>`;
+
+      // Presence + outstanding side by side
+      const online = d.online || [];
+      html += `<div class="chart-grid">
+        <div class="chart-card"><h2>Who's online</h2>` +
+          (online.length ? `<table><thead><tr><th></th><th>Staff</th><th>Roles</th><th>Last seen</th></tr></thead><tbody>` +
+            online.map((u) => `<tr><td><span class="presence-dot"></span></td>
+              <td>${esc(u.display_name || u.user_sub)}</td>
+              <td class="muted">${esc((Array.isArray(u.roles) ? u.roles : []).filter((r) => !String(r).startsWith("default")).join(", ") || "—")}</td>
+              <td class="muted">${fmtDate(u.last_seen)}</td></tr>`).join("") + `</tbody></table>`
+          : `<p class="muted">No staff active in the last 3 minutes.</p>`) + `</div>
+        <div class="chart-card"><h2>Outstanding receivables</h2>` +
+          ((d.outstanding || []).length ? `<table><thead><tr><th>Party</th><th>Open</th><th>Total</th><th>Overdue</th></tr></thead><tbody>` +
+            d.outstanding.map((o) => `<tr><td>${badge(o.party)}</td><td>${o.open_invoices}</td>
+              <td>${usd(o.open_cents)}</td><td class="${Number(o.overdue_cents) > 0 ? "bad-t" : ""}">${usd(o.overdue_cents)}</td></tr>`).join("") +
+            `</tbody></table>` : `<p class="muted">No open invoices.</p>`) + `</div></div>`;
+
+      // Escalation trail
+      if ((d.escalations || []).length)
+        html += `<h2>Recent escalations</h2><table><thead><tr><th>Case</th><th>Clock</th><th>Level</th><th>To</th><th>When</th></tr></thead><tbody>` +
+          d.escalations.map((e) => `<tr><td class="mono">${esc((e.case_id || "").slice(0, 8))}…</td><td>${badge(e.clock)}</td>
+            <td>L${e.level}</td><td>${esc(e.escalated_to || "—")}</td><td class="muted">${fmtDate(e.created_at)}</td></tr>`).join("") + `</tbody></table>`;
+      return html;
+    } catch (e) { return err(e); }
+  }
+
   // ---- Rules admin (FEDERAL_ADMIN / PLATFORM_ADMIN; every save audited) -----
   let rulesDraft = null; // working copy; saved as one unit so the audit diff is meaningful
 
@@ -1322,5 +1466,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

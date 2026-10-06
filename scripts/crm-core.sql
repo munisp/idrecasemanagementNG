@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS public.tasks (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS tasks_assignee ON public.tasks (tenant, assignee, status);
+-- Completion timestamp for throughput reporting (ops dashboard trend);
+-- backfill-safe: trend queries COALESCE(completed_at, created_at).
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS completed_at timestamptz;
 
 -- Notes: free-form on any record (case, account, lead).
 CREATE TABLE IF NOT EXISTS public.notes (
