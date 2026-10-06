@@ -1,0 +1,41 @@
+# OPTIONAL — Mojaloop settlement switch. Deploy ONLY if a state mandates
+# Mojaloop-based settlement rails (see docs/PAYMENTS.md and docs/PERFORMANCE.md).
+# The platform side is already implemented (case-api mojaloop.go): payments
+# with provider=mojaloop flow prepare -> fulfil | reject through the SDK
+# scheme-adapter, mapped onto TigerBeetle pending -> post | void.
+#
+# Mojaloop's central-ledger is MySQL-only (knex + MySQL-specific migrations;
+# no upstream Postgres profile). These values deploy a tuned MySQL 8 for it.
+# Per-service values (central-ledger, account-lookup, quoting, ml-api-adapter)
+# follow upstream mojaloop/helm — pin versions explicitly in production.
+
+enabled: false   # flip only when a state mandate arrives
+
+# --- MySQL 8 for central-ledger (InnoDB, NVMe node) --------------------------
+mysql:
+  image: mysql:8.4
+  config: |
+    [mysqld]
+    innodb_buffer_pool_size        = 8G     # 60-70% of pod memory limit
+    innodb_log_file_size           = 2G
+    innodb_flush_log_at_trx_commit = 1      # financial durability — do not relax
+    innodb_flush_method            = O_DIRECT
+    innodb_io_capacity             = 4000
+    innodb_io_capacity_max         = 8000
+    innodb_flush_neighbors         = 0      # SSD/NVMe
+    innodb_read_io_threads         = 8
+    innodb_write_io_threads        = 8
+    sync_binlog                    = 1
+    binlog_group_commit_sync_delay = 100    # µs — group-commit batching
+    transaction_isolation          = READ-COMMITTED  # Mojaloop's tested level
+    max_connections                = 500
+  resources:
+    requests: { cpu: "2", memory: 12Gi }
+    limits:   { cpu: "4", memory: 12Gi }
+  persistence: { size: 100Gi, storageClass: gp3 }
+
+# --- Platform wiring (case-api env) ------------------------------------------
+caseApi:
+  env:
+    MOJALOOP_ADAPTER_URL: "http://sdk-scheme-adapter.idre-core:4000"
+    # MOJALOOP_WEBHOOK_SECRET comes from the `mojaloop` K8s secret.

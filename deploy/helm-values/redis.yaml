@@ -4,6 +4,17 @@ sentinel: { enabled: true }
 auth: { enabled: true, existingSecret: redis }
 # Cache only — IDRE directory, fee schedules, state configs, rate-limit buckets.
 # No source of truth lives here; eviction is always safe.
-maxmemory: 2gb
+maxmemory: 4gb
 maxmemoryPolicy: allkeys-lru
+# Cache-only: no AOF/RDB persistence (eviction-safe), threaded I/O, lazy free.
+commonConfiguration: |-
+  save ""
+  appendonly no
+  io-threads 4
+  io-threads-do-reads yes
+  lazyfree-lazy-eviction yes
+  lazyfree-lazy-expire yes
+  tcp-backlog 8192
+  maxclients 20000
+  activerehashing yes
 metrics: { enabled: true, serviceMonitor: { enabled: true } }

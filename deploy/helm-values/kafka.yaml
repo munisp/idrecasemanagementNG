@@ -2,6 +2,7 @@
 # apiVersion: kafka.strimzi.io/v1beta2, kind: Kafka
 kafka:
   replicas: 3
+  useKRaft: true
   listeners:
     - name: plain
       port: 9092
@@ -16,6 +17,19 @@ kafka:
     min.insync.replicas: 2
     default.replication.factor: 3
     # Topic ACLs enforce the idre.<state>.* per-tenant prefix isolation.
+    # --- Broker throughput (KRaft, NVMe jbod) -------------------------------
+    num.network.threads: 8
+    num.io.threads: 16
+    num.replica.fetchers: 4
+    queued.max.requests: 1000
+    socket.send.buffer.bytes: 1024000
+    socket.receive.buffer.bytes: 1024000
+    socket.request.max.bytes: 104857600
+    compression.type: producer            # keep producer codec (lz4 from relay)
+    log.segment.bytes: 1073741824         # 1 GiB segments: fewer file rolls
+    log.retention.check.interval.ms: 300000
+    auto.leader.rebalance.enable: true
+    leader.imbalance.check.interval.seconds: 60
   storage:
     type: jbod
     volumes:
@@ -25,7 +39,7 @@ kafka:
         class: gp3
   metricsConfig:
     type: strimziMetrics
-zookeeper: { replicas: 3 }   # or KRaft via useKRaft: true
+zookeeper: { enabled: false }  # KRaft mode: no ZK quorum, lower latency/ops
 entityOperator:
   topicOperator: {}
   userOperator: {}           # manages SCRAM users + ACLs as KafkaUser CRs

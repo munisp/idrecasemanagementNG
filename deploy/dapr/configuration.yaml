@@ -1,0 +1,45 @@
+# Dapr control-plane / sidecar configuration (performance posture).
+# Apply: kubectl apply -f configuration.yaml — then reference via pod
+# annotation `dapr.io/config: idre-config` on every injected workload.
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: idre-config
+  namespace: idre-core
+spec:
+  tracing:
+    samplingRate: "0.01"        # 1% — head-based sampling; full traces are
+                                # a measurable tax on every sidecar hop
+    otel:
+      endpointAddress: "otel-collector.idre-obs:4317"
+      isSecure: false
+      protocol: grpc
+  metric:
+    enabled: true
+    rules: []                   # default low-cardinality Dapr metrics only
+  metrics:
+    enabled: true
+    port: 9090
+  mtls:
+    enabled: true               # sidecar-to-sidecar encryption stays ON
+    workloadCertTTL: "24h"
+    allowedClockSkew: "15m"
+  features:
+    - name: ProxySupport        # WASM/proxy passthrough off unless needed
+  accessControl:
+    defaultAction: deny         # app allowlists (see app-policies)
+    trustDomain: "idre.local"
+  nameResolution:
+    component: "kubernetes"
+# Sidecar resource + throughput annotations belong on each app's Deployment:
+#   dapr.io/sidecar-cpu-request: "100m"
+#   dapr.io/sidecar-cpu-limit: "1"
+#   dapr.io/sidecar-memory-request: "128Mi"
+#   dapr.io/sidecar-memory-limit: "512Mi"
+#   dapr.io/sidecar-listen-addresses: "0.0.0.0"
+#   dapr.io/max-body-size: "16M"           # document payloads via pub/sub
+#   dapr.io/read-buffer-size: "32768"      # larger header/body buffer
+#   dapr.io/http-stream-request-body: "true"
+#   dapr.io/config: "idre-config"
+# Default sidecar limits (250m/100Mi) throttle under bursty pub/sub fan-out —
+# the values above are the floor for case-api and the notifier.

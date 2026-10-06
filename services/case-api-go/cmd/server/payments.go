@@ -125,6 +125,16 @@ func (s *server) createCheckout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invoice is not open"}`, http.StatusConflict)
 		return
 	}
+	// Provider selection: default stripe; provider=mojaloop routes through the
+	// scheme adapter (prepare/fulfil) when MOJALOOP_ADAPTER_URL is configured.
+	if r.URL.Query().Get("provider") == "mojaloop" {
+		if !s.mojaloopEnabled() {
+			http.Error(w, `{"error":"mojaloop provider not configured"}`, http.StatusBadRequest)
+			return
+		}
+		s.checkoutMojaloop(w, r, tenant, caseID, invID, party, amount)
+		return
+	}
 
 	form := url.Values{}
 	form.Set("mode", "payment")
@@ -388,4 +398,85 @@ func (s *server) financialReport(w http.ResponseWriter, r *http.Request) {
 		"events": events, "by_method": byMethod,
 		"stripe_enabled": s.cfg.StripeSecret != "",
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Ledger balance export (reconciliation + lakehouse settlement positions)
+// ---------------------------------------------------------------------------
+
+// ledgerBalances returns TigerBeetle balances for the tenant's standard
+// accounts: the four global accounts (admin remittance, IDRE compensation,
+// refund payable, Stripe clearing) plus per-party escrow accounts derived
+// from parties seen in public.financial_events. Authenticated like every
+// /v1 route — intended callers are the Temporal reconciliation workflow and
+// the balance-snapshot exporter (WORKER_TOKEN service auth).
+func (s *server) ledgerBalances(w http.ResponseWriter, r *http.Request) {
+	tenant := chi.URLParam(r, "*")
+	if tenant == "" {
+		tenant = chi.URLParam(r, "tenant")
+	}
+	if s.tb == nil {
+		http.Error(w, `{"error":"ledger unavailable"}`, http.StatusBadGateway)
+		return
+	}
+	parties := []string{""}
+	rows, err := s.db.Query(r.Context(),
+		`SELECT DISTINCT party FROM public.financial_events
+		  WHERE tenant=$1 AND party IS NOT NULL AND party <> ''`, tenant)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var p string
+			if rows.Scan(&p) == nil {
+				parties = append(parties, p)
+			}
+		}
+	}
+	type acctRef struct {
+		code  uint32
+		party string
+	}
+	var refs []acctRef
+	for _, c := range []uint32{acctAdminRemittance, acctIdreCompensation, acctRefundPayable, acctStripeClearing} {
+		refs = append(refs, acctRef{c, ""})
+	}
+	for _, p := range parties {
+		refs = append(refs, acctRef{acctEscrowTrustHeld, p})
+	}
+	ids := make([]tb_types.Uint128, len(refs))
+	for i, a := range refs {
+		ids[i] = acctID(tenant, a.code, a.party)
+	}
+	accts, err := s.tb.LookupAccounts(ids)
+	if err != nil {
+		http.Error(w, `{"error":"ledger lookup failed"}`, http.StatusBadGateway)
+		return
+	}
+	found := make(map[string]tb_types.Account, len(accts))
+	for _, a := range accts {
+		found[hex128(a.ID)] = a
+	}
+	type balance struct {
+		Code           uint32 `json:"code"`
+		Party          string `json:"party"`
+		DebitsPosted   uint64 `json:"debits_posted"`
+		CreditsPosted  uint64 `json:"credits_posted"`
+		DebitsPending  uint64 `json:"debits_pending"`
+		CreditsPending uint64 `json:"credits_pending"`
+		Exists         bool   `json:"exists"`
+	}
+	out := make([]balance, 0, len(refs))
+	for i, ref := range refs {
+		key := hex128(ids[i])
+		b := balance{Code: ref.code, Party: ref.party}
+		if a, ok := found[key]; ok {
+			b.Exists = true
+			b.DebitsPosted = u128lo(a.DebitsPosted)
+			b.CreditsPosted = u128lo(a.CreditsPosted)
+			b.DebitsPending = u128lo(a.DebitsPending)
+			b.CreditsPending = u128lo(a.CreditsPending)
+		}
+		out = append(out, b)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tenant": tenant, "accounts": out})
 }

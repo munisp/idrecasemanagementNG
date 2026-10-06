@@ -5,6 +5,10 @@ roles: [master, ingest, data, remote_cluster_client]
 config:
   opensearch.yml: |
     plugins.security.disabled: false
+    # Throughput: bulk-heavy audit/case indexing workload
+    thread_pool.write.queue_size: 1000
+    indices.memory.index_buffer_size: 20%
+    indices.queries.cache.size: 10%
     # ISM policy applied via deploy/opensearch/ism-policy.json:
     # hot 90d -> warm 2y -> cold -> delete at 6y (federal retention mandate).
 persistence:
@@ -18,3 +22,9 @@ serviceMonitor: { enabled: true }
 dashboards:
   enabled: true
 # Index sets: idre-cases-*, idre-audit-*, idre-voice-*, wazuh-alerts-*
+
+# Heap: 50% of node RAM, capped at ~30 GiB (compressed oops boundary).
+opensearchJavaOpts: "-Xms8g -Xmx8g"
+resources:
+  requests: { cpu: "2", memory: 16Gi }
+  limits:   { cpu: "4", memory: 16Gi }

@@ -44,3 +44,17 @@ CREATE TABLE IF NOT EXISTS public.financial_events (
 );
 CREATE INDEX IF NOT EXISTS fin_events_tenant ON public.financial_events (tenant, created_at DESC);
 CREATE INDEX IF NOT EXISTS fin_events_case ON public.financial_events (tenant, case_id);
+
+-- Postgres <-> TigerBeetle reconciliation results (Temporal daily cron per
+-- tenant: LedgerReconciliationWorkflow -> reconcile_ledger activity).
+CREATE TABLE IF NOT EXISTS public.ledger_reconciliation (
+    id             bigserial PRIMARY KEY,
+    tenant         text NOT NULL,
+    check_name     text NOT NULL,   -- clearing_check | ledger_invariant
+    expected_cents bigint NOT NULL,
+    actual_cents   bigint NOT NULL,
+    drift_cents    bigint NOT NULL,
+    status         text NOT NULL,   -- OK | DRIFT
+    ran_at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ledger_recon_tenant ON public.ledger_reconciliation (tenant, ran_at DESC);

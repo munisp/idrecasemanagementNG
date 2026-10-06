@@ -1,0 +1,35 @@
+# Nightly audit hash-chain verification (checklist 3.2). Nonzero exit =
+# job failure = kube-state-metrics alert; pairs with the AuditChainBroken
+# PrometheusRule when the exporter gauge is wired.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: audit-chain-verify
+  namespace: idre-core
+spec:
+  schedule: "0 3 * * *"          # 03:00 daily, before the 06:00 recon cron
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 14
+  failedJobsHistoryLimit: 14
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: verify
+              image: ghcr.io/munisp/idre/idre-workflows:latest  # has psycopg
+              # script mounted from ConfigMap (kubectl create configmap
+              # audit-chain-verify --from-file=scripts/verify-audit-chain.py)
+              command: ["python3", "/scripts/verify-audit-chain.py"]
+              volumeMounts:
+                - { name: script, mountPath: /scripts }
+          volumes:
+            - name: script
+              configMap: { name: audit-chain-verify }
+              env:
+                - name: DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: idre-db, key: dsn } }
+              resources:
+                requests: { cpu: "100m", memory: 256Mi }
+                limits:   { cpu: "1",    memory: 1Gi }

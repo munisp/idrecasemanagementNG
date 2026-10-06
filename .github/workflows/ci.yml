@@ -1,0 +1,44 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # full history — secrets hide in old commits
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_COMMENTS: "true"
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - run: |
+          cd services/case-api-go
+          go build ./... && go vet ./cmd/server/ && go test ./cmd/server/
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: |
+          python -m compileall -q services/doc-intel-py services/idre-workflows-py \
+            services/analytics-py services/outbox-relay-py services/edge-bridge-py \
+            services/graph-intel-py services/lettergen-py
+          pip install -q pytest
+          cd services/doc-intel-py && python -m pytest -q
+  yaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          pip install -q pyyaml
+          python - <<'EOF'
+          import glob, yaml, sys
+          for f in glob.glob('deploy/**/*.yaml', recursive=True) + ['docker-compose.yml']:
+              list(yaml.safe_load_all(open(f)))
+          print('all deploy YAML parses')
+          EOF

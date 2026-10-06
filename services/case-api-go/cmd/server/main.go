@@ -14,6 +14,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,8 @@ type Config struct {
 	GraphIntelURL  string // http://graph-intel:8082 ("" = graph features disabled)
 	StripeSecret   string // sk_live_… / sk_test_… ("" = card payments disabled)
 	StripeWebhook  string // whsec_… signing secret for /api/webhooks/stripe
+	MojaloopAdapter string // SDK scheme-adapter base URL ("" = mojaloop provider disabled)
+	MojaloopSecret  string // HMAC secret shared with the scheme adapter
 	PortalBaseURL  string // https://portal.example.gov — Stripe success/cancel return
 	ClamdAddr      string // clamd:3310 — ClamAV INSTREAM target (uploads fail-closed if down)
 	SMTPHost       string // outbound mail relay (state SMTP / SES / Mailgun); empty = delivery skipped
@@ -102,6 +105,8 @@ func configFromEnv() Config {
 		GraphIntelURL:  get("GRAPH_INTEL_URL", "http://localhost:8082"),
 		StripeSecret:   get("STRIPE_SECRET_KEY", ""),
 		StripeWebhook:  get("STRIPE_WEBHOOK_SECRET", ""),
+		MojaloopAdapter: get("MOJALOOP_ADAPTER_URL", ""),
+		MojaloopSecret:  get("MOJALOOP_WEBHOOK_SECRET", ""),
 		PortalBaseURL:  get("PORTAL_BASE_URL", "http://localhost:8080"),
 		ClamdAddr:      get("CLAMD_ADDR", "localhost:3310"),
 		SMTPHost:       get("SMTP_HOST", ""),
@@ -339,7 +344,22 @@ func main() {
 	cfg := configFromEnv()
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	// Connection pool sized for throughput: 50 in-flight queries per replica
+	// (PgBouncer txn-pooling fronts Postgres in-cluster, so 50/replica is safe).
+	pcfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	must(err)
+	if v := os.Getenv("DB_POOL_MAX_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			pcfg.MaxConns = int32(n)
+		}
+	} else {
+		pcfg.MaxConns = 50
+	}
+	pcfg.MinConns = 10
+	pcfg.MaxConnLifetime = 30 * time.Minute
+	pcfg.MaxConnIdleTime = 5 * time.Minute
+	pcfg.HealthCheckPeriod = 30 * time.Second
+	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	must(err)
 	defer pool.Close()
 
@@ -445,6 +465,7 @@ func main() {
 		// calendar, notifications, saved views, letters.
 		r.Post("/cases/{caseId}/assign", s.assignCase)
 		r.Post("/cases/{caseId}/escalate", s.escalateCase)
+		r.Get("/internal/ledger/balances", s.ledgerBalances) // worker-token: reconciliation job
 		r.Post("/cases/relate", s.relateCases)
 		r.Get("/cases/{caseId}/relationships", s.caseRelationships)
 		r.Get("/cases/{caseId}/checklist", s.getChecklist)
@@ -536,6 +557,7 @@ func main() {
 
 	// Stripe webhook (no OIDC; HMAC-SHA256 signature against STRIPE_WEBHOOK_SECRET is the auth).
 	r.Post("/api/webhooks/stripe", s.stripeWebhook)
+	r.Post("/api/webhooks/mojaloop", s.mojaloopWebhook)
 
 	// Public stakeholder application (no OIDC; per-IP throttled, tenant + type validated).
 	r.Post("/api/public/apply", s.publicApply)
@@ -945,6 +967,19 @@ func acctID(tenant string, code uint32, party string) tb_types.Uint128 {
 	var b [16]byte
 	copy(b[:], h[:16])
 	return tb_types.BytesToUint128(b)
+}
+
+// hex128 renders a TigerBeetle Uint128 ID as hex (Bytes() returns an
+// unaddressable array — copy first).
+func hex128(v tb_types.Uint128) string {
+	b := v.Bytes()
+	return hex.EncodeToString(b[:])
+}
+
+// u128lo returns the low 64 bits (balances are well within uint64).
+func u128lo(v tb_types.Uint128) uint64 {
+	b := v.Bytes()
+	return binary.LittleEndian.Uint64(b[0:8])
 }
 
 func hash16(parts ...string) tb_types.Uint128 {

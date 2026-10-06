@@ -1,0 +1,113 @@
+# App Deployments with Dapr sidecar performance annotations (Tier 1).
+# The repo previously had no app manifests (compose-only); these are the
+# production shapes referenced by deploy/dapr/configuration.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: case-api
+  namespace: idre-core
+  labels: { app: case-api, app.kubernetes.io/part-of: idre }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: case-api }
+  template:
+    metadata:
+      labels: { app: case-api }
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "case-api"
+        dapr.io/app-port: "8080"
+        dapr.io/config: "idre-config"
+        # Sidecar sized for pub/sub fan-out bursts (defaults throttle at 250m/100Mi)
+        dapr.io/sidecar-cpu-request: "100m"
+        dapr.io/sidecar-cpu-limit: "1"
+        dapr.io/sidecar-memory-request: "128Mi"
+        dapr.io/sidecar-memory-limit: "512Mi"
+        dapr.io/max-body-size: "16M"
+        dapr.io/read-buffer-size: "32768"
+        dapr.io/http-stream-request-body: "true"
+    spec:
+      containers:
+        - name: case-api
+          image: ghcr.io/munisp/idre/case-api:latest   # built from services/case-api-go
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: idre-db, key: dsn } }
+            - name: WORKER_TOKEN
+              valueFrom: { secretKeyRef: { name: idre-workers, key: token } }
+            - name: DB_POOL_MAX_CONNS
+              value: "50"
+          resources:
+            requests: { cpu: "500m", memory: 512Mi }
+            limits:   { cpu: "2",    memory: 1Gi }
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idre-workflows
+  namespace: idre-core
+  labels: { app: idre-workflows, app.kubernetes.io/part-of: idre }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: idre-workflows }
+  template:
+    metadata:
+      labels: { app: idre-workflows }
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "idre-workflows"
+        dapr.io/app-port: "9100"          # Dapr cron-binding listener
+        dapr.io/config: "idre-config"
+        dapr.io/sidecar-cpu-request: "100m"
+        dapr.io/sidecar-cpu-limit: "500m"
+        dapr.io/sidecar-memory-request: "128Mi"
+        dapr.io/sidecar-memory-limit: "256Mi"
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/munisp/idre/idre-workflows:latest   # services/idre-workflows-py
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: idre-db, key: dsn } }
+            - name: TEMPORAL_HOST
+              value: "temporal-frontend.idre-core:7233"
+            - name: WORKER_TOKEN
+              valueFrom: { secretKeyRef: { name: idre-workers, key: token } }
+          resources:
+            requests: { cpu: "500m", memory: 512Mi }
+            limits:   { cpu: "2",    memory: 2Gi }
+---
+# Outbox relay: NO Dapr sidecar — it speaks Kafka directly (confluent_kafka)
+# with the tuned producer settings. Scaling is event-driven via KEDA
+# (keda-scaledobjects.yaml): more unpublished outbox rows -> more replicas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outbox-relay
+  namespace: idre-core
+  labels: { app: outbox-relay, app.kubernetes.io/part-of: idre }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: outbox-relay }
+  template:
+    metadata:
+      labels: { app: outbox-relay }
+    spec:
+      containers:
+        - name: relay
+          image: ghcr.io/munisp/idre/outbox-relay:latest   # services/outbox-relay-py
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: idre-db, key: dsn } }
+            - name: KAFKA_BROKERS
+              value: "kafka.idre-data:9092"
+            - name: RELAY_BATCH
+              value: "1000"
+          resources:
+            requests: { cpu: "250m", memory: 256Mi }
+            limits:   { cpu: "1",    memory: 512Mi }

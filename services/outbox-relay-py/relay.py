@@ -22,7 +22,7 @@ from confluent_kafka import Producer
 DSN = os.environ.get("PG_DSN", "postgresql://idre:idre@localhost:5432/idre")
 BROKERS = os.environ.get("KAFKA_BROKERS", "localhost:9092")
 POLL_SECONDS = float(os.environ.get("RELAY_POLL_SECONDS", "0.5"))
-BATCH = int(os.environ.get("RELAY_BATCH", "200"))
+BATCH = int(os.environ.get("RELAY_BATCH", "1000"))  # bigger claims per poll cycle
 
 STATES = [s.strip() for s in os.environ.get("TENANTS", "").split(",") if s.strip()]
 
@@ -65,6 +65,14 @@ def main() -> None:
         "bootstrap.servers": BROKERS,
         "enable.idempotence": True,   # exactly-once on the Kafka side
         "acks": "all",
+        # Throughput: micro-batching + lz4. Idempotence keeps ordering/dupes
+        # safe while the linger window fills batches (~5 ms added latency).
+        "linger.ms": "5",
+        "batch.num.messages": "10000",
+        "compression.type": "lz4",
+        "queue.buffering.max.messages": "200000",
+        "queue.buffering.max.kbytes": "1048576",   # 1 GiB in-flight cap
+        "max.in.flight.requests.per.connection": "5",  # idempotence max
     })
     print(f"outbox-relay: polling {DSN} -> {BROKERS}", flush=True)
     while True:

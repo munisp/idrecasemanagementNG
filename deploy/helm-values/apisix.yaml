@@ -12,6 +12,16 @@ ingress-controller:
 apisix:
   deployment:
     role: data_plane
+  nginx_config:
+    worker_processes: auto          # one event loop per core
+    worker_connections: 65535
+    http:
+      enable_http2: true
+      keepalive_timeout: 75s
+      client_max_body_size: 50m
+      lua_shared_dict:
+        plugin-limit-count: 50m
+        prometheus-metrics: 50m
   extraEnvVars:
     - name: APISIX_STAND_ALONE
       value: "false"   # etcd-backed in prod; standalone yaml used only for local

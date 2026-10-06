@@ -1,5 +1,8 @@
 server:
   replicaCount: 2
+  # History shards: the single biggest Temporal scaling knob. 4096 is
+  # immutable after bootstrap — size for the lifetime of the cluster.
+  numHistoryShards: 4096
   config:
     persistence:
       default:
@@ -20,6 +23,11 @@ server:
           user: idre
           database: temporal_visibility
           existingSecret: temporal-db
+    dynamicConfig:
+      # Throughput guardrails per namespace (ratchet up per-tenant as needed)
+      matching.longPollExpirationInterval: "30s"
+      history.timerProcessorMaxPollRPS: 200
+      frontend.namespaceRPS: 3000
     namespaces:
       create: true
       namespace:

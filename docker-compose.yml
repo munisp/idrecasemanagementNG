@@ -9,6 +9,22 @@ services:
       POSTGRES_USER: idre
       POSTGRES_PASSWORD: idre
       POSTGRES_DB: idre
+    # Local-dev parity with deploy/helm-values/postgres.yaml (scaled to laptop)
+    command:
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - wal_compression=lz4
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - idle_in_transaction_session_timeout=60000
     ports: ["5432:5432"]
     volumes: ["pgdata:/var/lib/postgresql/data", "./scripts/init-schemas.sql:/docker-entrypoint-initdb.d/init.sql"]
 

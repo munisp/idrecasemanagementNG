@@ -1,6 +1,6 @@
 # Fluvio: lightweight edge ingestion (state SSL registries, voice webhooks).
 spu:
-  replicas: 2
+  replicas: 4                    # more partition leaders = parallel edge ingest
   storage:
     size: 50Gi
 connectors:

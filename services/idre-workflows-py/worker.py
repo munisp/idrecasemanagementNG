@@ -22,33 +22,45 @@ from activities import (
     notify_party, flag_cms_breach, run_cms_monthly_report,
 )
 from onboarding_activities import (
+    export_ledger_snapshot, reconcile_ledger,
     set_application_status, check_ein_npi, check_idre_certification,
     check_state_requirements, provision_keycloak_account,
     provision_idre_ledger_accounts, send_portal_invite, record_onboarding_audit,
 )
-from workflows import IdrCaseWorkflow, CmsMonthlyReportWorkflow
+from workflows import (
+    IdrCaseWorkflow, CmsMonthlyReportWorkflow, LedgerReconciliationWorkflow,
+)
 from onboarding import StakeholderOnboardingWorkflow, TenantOnboardingWorkflow
 
 
 async def run_workers(client: Client) -> None:
+    # Concurrency knobs: activities are I/O-bound (DB/HTTP) — run many in
+    # flight per worker pod; scale pods horizontally beyond this.
     worker = Worker(
         client,
         task_queue="idre-cases",
-        workflows=[IdrCaseWorkflow, CmsMonthlyReportWorkflow],
+        workflows=[IdrCaseWorkflow, CmsMonthlyReportWorkflow,
+                   LedgerReconciliationWorkflow],
         activities=[
             set_case_status, post_ledger_transfer, request_lawful_reveal,
             notify_party, flag_cms_breach, run_cms_monthly_report,
+            export_ledger_snapshot, reconcile_ledger,
         ],
+        max_concurrent_activities=100,
+        max_concurrent_workflow_tasks=200,
     )
     onboarding_worker = Worker(
         client,
         task_queue="idre-onboarding",
         workflows=[StakeholderOnboardingWorkflow, TenantOnboardingWorkflow],
         activities=[
-            set_application_status, check_ein_npi, check_idre_certification,
+            export_ledger_snapshot, reconcile_ledger,
+    set_application_status, check_ein_npi, check_idre_certification,
             check_state_requirements, provision_keycloak_account,
             provision_idre_ledger_accounts, send_portal_invite, record_onboarding_audit,
         ],
+        max_concurrent_activities=50,
+        max_concurrent_workflow_tasks=100,
     )
     await asyncio.gather(worker.run(), onboarding_worker.run())
 
@@ -65,7 +77,29 @@ def start_dapr_listener(client: Client) -> None:
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802 — stdlib naming
-            if self.path.rstrip("/") != "/cms-monthly":
+            path = self.path.rstrip("/")
+            if path == "/ledger-reconcile":
+                started = 0
+                today = date.today().isoformat()
+                for tenant in ALL_STATES:
+                    asyncio.run_coroutine_threadsafe(
+                        client.start_workflow(
+                            "LedgerReconciliationWorkflow",
+                            {"tenant": tenant},
+                            id=f"RECON-{tenant}-{today}",
+                            task_queue="idre-cases",
+                        ),
+                        _MAIN_LOOP,
+                    )
+                    started += 1
+                body = json.dumps({"date": today, "workflows_started": started}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path != "/cms-monthly":
                 self.send_response(404)
                 self.end_headers()
                 return

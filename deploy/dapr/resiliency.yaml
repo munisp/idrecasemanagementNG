@@ -1,0 +1,58 @@
+# Resiliency policies — the timeouts/retries/circuit-breakers the architecture
+# doc promises for east-west calls. Apply: kubectl apply -f resiliency.yaml
+apiVersion: dapr.io/v1alpha1
+kind: Resiliency
+metadata:
+  name: idre-resiliency
+  namespace: idre-core
+spec:
+  policies:
+    timeouts:
+      fastCall: 5s        # state gets, small pub/sub publishes
+      serviceCall: 15s    # case-api -> vault, workflows -> case-api
+      jobCall: 120s       # report/analytics invocations
+    retries:
+      retryForever:       # pub/sub delivery: at-least-once must not give up
+        policy: constant
+        duration: 5s
+        maxRetries: -1
+      retryTransient:     # service invocation: bounded exponential
+        policy: exponential
+        maxInterval: 15s
+        maxRetries: 6
+    circuitBreakers:
+      vaultCB:            # vault outage must not cascade into case-api
+        maxRequests: 1
+        interval: 30s
+        timeout: 60s
+      caseApiCB:
+        maxRequests: 2
+        interval: 30s
+        timeout: 45s
+  targets:
+    apps:
+      vault:
+        timeout: serviceCall
+        retry: retryTransient
+        circuitBreaker: vaultCB
+      case-api:
+        timeout: serviceCall
+        retry: retryTransient
+        circuitBreaker: caseApiCB
+      analytics:
+        timeout: jobCall
+        retry: retryTransient
+    components:
+      idre-pubsub:
+        outbound:
+          timeout: fastCall
+          retry: retryForever     # publish must not drop outbox events
+        inbound:
+          timeout: jobCall
+          retry: retryForever     # consumer redelivers until handled
+      idre-state:
+        outbound:
+          timeout: fastCall
+          retry: retryTransient   # cache misses are recoverable — do NOT
+                                  # retry-forever against a down Redis
+    actors: {}

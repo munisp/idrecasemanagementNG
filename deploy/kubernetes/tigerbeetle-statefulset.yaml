@@ -1,4 +1,5 @@
-# TigerBeetle 3-replica cluster — ledger-per-tenant for escrow/fees.
+# TigerBeetle 6-replica cluster — ledger-per-tenant for escrow/fees.
+# 6 replicas = quorum survives 2 failures; upstream production recommendation.
 # Follows upstream production guidance: dedicated nodes, local NVMe preferred.
 apiVersion: apps/v1
 kind: StatefulSet
@@ -7,7 +8,7 @@ metadata:
   namespace: idre-core
 spec:
   serviceName: tigerbeetle
-  replicas: 3
+  replicas: 6
   podManagementPolicy: Parallel
   selector:
     matchLabels: { app: tigerbeetle }
@@ -26,7 +27,7 @@ spec:
           image: ghcr.io/tigerbeetle/tigerbeetle:0.16.0
           args:
             - start
-            - --addresses=$(POD_IP):3000,tigerbeetle-1.tigerbeetle:3000,tigerbeetle-2.tigerbeetle:3000
+            - --addresses=$(POD_IP):3000,tigerbeetle-1.tigerbeetle:3000,tigerbeetle-2.tigerbeetle:3000,tigerbeetle-3.tigerbeetle:3000,tigerbeetle-4.tigerbeetle:3000,tigerbeetle-5.tigerbeetle:3000
             - /data/tigerbeetle
           env:
             - name: POD_IP

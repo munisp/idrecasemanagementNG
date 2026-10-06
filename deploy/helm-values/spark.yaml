@@ -1,9 +1,14 @@
 master: { replicaCount: 1 }
 worker:
-  replicaCount: 3
+  replicaCount: 6
   resources:
-    requests: { cpu: "2", memory: 4Gi }
-    limits: { cpu: "4", memory: 8Gi }
+    requests: { cpu: "4", memory: 8Gi }
+    limits:   { cpu: "8", memory: 16Gi }
+# Job-level conf applied by analytics-py submit (documented in PERFORMANCE.md):
+#   spark.sql.adaptive.enabled=true            (AQE coalesces skewed shuffles)
+#   spark.sql.shuffle.partitions=1024          (up from 200 default)
+#   spark.sql.files.maxPartitionBytes=256m
+#   delta.autoOptimize.optimizeWrite=true / autoCompact=true
 # Delta Lake + Sedona jars are baked into the job images (services/analytics-py
 # Dockerfile). Jobs: bronze->silver->gold, CMS monthly report, geo analytics.
 serviceAccount: { create: true }

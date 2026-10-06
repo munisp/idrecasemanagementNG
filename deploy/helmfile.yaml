@@ -1,21 +1,38 @@
 # helmfile — declarative fleet install for every platform component.
 # Usage: helmfile sync   (requires helm + helm-diff)
 repositories:
-  - name: bitnami        url: https://charts.bitnami.com/bitnami
-  - name: strimzi        url: https://strimzi.io/charts/
-  - name: temporal       url: https://go.temporal.io/helm-charts
-  - name: apisix         url: https://charts.apiseven.com
-  - name: keycloak       url: https://charts.bitnami.com/bitnami
-  - name: opensearch     url: https://opensearch-project.github.io/helm-charts/
-  - name: fluvio         url: https://infinyon.github.io/fluvio-helm
-  - name: kubecost       url: https://kubecost.github.io/cost-analyzer/
-  - name: wazuh          url: https://wazuh.github.io/wazuh-kubernetes/
-  - name: opencti        url: https://opencti-platform.github.io/helm-charts
-  - name: cnpg           url: https://cloudnative-pg.github.io/charts
-  - name: minio          url: https://charts.min.io/
-  - name: spark          url: https://charts.bitnami.com/bitnami
-  - name: ray            url: https://ray-project.github.io/kuberay-helm/
-  - name: flink          url: https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.9.0/
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+  - name: strimzi
+    url: https://strimzi.io/charts/
+  - name: temporal
+    url: https://go.temporal.io/helm-charts
+  - name: apisix
+    url: https://charts.apiseven.com
+  - name: keycloak
+    url: https://charts.bitnami.com/bitnami
+  - name: opensearch
+    url: https://opensearch-project.github.io/helm-charts/
+  - name: fluvio
+    url: https://infinyon.github.io/fluvio-helm
+  - name: kubecost
+    url: https://kubecost.github.io/cost-analyzer/
+  - name: wazuh
+    url: https://wazuh.github.io/wazuh-kubernetes/
+  - name: opencti
+    url: https://opencti-platform.github.io/helm-charts
+  - name: cnpg
+    url: https://cloudnative-pg.github.io/charts
+  - name: minio
+    url: https://charts.min.io/
+  - name: spark
+    url: https://charts.bitnami.com/bitnami
+  - name: ray
+    url: https://ray-project.github.io/kuberay-helm/
+  - name: flink
+    url: https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.9.0/
+  - name: kedacore
+    url: https://kedacore.github.io/charts
 
 releases:
   # ---- core -----------------------------------------------------------------
@@ -82,3 +99,13 @@ releases:
     namespace: idre-finops
     chart: kubecost/cost-analyzer
     values: [helm-values/kubecost.yaml]
+  # ---- autoscaling ------------------------------------------------------------
+  - name: keda
+    namespace: idre-obs
+    chart: kedacore/keda
+    values:
+      - resources:
+          operator:
+            requests: { cpu: 100m, memory: 128Mi }
+          metricServer:
+            requests: { cpu: 100m, memory: 128Mi }

@@ -17,6 +17,16 @@ spec:
       value: "false"
     - name: maxMessageBytes
       value: "1048576"
+    # Throughput: match the relay producer (lz4 micro-batches) and give the
+    # consumer group deeper fetch buffers for fan-out bursts.
+    - name: initialOffset
+      value: "oldest"
+    - name: version
+      value: "3.8.0"           # match cluster (deploy/helm-values/kafka.yaml)
+    # Note: sarama fetch buffers/session timeouts are NOT exposed by the Dapr
+    # Kafka component — consumer throughput is tuned app-side via bulk
+    # subscribe + maxConcurrentHandlers annotations, and broker-side via the
+    # tuned kafka.yaml. Delivery retries live in resiliency.yaml.
 scopes:
   - case-api
   - notifier

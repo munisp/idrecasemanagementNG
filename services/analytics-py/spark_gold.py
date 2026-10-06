@@ -23,18 +23,36 @@ def spark() -> SparkSession:
     return configure_spark_with_delta_pip(builder).getOrCreate()
 
 
-def bronze_to_silver(s: SparkSession, tenant: str) -> None:
-    cases = s.read.format("delta").load(f"{MINIO}/bronze/cases").where(F.col("tenant") == tenant)
-    offers = s.read.format("delta").load(f"{MINIO}/bronze/offers").where(F.col("tenant") == tenant)
-    fees = s.read.format("delta").load(f"{MINIO}/bronze/fees").where(F.col("tenant") == tenant)
+def bronze_events(s: SparkSession, tenant: str):
+    """Bronze = Parquet event archive from Flink (bronze-raw/events/date=...).
+    Silver tables carry typed common columns + the raw JSON payload: robust to
+    schema drift across domains; gold marts parse what they need."""
+    return (s.read.parquet(f"{MINIO}/bronze-raw/events")
+            .where(F.col("tenant") == tenant))
 
-    (cases.dropDuplicates(["case_id"])
-         .withColumn("qpa_usd", F.col("qpa_cents") / 100)
-         .write.format("delta").mode("overwrite")
-         .option("replaceWhere", f"tenant = '{tenant}'")
-         .save(f"{MINIO}/silver/cases"))
-    offers.write.format("delta").mode("overwrite").option("replaceWhere", f"tenant = '{tenant}'").save(f"{MINIO}/silver/offers")
-    fees.write.format("delta").mode("overwrite").option("replaceWhere", f"tenant = '{tenant}'").save(f"{MINIO}/silver/fees")
+
+def _silver(df, table: str, tenant: str) -> None:
+    (df.write.format("delta").mode("overwrite")
+       .option("replaceWhere", f"tenant = '{tenant}'")
+       .save(f"{MINIO}/silver/{table}"))
+
+
+def _common(df):
+    return (df.withColumn("etype", F.get_json_object("payload", "$.type"))
+              .withColumn("case_id", F.get_json_object("payload", "$.case_id")))
+
+
+def bronze_to_silver(s: SparkSession, tenant: str) -> None:
+    ev = _common(bronze_events(s, tenant)).cache()
+    _silver(ev.where(F.col("etype").startswith("case.")), "cases", tenant)
+    _silver(ev.where(F.col("etype").startswith("offer.")), "offers", tenant)
+    _silver(ev.where(F.col("etype").startswith("fee.")), "fees", tenant)
+    _silver(ev.where(F.col("etype").startswith("rule.")), "rule_events", tenant)
+    _silver(ev.where(F.col("etype").startswith("doc.")), "document_events", tenant)
+    # SLA breaches arrive via the tenant outbox (flag_cms_breach emits an
+    # outbox event per breach); ledger snapshots come from the TB exporter.
+    _silver(ev.where(F.col("etype") == "sla.breach"), "sla_breaches", tenant)
+    _silver(ev.where(F.col("etype") == "ledger.balance_snapshot"), "ledger_balances", tenant)
 
 
 def cms_monthly_report(s: SparkSession, tenant: str, month: str) -> str:
@@ -42,15 +60,21 @@ def cms_monthly_report(s: SparkSession, tenant: str, month: str) -> str:
     fees = s.read.format("delta").load(f"{MINIO}/silver/fees").where(F.col("tenant") == tenant)
     breaches = s.read.format("delta").load(f"{MINIO}/silver/sla_breaches").where(F.col("tenant") == tenant)
 
+    opened = F.to_date(F.get_json_object("payload", "$.opened_at"))
+    status = F.get_json_object("payload", "$.status")
+    qpa_usd = F.get_json_object("payload", "$.qpa_cents").cast("double") / 100
     report = (
-        cases.where(F.date_trunc("month", "opened_at") == F.lit(f"{month}-01").cast("date"))
+        cases.where(F.date_trunc("month", opened) == F.lit(f"{month}-01").cast("date"))
         .groupBy("tenant").agg(
             F.count("*").alias("disputes_initiated"),
-            F.sum(F.when(F.col("status") == "CLOSED_PAID", 1).otherwise(0)).alias("closed_paid"),
-            F.avg("qpa_usd").alias("avg_qpa_usd"),
+            F.sum(F.when(status == "CLOSED_PAID", 1).otherwise(0)).alias("closed_paid"),
+            F.avg(qpa_usd).alias("avg_qpa_usd"),
         )
-        .join(fees.groupBy("tenant").agg(F.sum("amount_cents").alias("fee_volume_cents")), "tenant", "left")
-        .join(breaches.groupBy("tenant").count().withColumnRenamed("count", "sla_breaches"), "tenant", "left")
+        .join(fees.groupBy("tenant").agg(
+            F.sum(F.get_json_object("payload", "$.amount_cents").cast("long"))
+             .alias("fee_volume_cents")), "tenant", "left")
+        .join(breaches.groupBy("tenant").count().withColumnRenamed("count", "sla_breaches"),
+              "tenant", "left")
     )
     key = f"{MINIO}/gold/cms_monthly_report/tenant={tenant}/month={month}"
     report.write.format("delta").mode("overwrite").save(key)

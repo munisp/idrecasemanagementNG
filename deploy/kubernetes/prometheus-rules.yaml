@@ -1,0 +1,109 @@
+# Prometheus alert rules — the paging surface for go-live (checklist 3.1).
+# Requires prometheus-operator (PrometheusRule CRD) plus:
+#   - postgres-exporter sidecar on the CNPG cluster (customQueries below pick
+#     up ledger drift / breach counts without touching app code)
+#   - strimzi kafka exporter (lag rules) — enabled in kafka.yaml metricsConfig
+#   - temporal + pgbouncer serviceMonitors (helm values already enable them)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: idre-platform
+  namespace: idre-obs
+spec:
+  groups:
+    - name: money
+      interval: 60s
+      rules:
+        - alert: LedgerReconciliationDrift
+          # postgres-exporter custom query: latest drift per tenant/check
+          expr: idre_ledger_recon_drift_cents != 0
+          for: 5m
+          labels: { severity: critical, team: platform }
+          annotations:
+            summary: "Postgres/TigerBeetle drift ({{ $labels.tenant }} / {{ $labels.check_name }})"
+            runbook: "docs/RUNBOOKS.md #1"
+        - alert: SLABreachRecorded
+          expr: increase(idre_sla_breaches_total[15m]) > 0
+          labels: { severity: warning, team: platform }
+          annotations:
+            summary: "Statutory SLA breach recorded for tenant {{ $labels.tenant }}"
+            runbook: "docs/RUNBOOKS.md #1"
+        - alert: TigerBeetleReplicaDown
+          expr: up{job="tigerbeetle"} == 0
+          for: 2m
+          labels: { severity: critical, team: data }
+          annotations:
+            summary: "TigerBeetle replica down — quorum at 4/6 minimum"
+    - name: pipeline
+      interval: 60s
+      rules:
+        - alert: KafkaConsumerLag
+          expr: kafka_consumergroup_lag{consumergroup=~"idre-.*|flink-.*"} > 5000
+          for: 10m
+          labels: { severity: warning, team: platform }
+          annotations:
+            summary: "Consumer lag {{ $value }} on {{ $labels.topic }} ({{ $labels.consumergroup }})"
+        - alert: OutboxBacklog
+          expr: idre_outbox_unpublished_total > 8000
+          for: 10m
+          labels: { severity: warning, team: platform }
+          annotations:
+            summary: "Outbox backlog {{ $value }} rows despite KEDA scale-out"
+            runbook: "docs/RUNBOOKS.md #2"
+        - alert: TemporalMatchingBacklog
+          expr: temporal_matching_task_queue_backlog > 2000
+          for: 10m
+          labels: { severity: warning, team: platform }
+          annotations:
+            summary: "Temporal task-queue backlog on {{ $labels.task_queue }}"
+            runbook: "docs/RUNBOOKS.md #3"
+        - alert: AuditChainBroken
+          expr: idre_audit_chain_mismatch_total > 0
+          for: 1m
+          labels: { severity: critical, team: security }
+          annotations:
+            summary: "Audit hash-chain mismatch for tenant {{ $labels.tenant }} — possible tamper"
+    - name: saturation
+      interval: 60s
+      rules:
+        - alert: PgBouncerPoolSaturation
+          expr: pgbouncer_pools_server_active_connections / pgbouncer_pools_max_connections > 0.85
+          for: 10m
+          labels: { severity: warning, team: data }
+        - alert: PostgresReplicationLag
+          expr: pg_replication_lag_seconds > 60
+          for: 5m
+          labels: { severity: warning, team: data }
+        - alert: OpenSearchWriteQueueFull
+          expr: opensearch_thread_pool_rejected_count{pool="write"} > 0
+          for: 10m
+          labels: { severity: warning, team: data }
+---
+# postgres-exporter custom queries feeding the money/pipeline rules above.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-exporter-queries
+  namespace: idre-core
+data:
+  custom-queries.yaml: |
+    idre_ledger_recon:
+      query: |
+        SELECT DISTINCT ON (tenant, check_name) tenant, check_name, drift_cents
+        FROM public.ledger_reconciliation ORDER BY tenant, check_name, ran_at DESC
+      metrics:
+        - tenant: { usage: LABEL }
+        - check_name: { usage: LABEL }
+        - drift_cents: { usage: GAUGE }
+    idre_sla_breaches:
+      query: "SELECT tenant, count(*) AS total FROM public.sla_breaches GROUP BY tenant"
+      metrics:
+        - tenant: { usage: LABEL }
+        - total: { usage: COUNTER }
+    idre_outbox_unpublished:
+      query: |
+        SELECT count(*) AS total FROM tenant_tx.outbox WHERE published_at IS NULL
+      metrics:
+        - total: { usage: GAUGE }
+      # NOTE: per-tenant outbox depth needs one query block per schema, or a
+      # relay-exported gauge — regenerate alongside scripts/gen-keda-outbox-query.sh

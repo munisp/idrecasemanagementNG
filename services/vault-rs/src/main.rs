@@ -241,7 +241,9 @@ async fn open_doc(State(st): State<AppState>, Json(req): Json<DocRequest>) -> im
     }
 }
 
-#[tokio::main]
+// Multi-thread runtime, one worker per core (explicit for auditability; the
+// vault is CPU-bound on AEAD seal/open, so worker count must equal cores).
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     tracing_subscriber::fmt::init();
     let master_hex = std::env::var("VAULT_MASTER_SECRET")

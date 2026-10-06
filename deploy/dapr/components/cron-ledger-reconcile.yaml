@@ -1,0 +1,15 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: ledger-reconcile-daily
+spec:
+  type: bindings.cron
+  version: v1
+  metadata:
+    - name: schedule
+      value: "0 6 * * *"   # daily 06:00 — after settlement sweeps, before business hours
+# Invokes POST /ledger-reconcile on the idre-workflows-py app: starts one
+# LedgerReconciliationWorkflow per tenant (balance snapshot to lakehouse +
+# Postgres<->TigerBeetle drift check, breaches on drift).
+scopes:
+  - idre-workflows
