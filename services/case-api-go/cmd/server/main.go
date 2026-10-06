@@ -507,6 +507,7 @@ func main() {
 		r.Post("/cases/{caseId}/program-date", s.setProgramDate)      // record clock-basis events
 		r.Post("/cases/{caseId}/status", s.setDualStatus)             // dual internal/agency status (G5)
 		r.Post("/cases/{caseId}/eligibility", s.checkEligibility)     // threshold matrix + filing window (G2)
+		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)     // past reviews (G2)
 		r.Post("/cases/{caseId}/correspondence", s.draftCorrespondence) // template draft / send (G3)
 		r.Get("/cases/{caseId}/correspondence", s.listCorrespondence)
 		r.Post("/cases/{caseId}/share-links", s.createShareLink)      // tokenized upload/download (G9)
@@ -891,14 +892,16 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 func (s *server) getCase(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	id := chi.URLParam(r, "caseId")
+	s.maybeAdvanceStatus(r, tenant, id) // status follows platform facts
 	var c Case
 	var details []byte
 	var internal, agency *string
+	var pdates []byte
 	err := s.db.QueryRow(r.Context(),
 		fmt.Sprintf(`SELECT id, case_number, status, coalesce(subject_line, service_line) AS service_line, coalesce(benchmark_cents, qpa_cents) AS qpa_cents, opened_at,
-		                    internal_status, agency_status, details
+		                    internal_status, agency_status, details, COALESCE(program_dates,'{}'::jsonb)
 		             FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), id).
-		Scan(&c.ID, &c.CaseNumber, &c.Status, &c.ServiceLine, &c.QPA, &c.OpenedAt, &internal, &agency, &details)
+		Scan(&c.ID, &c.CaseNumber, &c.Status, &c.ServiceLine, &c.QPA, &c.OpenedAt, &internal, &agency, &details, &pdates)
 	if err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -906,10 +909,13 @@ func (s *server) getCase(w http.ResponseWriter, r *http.Request) {
 	c.Tenant = tenant
 	var dj map[string]any
 	_ = json.Unmarshal(details, &dj)
+	var pj map[string]string
+	_ = json.Unmarshal(pdates, &pj)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": c.ID, "case_number": c.CaseNumber, "tenant": c.Tenant, "status": c.Status,
 		"service_line": c.ServiceLine, "qpa_cents": c.QPA, "opened_at": c.OpenedAt,
 		"internal_status": internal, "agency_status": agency, "details": dj,
+		"program_dates": pj,
 	})
 }
 

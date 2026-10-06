@@ -94,3 +94,87 @@ def test_parse_courtesy_handwritten_decimal_comma():
     assert cp.parse_courtesy("715,39") == 71539
     assert cp.parse_courtesy("$1,234.56") == 123456  # thousands comma still wins
     assert cp.parse_courtesy("no amount") is None
+
+
+# ---- Ensemble consensus (accuracy architecture) --------------------------------
+
+def test_consensus_prefers_agreeing_parsed_value(monkeypatch):
+    import check_processor as cp
+    calls = {"trocr": "Seven hundred fifteen and 39/100",
+             "paddle": "Seven hundred fifteen and 39/100",
+             "tesseract": "= tee esa : if flesdend 8 Do."}
+    monkeypatch.setattr(cp, "_engine_read",
+                        lambda eng, img, psm=7, whitelist=None: (calls[eng], 0.9 if eng == "paddle" else None))
+    import numpy as np
+    img = np.zeros((40, 300), np.uint8)
+    txt, eng, score, votes = cp.consensus_read([img], handwritten=True, parser=cp.words_to_cents)
+    assert cp.words_to_cents(txt) == 71539
+    assert votes >= 2  # trocr+paddle agreed
+
+
+def test_consensus_no_agreement_reports_single_vote(monkeypatch):
+    import check_processor as cp
+    monkeypatch.setattr(cp, "_engine_read",
+                        lambda eng, img, psm=7, whitelist=None: ({ "trocr": "one hundred", "paddle": "two hundred", "tesseract": "zz" }[eng], None))
+    import numpy as np
+    txt, eng, score, votes = cp.consensus_read([np.zeros((40, 300), np.uint8)], handwritten=True, parser=cp.words_to_cents)
+    assert votes == 1
+
+
+def test_deskew_returns_shape_and_noop_on_blank():
+    import check_processor as cp
+    import numpy as np
+    blank = np.full((60, 400), 255, np.uint8)
+    assert cp._deskew(blank).shape == blank.shape
+
+
+def test_micr_multi_prep_finds_valid_routing(monkeypatch):
+    import cv2
+    """A band readable only in the second prep still yields its routing."""
+    import check_processor as cp
+    preps = iter(["garbage soup no runs", "x |021000021| ~12345678~ 0007"])
+    monkeypatch.setattr(cp, "_ocr", lambda img, psm=7, whitelist=None: next(preps, ""))
+    # minimal check-like canvas
+    import numpy as np
+    img = np.full((600, 1200, 3), 255, np.uint8)
+    out = cp.extract_check(cv2.imencode(".png", img)[1].tobytes())
+    assert out.routing_number == "021000021"  # passes ABA checksum
+
+
+# ---- Fuzzy legal-line vocabulary (ICR misreads of cursive) --------------------
+
+def test_words_to_cents_fused_words():
+    import check_processor as cp
+    assert cp.words_to_cents("Seven hundredfifteen and 39/100") == 71539
+
+
+def test_words_to_cents_and_cents_tail():
+    import check_processor as cp
+    # "… and 39" tail = cents (no /100 fraction printed)
+    assert cp.words_to_cents("Two hundred six and 41") == 20641
+
+
+def test_words_to_cents_fuzzy_misread_unique():
+    import check_processor as cp
+    # "hunderd" is a unique near-miss for hundred
+    assert cp.words_to_cents("Six hunderd twenty and 05/100") == 62005
+
+
+def test_check_date_fuzzy_month():
+    import check_processor as cp
+    assert cp.parse_check_date("DATE: Augu. 11, 2019") == "2019-08-11"
+    assert cp.parse_check_date("no date here") is None
+
+
+def test_consensus_parsed_beats_garbage_majority():
+    import check_processor as cp, numpy as np
+    monkey_calls = {"paddle": "$715,39", "tesseract": "= gib ber ish"}
+    import check_processor
+    orig = check_processor._engine_read
+    check_processor._engine_read = lambda eng, img, psm=7, whitelist=None: (monkey_calls.get(eng, ""), 0.9)
+    try:
+        txt, eng, score, votes = cp.consensus_read([np.zeros((40, 300), np.uint8)], handwritten=False,
+                                                   parser=cp.parse_courtesy)
+        assert cp.parse_courtesy(txt) == 71539
+    finally:
+        check_processor._engine_read = orig

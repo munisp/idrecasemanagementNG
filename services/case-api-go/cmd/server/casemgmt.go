@@ -227,9 +227,70 @@ func (s *server) ensureChecklist(tenant, caseID string) {
 	}
 }
 
+// autoChecklist ticks checklist items whose truth is already in the
+// database — case managers should only ever tick what the platform cannot
+// know. done_by records the evidence ('auto: <reason>'), never a user.
+// Idempotent: only OPEN items flip, and only when the predicate holds.
+func (s *server) autoChecklist(r *http.Request, tenant, caseID string) {
+	t := sanitizeTenant(tenant)
+	rules := []struct {
+		item string
+		sql  string
+		args []any
+	}{
+		{"claim docs uploaded",
+			fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM tenant_%s.documents WHERE case_id=$1)`, t), []any{caseID}},
+		{"both sealed offers submitted",
+			fmt.Sprintf(`SELECT count(*) >= 2 FROM tenant_%s.sealed_offers WHERE case_id=$1`, t), []any{caseID}},
+		{"parties notified",
+			`SELECT EXISTS(SELECT 1 FROM public.qa_reviews WHERE tenant=$1 AND case_id=$2 AND status='SENT')`,
+			[]any{tenant, caseID}},
+		{"payment within 30cd confirmed",
+			`SELECT EXISTS(SELECT 1 FROM public.invoices WHERE tenant=$1 AND case_id=$2 AND status='PAID')`,
+			[]any{tenant, caseID}},
+		{"both parties fees invoiced",
+			`SELECT count(DISTINCT party) >= 2 FROM public.invoices WHERE tenant=$1 AND case_id=$2`,
+			[]any{tenant, caseID}},
+	}
+	for _, rule := range rules {
+		var ok bool
+		if err := s.db.QueryRow(r.Context(), rule.sql, rule.args...).Scan(&ok); err != nil || !ok {
+			continue
+		}
+		_, _ = s.db.Exec(r.Context(), `
+			UPDATE public.case_checklists SET done=true, done_by=$4, done_at=now()
+			WHERE tenant=$1 AND case_id=$2 AND item=$3 AND NOT done`,
+			tenant, caseID, rule.item, "auto: evidence in platform records")
+	}
+}
+
+// maybeAdvanceStatus moves a case forward when platform facts say so —
+// the status column follows events, not manual edits. Forward-only along
+// the canonical lifecycle; terminal/manual states (Ineligible, Dismissed,
+// Withdrawn, Plan Opt-Out) are never touched, and Temporal's own
+// transitions simply win the race when the workflow runs first.
+func (s *server) maybeAdvanceStatus(r *http.Request, tenant, caseID string) {
+	t := sanitizeTenant(tenant)
+	// All case invoices PAID while awaiting payment => funds settled.
+	_, _ = s.db.Exec(r.Context(), fmt.Sprintf(`
+		UPDATE tenant_%s.cases SET status='CLOSED_PAID', updated_at=now()
+		WHERE id=$1 AND status='PAYMENT_PENDING'
+		  AND EXISTS(SELECT 1 FROM public.invoices WHERE tenant=$2 AND case_id=$1)
+		  AND NOT EXISTS(SELECT 1 FROM public.invoices WHERE tenant=$2 AND case_id=$1 AND status='OPEN')`, t),
+		caseID, tenant)
+	// A generated determination letter while under review => determined.
+	_, _ = s.db.Exec(r.Context(), fmt.Sprintf(`
+		UPDATE tenant_%s.cases SET status='DETERMINED', updated_at=now()
+		WHERE id=$1 AND status='IN_REVIEW'
+		  AND EXISTS(SELECT 1 FROM tenant_%s.documents d
+		             WHERE d.case_id=$1 AND d.object_key ILIKE '%%determination%%')`, t, t),
+		caseID)
+}
+
 func (s *server) getChecklist(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	id := chi.URLParam(r, "caseId")
+	s.autoChecklist(r, tenant, id)
 	out, _ := s.queryRows(r, `
 		SELECT id, stage, item, required, done, COALESCE(done_by,'') AS done_by, done_at
 		FROM public.case_checklists WHERE tenant=$1 AND case_id=$2

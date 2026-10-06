@@ -406,3 +406,37 @@ button.mini.danger{color:#991b1b;border-color:#fecaca}
 .ops-alerts{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 4px}
 .ops-alert{display:inline-flex;gap:6px;align-items:center;padding:6px 12px;border-radius:10px;background:var(--amber-50);color:var(--amber-700);border:1px solid #e8d9b0;text-decoration:none;font-size:12.5px}
 .ops-alert b{font-size:14px}
+
+/* ---- Reports runner (runnable report cards) ---- */
+.rpt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;margin:12px 0}
+.rpt-card{border:1px solid var(--border-subtle);border-radius:var(--radius-card);padding:14px 18px;background:var(--surface-raised)}
+.rpt-card h2{margin:0 0 4px;font-size:16px}
+.rpt-card>button{margin:8px 0}
+.rpt-card table{margin-top:10px}
+
+/* ---- Deliverables (contract delivery cards) ---- */
+.deliv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:12px 0}
+.deliv-card{border:1px solid var(--border-subtle);border-radius:var(--radius-card);padding:12px 16px;background:var(--surface-raised);display:flex;flex-direction:column;gap:6px}
+.deliv-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.deliv-meta{font-size:13px}
+.deliv-card>button{align-self:flex-start}
+
+/* ---- Calendar month grid ---- */
+.cal-nav{display:flex;align-items:center;gap:10px;margin:10px 0}
+.cal-nav b{min-width:150px;text-align:center}
+.cal-legend{margin-left:auto;display:flex;gap:6px}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:14px}
+.cal-dow{text-align:center;font-size:12px;font-weight:600;color:var(--ink-muted);padding:4px 0;text-transform:uppercase;letter-spacing:.04em}
+.cal-cell{min-height:86px;border:1px solid var(--border-subtle);border-radius:8px;padding:4px 6px;background:var(--surface-raised);overflow:hidden}
+.cal-cell.empty{border:none;background:transparent}
+.cal-cell.today{border-color:var(--brand,#2E6B52);box-shadow:inset 0 0 0 1px var(--brand,#2E6B52)}
+.cal-cell.has-items{background:var(--surface)}
+.cal-num{font-size:12px;font-weight:600;color:var(--ink-muted)}
+.cal-cell.today .cal-num{color:var(--brand,#2E6B52)}
+.cal-chip{display:block;font-size:11.5px;border-radius:5px;padding:1px 6px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-chip a{color:inherit;text-decoration:none}
+.cal-chip-stat{background:#B08D3E22;color:#7A5C2E;border-left:3px solid #B08D3E}
+.cal-chip-clock{background:#1D4E7E18;color:#1D4E7E;border-left:3px solid #1D4E7E}
+.cal-chip-task{background:#2E6B5218;color:#2E6B52;border-left:3px solid #2E6B52}
+.cal-more{font-size:11px}
+@media (max-width:900px){.cal-cell{min-height:60px}.cal-chip{font-size:10px}}

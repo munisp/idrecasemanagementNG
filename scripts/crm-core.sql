@@ -86,3 +86,12 @@ CREATE INDEX IF NOT EXISTS notes_record ON public.notes (tenant, record_type, re
 -- IF NOT EXISTS is a no-op against a public.notes that already existed from
 -- an earlier deploy of a schema version before `stream` was added.
 ALTER TABLE public.notes ADD COLUMN IF NOT EXISTS stream text NOT NULL DEFAULT 'internal';
+
+-- Human-readable task references (TASK-2026-00042): users cite these in
+-- calls/emails; raw UUIDs are unusable. Monotonic per platform.
+CREATE SEQUENCE IF NOT EXISTS public.task_ref_seq;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS task_ref text;
+UPDATE public.tasks SET task_ref = 'TASK-' || to_char(created_at,'YYYY') || '-' ||
+       lpad(nextval('public.task_ref_seq')::text, 5, '0')
+WHERE task_ref IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS tasks_ref_uq ON public.tasks (tenant, task_ref);

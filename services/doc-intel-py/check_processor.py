@@ -99,9 +99,22 @@ def parse_check_date(text: str) -> str | None:
     else:
         m = re.search(r"([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{2,4})",
                       text, re.IGNORECASE)
-        if not m or m.group(1)[:3].lower() not in MONTHS:
+        if not m:
             return None
-        mo, dy, yr = MONTHS[m.group(1)[:3].lower()], int(m.group(2)), int(m.group(3))
+        mo_key = m.group(1)[:3].lower()
+        if mo_key not in MONTHS:
+            # ICR misreads of month names ("Clug." for "Aug.") — fuzzy-match
+            # the 3-letter prefix against the 12-month closed vocabulary.
+            import difflib
+            close = difflib.get_close_matches(mo_key, list(MONTHS), n=2, cutoff=0.5)
+            if not close:
+                return None
+            if len(close) == 2 and (
+                    difflib.SequenceMatcher(None, mo_key, close[0]).ratio()
+                    - difflib.SequenceMatcher(None, mo_key, close[1]).ratio()) < 0.15:
+                return None  # ambiguous misread — no guess
+            mo_key = close[0]
+        mo, dy, yr = MONTHS[mo_key], int(m.group(2)), int(m.group(3))
     yr = yr + 2000 if yr < 100 else yr
     if 1 <= mo <= 12 and 1 <= dy <= 31:
         return f"{yr:04d}-{mo:02d}-{dy:02d}"
@@ -142,16 +155,28 @@ def _paddle():
     if _paddle_tried:
         return _paddle_ocr
     _paddle_tried = True
-    try:
-        from paddleocr import PaddleOCR
-        _paddle_ocr = PaddleOCR(
-            lang="en",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        )
-    except Exception:
-        _paddle_ocr = None
+    # PP-OCRv5 is the compatibility sweet spot: v6-medium inference models
+    # require a bleeding-edge paddlepaddle (strides attribute error on 3.0.x),
+    # so the default pins v5; override with CHECK_PADDLE_OCR_VERSION when the
+    # deployed paddle version supports newer weights.
+    want = os.environ.get("CHECK_PADDLE_OCR_VERSION", "PP-OCRv5")
+    for ver in ([want] if want else []) + ["PP-OCRv5", None]:
+        try:
+            from paddleocr import PaddleOCR
+            kw = dict(lang="en",
+                      use_doc_orientation_classify=False,
+                      use_doc_unwarping=False,
+                      use_textline_orientation=False,
+                      # oneDNN PIR kernels crash on some CPU builds
+                      # (ConvertPirAttribute2RuntimeAttribute); plain CPU
+                      # inference is slower but never crashes intake.
+                      enable_mkldnn=os.environ.get("CHECK_PADDLE_MKLDNN", "0") == "1")
+            if ver:
+                kw["ocr_version"] = ver
+            _paddle_ocr = PaddleOCR(**kw)
+            break
+        except Exception:
+            _paddle_ocr = None
     return _paddle_ocr
 
 
@@ -205,6 +230,131 @@ def _icr_order() -> list[str]:
             "tesseract": ["tesseract"]}.get(_ENGINE, ["trocr", "paddle", "tesseract"])
 
 
+def _deskew(gray: np.ndarray) -> np.ndarray:
+    """Straighten a handwritten zone. Pen lines on a check drift a few degrees;
+    TrOCR/Paddle lose characters on rotated baselines, so estimate the ink
+    angle via minAreaRect and rotate back. No-op (original returned) when the
+    ink mass is too thin to trust an estimate."""
+    try:
+        ink = cv2.threshold(gray, 0, 255,
+                            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+        coords = np.column_stack(np.where(ink > 0))
+        if len(coords) < 200:
+            return gray
+        angle = cv2.minAreaRect(coords)[-1]
+        angle = -(90 + angle) if angle < -45 else -angle
+        if abs(angle) < 0.4 or abs(angle) > 15:  # noise or hopeless — leave it
+            return gray
+        h, w = gray.shape
+        m = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+        return cv2.warpAffine(gray, m, (w, h), flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        return gray
+
+
+def _paddle_page(img: np.ndarray) -> list[dict]:
+    """One PaddleOCR pass over the WHOLE check, returning every line with its
+    normalized center (cx, cy in 0..1) and model score. Detection on a full
+    page is far more reliable than on tiny pre-cropped zones — the detector
+    needs layout context. Callers assign lines to fields by coordinates."""
+    ocr = _paddle()
+    if ocr is None:
+        return []
+    try:
+        h, w = img.shape[:2]
+        out: list[dict] = []
+        for res in ocr.predict(img):
+            polys = res.get("rec_polys", [])
+            texts = res.get("rec_texts", [])
+            scores = res.get("rec_scores", [])
+            for poly, txt, sc in zip(polys, texts, scores):
+                pts = np.asarray(poly).reshape(-1, 2)
+                out.append({"text": str(txt), "score": float(sc),
+                            "cx": float(pts[:, 0].mean()) / w,
+                            "cy": float(pts[:, 1].mean()) / h,
+                            "x0": float(pts[:, 0].min()) / w})
+        return out
+    except Exception:
+        return []
+
+
+def _zone_lines(page: list[dict], x0: float, x1: float,
+                y0: float, y1: float) -> str:
+    """Join full-page OCR lines whose centers fall in a zone, in reading
+    order (top-to-bottom, left-to-right)."""
+    sel = [l for l in page if x0 <= l["cx"] <= x1 and y0 <= l["cy"] <= y1]
+    sel.sort(key=lambda l: (l["cy"], l["x0"]))
+    return " ".join(l["text"] for l in sel).strip()
+
+
+def _engine_read(eng: str, img: np.ndarray, psm: int = 7,
+                 whitelist: str | None = None) -> tuple[str, float | None]:
+    if eng == "trocr":
+        return _trocr_read(img)
+    if eng == "paddle":
+        return _paddle_read(img)
+    return _ocr(_prep(img), psm=psm, whitelist=whitelist), None
+
+
+def consensus_read(variants: list[np.ndarray], handwritten: bool,
+                   parser=None, psm: int = 7,
+                   whitelist: str | None = None,
+                   precomputed: list[tuple[str, str, float | None]] | None = None
+                   ) -> tuple[str, str, float | None, int]:
+    """Ensemble read: EVERY docked engine reads EVERY preprocessing variant,
+    and the winner is chosen by parsed-value consensus, not first-nonempty.
+
+    Accuracy posture (>97% field target): a single engine's first guess is the
+    old behavior and is where errors come from. Here a candidate only wins
+    outright when ≥2 independent reads agree on the parsed value (e.g. both
+    TrOCR and Tesseract legal-line reads parse to the same cents). With no
+    agreement, the highest-model-score candidate wins but the voter count is
+    reported so the rollup can stay below "high" confidence.
+
+    Returns (text, engines_used, best_model_score, agreeing_voters).
+    `parser` normalizes a raw string to a comparable value (e.g.
+    words_to_cents); without one, raw stripped text is compared.
+    """
+    engines = _icr_order() if handwritten else \
+        (["paddle", "tesseract"] if _ENGINE != "tesseract" else ["tesseract"])
+    cands: list[tuple[str, str, float | None, object]] = []
+    for txt, eng, score in (precomputed or []):
+        if txt:
+            cands.append((txt, eng, score, parser(txt) if parser else txt.strip()))
+    for img in variants:
+        if img is None:
+            continue
+        for eng in engines:
+            try:
+                txt, score = _engine_read(eng, img, psm=psm, whitelist=whitelist)
+            except Exception:
+                continue
+            if not txt:
+                continue
+            val = parser(txt) if parser else txt.strip()
+            cands.append((txt, eng, score, val))
+    if not cands:
+        return "", "none", None, 0
+    # group by parsed value; None-valued reads group per-text (still count)
+    groups: dict[object, list[int]] = {}
+    for i, (_, _, _, val) in enumerate(cands):
+        key = val if val not in (None, "") else f"raw:{cands[i][0].strip()}"
+        groups.setdefault(key, []).append(i)
+    best_key = max(groups, key=lambda k: (
+        # a successfully parsed value ALWAYS beats a larger group of
+        # unparseable raw reads — two engines agreeing on garbage is garbage
+        1 if not str(k).startswith("raw:") else 0,
+        len(groups[k]),
+        max((cands[i][2] or 0.0) for i in groups[k]),
+    ))
+    winners = groups[best_key]
+    bi = max(winners, key=lambda i: (cands[i][2] or 0.0))
+    txt, eng, score, _ = cands[bi]
+    engines_used = "+".join(sorted({cands[i][1] for i in winners}))
+    return txt, engines_used, score, len(winners)
+
+
 def read_handwritten_line(img: np.ndarray) -> tuple[str, str, float | None]:
     """Legal-amount line ICR: (text, engine_used, model_score). Engines expect
     a natural (non-binarized) crop — aggressive thresholding destroys cursive
@@ -248,6 +398,8 @@ def parse_micr(band_text: str) -> tuple[str | None, str | None, str | None]:
         t = t.replace(sym, "~")
     for sym in ("⑇", "C", "c"):
         t = t.replace(sym, "^")
+    # paddle/full-page reads approximate E-13B separators as ':' and '"'
+    t = t.replace('"', "|").replace("''", "|").replace(":", "|")
     runs = re.findall(r"\d{3,17}", t)
     # The routing number is the only 9-digit field AND the only field with a
     # mathematical validity constraint — both must hold. A 9-digit run that
@@ -271,19 +423,64 @@ def routing_checksum_valid(routing: str) -> bool:
     return (3*(d[0]+d[3]+d[6]) + 7*(d[1]+d[4]+d[7]) + (d[2]+d[5]+d[8])) % 10 == 0
 
 
+_VOCAB = list(WORDS) + list(SCALES)
+
+
+def _vocab_match(tok: str) -> str | None:
+    """Map a misread token to the nearest number word. ICR on cursive fuses
+    and distorts words ('hundredfifteen', 'Leven'); the legal-line vocabulary
+    is tiny and closed, so fuzzy matching against it is safe and accurate.
+    Two passes: exact substring segmentation of fused words, then
+    difflib nearest-match with a uniqueness margin."""
+    import difflib
+    if tok in _VOCAB:
+        return tok
+    # fused word: "hundredfifteen" -> hundred + fifteen (greedy split)
+    for i in range(len(tok), 3, -1):
+        head, rest = tok[:i], tok[i:]
+        if head in _VOCAB and rest:
+            m = _vocab_match(rest)
+            if m:
+                return head + " " + m
+    close = difflib.get_close_matches(tok, _VOCAB, n=2, cutoff=0.65)
+    if len(close) == 1 or (
+            len(close) == 2
+            and difflib.SequenceMatcher(None, tok, close[0]).ratio()
+            - difflib.SequenceMatcher(None, tok, close[1]).ratio() > 0.1):
+        return close[0]
+    return None
+
+
 def words_to_cents(text: str) -> int | None:
     """'One thousand two hundred & 34/100' -> 120034.
     Requires at least one number WORD or an explicit n/100 fraction — a bare
     digit run inside OCR garbage (cursive misread as digits) must NOT turn
-    into a phantom amount."""
+    into a phantom amount. ICR-misread words are fuzzy-matched against the
+    closed legal-amount vocabulary. The standard '… and NN' or 'and NN/100'
+    tail is parsed as cents."""
     toks = re.findall(r"[a-z]+|\d+/\d+|\d+", text.lower())
+    # expand fuzzy word tokens into canonical vocabulary tokens
+    expanded: list[str] = []
+    for t in toks:
+        if re.fullmatch(r"[a-z]+", t) and t not in _VOCAB and t not in ("and", "dollars", "dollar"):
+            m = _vocab_match(t)
+            if m:
+                expanded.extend(m.split())
+                continue
+        expanded.append(t)
+    toks = expanded
     total, current, cents = 0, 0, None
     saw_word = False
-    for t in toks:
+    for i, t in enumerate(toks):
         if re.fullmatch(r"\d+/\d+", t):
             cents = int(t.split("/")[0])
         elif re.fullmatch(r"\d+", t):
-            current += int(t)
+            # "… and NN" at the end of the legal line = cents, not dollars
+            if (i >= 2 and toks[i - 1] == "and" and i == len(toks) - 1
+                    and len(t) <= 2 and saw_word):
+                cents = int(t)
+            else:
+                current += int(t)
         elif t in WORDS:
             current += WORDS[t]; saw_word = True
         elif t in SCALES:
@@ -316,7 +513,18 @@ def parse_courtesy(text: str) -> int | None:
 
 def extract_check(image_bytes: bytes) -> CheckExtraction:
     """Full extraction from a check photo/scan. Never raises on image quirks —
-    returns low-confidence partial results instead of failing the intake."""
+    returns low-confidence partial results instead of failing the intake.
+
+    Accuracy architecture (field-accuracy target >97%):
+      * every field is read by an engine ENSEMBLE over several preprocessing
+        variants (natural grayscale, deskewed, ink-isolated), and the winner
+        is chosen by parsed-value consensus — not first-nonempty;
+      * courtesy and legal amounts cross-validate: agreement is the strongest
+        accuracy signal available on a check and earns "high" confidence;
+        disagreement routes to REVIEW, never to auto-match;
+      * MICR is accepted only on checksum-valid 9-digit runs, read across
+        three band preps (CLAHE+Otsu, adaptive, raw) before giving up.
+    """
     out = CheckExtraction()
     try:
         img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
@@ -324,60 +532,90 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
             out.detail["error"] = "undecodable image"
             return out
         h, w = img.shape[:2]
+        # Full-page paddle pass once — every field gets its lines by
+        # coordinates. This is the single biggest accuracy win: the detector
+        # sees full layout context instead of guessing inside tight crops.
+        page = _paddle_page(img)
 
-        # 1) MICR band: bottom strip, digit-biased OCR.
-        #    NOTE: the whitelist must not contain a single quote — pytesseract
-        #    passes it to tesseract's config parser, where ' closes the value
-        #    ("No closing quotation" error). On-us approximations are handled
-        #    by parse_micr's symbol map instead.
-        # MICR print is often light-gray magnetic ink: CLAHE + Otsu recovers
-        # far more contrast than adaptive thresholding (verified on samples).
+        def gray_up(zone: np.ndarray, fx: float = 2) -> np.ndarray:
+            g = cv2.cvtColor(zone, cv2.COLOR_BGR2GRAY) if zone.ndim == 3 else zone
+            return cv2.resize(g, None, fx=fx, fy=fx, interpolation=cv2.INTER_CUBIC)
+
+        # 1) MICR band: three preps, checksum-validated parse on each; first
+        #    prep yielding a valid routing wins. A band that never yields one
+        #    is a miss -> REVIEW (miss, don't guess).
         band = img[int(h*0.85):int(h*0.99), int(w*0.02):int(w*0.98)]
-        bg = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
-        bg = cv2.resize(bg, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-        bg = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(bg)
-        _, band_bw = cv2.threshold(bg, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        micr_txt = _ocr(band_bw, psm=7, whitelist="0123456789⑈⑆⑇⑄ABCDabcd| ")
-        if not micr_txt:
-            micr_txt = _ocr(band_bw, psm=7)
-        out.routing_number, out.account_number, out.check_number = parse_micr(micr_txt)
-        out.detail["micr_raw"] = micr_txt
-        if out.routing_number and not routing_checksum_valid(out.routing_number):
-            out.detail["routing_checksum"] = "failed"
-            out.routing_number = None  # don't trust a failed checksum
+        bg = cv2.resize(gray_up(band, 1), None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(bg)
+        _, bw_otsu = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        bw_adapt = cv2.adaptiveThreshold(bg, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                         cv2.THRESH_BINARY, 41, 13)
+        micr_raws: list[str] = []
+        for prep in (bw_otsu, bw_adapt, bg):
+            txt = _ocr(prep, psm=7, whitelist="0123456789⑈⑆⑇⑄ABCDabcd| ") \
+                  or _ocr(prep, psm=7)
+            if txt:
+                micr_raws.append(txt)
+            r, a, c = parse_micr(txt)
+            if r and routing_checksum_valid(r):
+                out.routing_number, out.account_number, out.check_number = r, a, c
+                break
+            # keep best-effort account/check even when routing misses
+            out.account_number = out.account_number or a
+            out.check_number = out.check_number or c
+        # full-page paddle read of the band (E-13B symbols surface as ':'/'"')
+        band_lines = [l for l in page if l["cy"] >= 0.85]
+        if band_lines and not out.routing_number:
+            ptxt = " ".join(l["text"] for l in sorted(band_lines, key=lambda l: l["x0"]))
+            micr_raws.append(ptxt)
+            r, a, c = parse_micr(ptxt)
+            if r and routing_checksum_valid(r):
+                out.routing_number, out.account_number, out.check_number = r, a, c
+        out.detail["micr_raw"] = " || ".join(micr_raws)
+        out.detail["micr_preps_tried"] = len(micr_raws)
 
-        # 2) Courtesy amount box: right-middle region. Often handwritten too
-        #    (not just printed digits) — ink-isolate, then engines.
-        box_zone = img[int(h*0.28):int(h*0.52), int(w*0.58):w]
-        box_txt, box_eng, box_score = read_printed_zone(box_zone, psm=7,
-                                                        whitelist="$0123456789.,*")
-        if not parse_courtesy(box_txt):
-            # retry on ink-isolated pixels — handwriting washes out otherwise
-            alt, _, _ = read_handwritten_line(_ink(box_zone))
-            if parse_courtesy(alt):
-                box_txt, box_eng = alt, box_eng + "+ink"
+        # 2) Courtesy amount box — usually HANDWRITTEN, so it goes through the
+        #    handwriting engine chain (TrOCR first), not the printed chain.
+        #    Tighter box ($ anchor to right edge) cuts payee-line bleed.
+        box_zone = img[int(h*0.28):int(h*0.55), int(w*0.68):w]
+        page_box = _zone_lines(page, 0.68, 1.0, 0.28, 0.55)
+        box_pre = [(" ".join(l["text"] for l in page if 0.68 <= l["cx"] <= 1.0 and 0.28 <= l["cy"] <= 0.55),
+                    "paddle-page",
+                    (sum(l["score"] for l in page if 0.68 <= l["cx"] <= 1.0 and 0.28 <= l["cy"] <= 0.55)
+                     / max(1, len([l for l in page if 0.68 <= l["cx"] <= 1.0 and 0.28 <= l["cy"] <= 0.55])))
+                    if page_box else None)]
+        box_txt, box_eng, box_score, box_votes = consensus_read(
+            [gray_up(box_zone), _deskew(gray_up(box_zone)), _ink(box_zone)],
+            handwritten=False, parser=parse_courtesy,
+            psm=7, whitelist="$0123456789.,*", precomputed=box_pre)
         out.amount_cents = parse_courtesy(box_txt)
         out.detail["courtesy_raw"] = box_txt
         out.detail["courtesy_engine"] = box_eng
+        out.detail["courtesy_votes"] = box_votes
         if box_score is not None:
             out.detail["courtesy_score"] = round(box_score, 3)
 
-        # 3) Legal amount line — handwriting ICR. The legal line sits below
-        #    the payee line (~45-62% of check height). TrOCR/Paddle get the
-        #    natural grayscale crop; tesseract fallback gets _ink() pixels via
-        #    read_handwritten_line's own fallback path.
+        # 3) Legal amount line — handwriting ICR ensemble over natural /
+        #    deskewed / ink-isolated variants, consensus on parsed cents.
+        # Legal line position varies by check template: classic layouts put it
+        # right under the payee (~0.45-0.63 h), modern ones lower (~0.58-0.75).
+        # Read both bands; the cents-parsing consensus picks the real line.
         line_zone = img[int(h*0.45):int(h*0.63), int(w*0.05):int(w*0.80)]
-        line_gray = cv2.cvtColor(line_zone, cv2.COLOR_BGR2GRAY)
-        line_nat = cv2.resize(line_gray, None, fx=2, fy=2,
-                              interpolation=cv2.INTER_CUBIC)
-        legal_txt, legal_eng, legal_score = read_handwritten_line(line_nat)
-        if not legal_txt or not words_to_cents(legal_txt):
-            ink_txt, _, _ = read_handwritten_line(_ink(line_zone))
-            if words_to_cents(ink_txt) is not None:
-                legal_txt, legal_eng = ink_txt, legal_eng + "+ink"
+        line_zone2 = img[int(h*0.58):int(h*0.75), int(w*0.05):int(w*0.85)]
+        line_nat = gray_up(line_zone)
+        line_nat2 = gray_up(line_zone2)
+        legal_lines = [l for l in page if 0.12 <= l["cx"] <= 0.80 and 0.44 <= l["cy"] <= 0.75
+                       and not re.search(r"(?i)dollars|payable|order", l["text"])]
+        legal_pre = [(" ".join(l["text"] for l in legal_lines), "paddle-page",
+                      sum(l["score"] for l in legal_lines) / len(legal_lines))] if legal_lines else []
+        legal_txt, legal_eng, legal_score, legal_votes = consensus_read(
+            [line_nat, _deskew(line_nat), _ink(line_zone),
+             line_nat2, _deskew(line_nat2), _ink(line_zone2)],
+            handwritten=True, parser=words_to_cents, precomputed=legal_pre)
         out.legal_amount_cents = words_to_cents(legal_txt)
         out.detail["legal_raw"] = legal_txt
         out.detail["legal_engine"] = legal_eng
+        out.detail["legal_votes"] = legal_votes
         if legal_score is not None:
             out.detail["legal_score"] = round(legal_score, 3)
 
@@ -385,29 +623,66 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
                 and out.amount_cents != out.legal_amount_cents:
             out.amount_mismatch = True
 
-        # 4) Date / memo zones (printed or handwritten; month names allowed)
-        date_txt, _, _ = read_printed_zone(img[int(h*0.12):int(h*0.32), int(w*0.55):w], psm=7)
-        if not parse_check_date(date_txt):
-            alt, _, _ = read_handwritten_line(_ink(img[int(h*0.12):int(h*0.32), int(w*0.55):w]))
-            if parse_check_date(alt):
-                date_txt = alt
+        # 4) Payee line ("Pay to the order of ___") — often handwritten.
+        payee_zone = img[int(h*0.30):int(h*0.46), int(w*0.10):int(w*0.62)]
+        payee_lines = [l for l in page if 0.10 <= l["cx"] <= 0.62 and 0.30 <= l["cy"] <= 0.46
+                       and "order" not in l["text"].lower() and "pay to" not in l["text"].lower()]
+        payee_pre = [(" ".join(l["text"] for l in payee_lines), "paddle-page",
+                      sum(l["score"] for l in payee_lines) / len(payee_lines))] if payee_lines else []
+        payee_txt, _, _, _ = consensus_read(
+            [_deskew(gray_up(payee_zone)), _ink(payee_zone)], handwritten=True,
+            precomputed=payee_pre)
+        payee_txt = re.sub(r"(?i)\b(pay( to)?( the)?( order( of)?)?)\b[:\s]*", "",
+                           payee_txt).strip(" :.-")
+        if payee_txt and re.search(r"[A-Za-z]{3,}", payee_txt):
+            out.payer_name = payee_txt[:80]
+        out.detail["payee_raw"] = payee_txt
+
+        # 5) Date / memo zones (printed or handwritten; month names allowed).
+        #    Date sits anywhere in the upper-right quadrant depending on the
+        #    template — read the whole quadrant, not a narrow strip.
+        date_zone = img[int(h*0.10):int(h*0.42), int(w*0.55):w]
+        date_lines = [l for l in page if 0.55 <= l["cx"] <= 1.0 and 0.10 <= l["cy"] <= 0.42]
+        date_pre = [(" ".join(l["text"] for l in date_lines), "paddle-page",
+                     sum(l["score"] for l in date_lines) / len(date_lines))] if date_lines else []
+        date_txt, _, _, _ = consensus_read(
+            [gray_up(date_zone), _ink(date_zone)], handwritten=True,
+            parser=parse_check_date, precomputed=date_pre)
         out.check_date = parse_check_date(date_txt)
-        memo_txt, _, _ = read_printed_zone(img[int(h*0.62):int(h*0.80), 0:int(w*0.5)], psm=7)
-        if not memo_txt:
-            memo_txt, _, _ = read_handwritten_line(_ink(img[int(h*0.62):int(h*0.80), 0:int(w*0.5)]))
+        memo_zone = img[int(h*0.60):int(h*0.82), 0:int(w*0.55)]
+        memo_lines = [l for l in page if 0.0 <= l["cx"] <= 0.55 and 0.60 <= l["cy"] <= 0.82
+                      and not re.search(r"(?i)payable|branches|account n|dollars|signature",
+                                        l["text"])]
+        memo_named = [l for l in memo_lines if re.search(r"(?i)\bmemo\b", l["text"])]
+        pick = memo_named or memo_lines
+        memo_pre = [(" ".join(l["text"] for l in pick), "paddle-page",
+                     sum(l["score"] for l in pick) / len(pick))] if pick else []
+        memo_txt, _, _, _ = consensus_read(
+            [gray_up(memo_zone), _ink(memo_zone)], handwritten=True,
+            precomputed=memo_pre)
+        memo_txt = re.sub(r"(?i)^memo\b[:\s]*", "", memo_txt).strip()
         if memo_txt:
             out.memo = memo_txt[:120]
         out.detail["date_raw"], out.detail["memo_raw"] = date_txt, memo_txt
 
-        # 5) Confidence rollup — model scores count where available. A
-        #    low-scoring courtesy read (<0.85) doesn't earn "high".
+        # 6) Confidence rollup. The decisive signal is courtesy/legal
+        #    agreement — two independent readings of the same amount agreeing
+        #    is stronger than any single model score. Ensemble voter counts
+        #    gate "high" when only one amount was readable.
         core = [out.routing_number, out.check_number, out.amount_cents]
         hits = sum(1 for x in core if x)
         strong = box_score is None or box_score >= 0.85
-        if hits == 3 and not out.amount_mismatch and strong:
+        amounts_agree = (out.amount_cents is not None
+                         and out.amount_cents == out.legal_amount_cents)
+        consensus_ok = box_votes >= 2 and (legal_votes >= 2 or legal_votes == 0)
+        if amounts_agree and hits == 3 and not out.amount_mismatch and strong:
             out.confidence = "high"
-        elif hits >= 2:
+        elif amounts_agree and hits >= 2 and strong:
+            out.confidence = "high"
+        elif hits >= 2 and consensus_ok and not out.amount_mismatch:
             out.confidence = "medium"
+        elif hits >= 1:
+            out.confidence = "medium" if amounts_agree else "low"
         else:
             out.confidence = "low"
     except Exception as e:  # never kill intake on an image quirk

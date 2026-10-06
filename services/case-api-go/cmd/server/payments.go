@@ -225,6 +225,8 @@ func (s *server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 			tenant, invID, sess.PaymentIntent).Scan(&amount, &party)
 		s.finEvent(r, tenant, caseID, invID, "PAYMENT_PAID", "IN", amount, party, sess.PaymentIntent, "stripe-webhook")
 		s.postPaymentLedger(tenant, caseID, sess.PaymentIntent, party, uint64(amount), false) // clearing → escrow
+		s.maybeAdvanceStatus(r, tenant, caseID) // invoice PAID => case may close
+		s.autoChecklist(r, tenant, caseID)
 		s.logActivity(r.Context(), tenant, caseID, "PAYMENT_RECEIVED",
 			fmt.Sprintf("Card payment of $%d.%02d received via Stripe (%s) — invoice settled, ledger posted", amount/100, amount%100, sess.PaymentIntent))
 		// Program rules (invoice.settled) — settlement is already committed in

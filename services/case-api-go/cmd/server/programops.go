@@ -147,6 +147,9 @@ func (s *server) settleInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 	s.finEvent(r, tenant, caseID, invID, kind, dir, amount, party, in.RemittanceRef,
 		r.Context().Value(ctxPrincipal{}).(principal).Subject)
+	// Money moved — the case status and checklist follow the fact.
+	s.maybeAdvanceStatus(r, tenant, caseID)
+	s.autoChecklist(r, tenant, caseID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 

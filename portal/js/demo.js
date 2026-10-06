@@ -79,9 +79,9 @@
     { id: "l2", name: "J. Park", organization: "Humana", source: "WEB", summary: "Payer onboarding inquiry — batch disputes.", status: "CONVERTED" },
   ];
   const TASKS = [
-    { id: "t1", subject: "Call Riverbend re: missing remit page", case_id: "c1", due_date: "2026-10-01", status: "OPEN" },
-    { id: "t2", subject: "Review batch eligibility for CMS-TX-2026-01490", case_id: "", due_date: "2026-10-02", status: "OPEN" },
-    { id: "t3", subject: "Verify escrow posting for admin fee", case_id: "c3", due_date: "2026-09-29", status: "DONE" },
+    { id: "t1", task_ref: "TASK-2026-00041", subject: "Call Riverbend re: missing remit page", case_id: "c1", due_date: "2026-10-01", status: "OPEN" },
+    { id: "t2", task_ref: "TASK-2026-00042", subject: "Review batch eligibility for CMS-TX-2026-01490", case_id: "", due_date: "2026-10-02", status: "OPEN" },
+    { id: "t3", task_ref: "TASK-2026-00039", subject: "Verify escrow posting for admin fee", case_id: "c3", due_date: "2026-09-29", status: "DONE" },
   ];
   const CAL = [
     { type: "OFFER_WINDOW_CLOSE", title: "Offer window closes (10bd)", case_id: "c2", case_number: "CMS-TX-2026-01479", due_date: "2026-10-07" },
@@ -148,7 +148,9 @@
       if (/\/cases\/[\w-]+\/activities$/.test(p)) return json(ACTS);
       if (/\/cases\/[\w-]+\/checklist$/.test(p)) return json(CHECKLIST);
       if (/\/cases\/[\w-]+\/relationships$/.test(p)) return json(RELS);
-      if (/\/cases\/[\w-]+$/.test(p)) { const id = p.split("/")[2]; return json(CASES.find((c) => c.id === id) || CASES[0]); }
+          if (/\/cases\/[\w-]+$/.test(p)) { const id = p.split("/")[2]; const cc = CASES.find((c) => c.id === id) || CASES[0];
+      return json({ ...cc, internal_status: "In Review", agency_status: "Submitted",
+        program_dates: { received_at: "2026-09-20", plan_notified_at: "2026-09-25" } }); }
       if (/\/cases(\?|$)/.test(p)) {
         // Mirror the backend's keyset pagination over the fixture set.
         const qs = new URLSearchParams(p.split("?")[1] || "");
@@ -255,7 +257,9 @@
     } });
     if (/\/cases\/[\w-]+\/program-date$/.test(p)) return json({ status: "recorded" });
     if (/\/cases\/[\w-]+\/status$/.test(p)) return json({ status: "updated" });
-    if (/\/cases\/[\w-]+\/eligibility$/.test(p)) return json({ review_id: "er1", result: "ELIGIBLE", reason: "", evidence: { threshold_min_cents: 2500000 } });
+        if (/\/cases\/[\w-]+\/eligibility$/.test(p) && (!opts.method || opts.method === "GET")) return json({ reviews: [
+      { id: "er1", result: "ELIGIBLE", reason: "", evidence: { threshold_min_cents: 2500000 }, decided_by: "maria.chen", created_at: d(30) }] });
+if (/\/cases\/[\w-]+\/eligibility$/.test(p) && opts.method === "POST") return json({ review_id: "er1", result: "ELIGIBLE", reason: "", evidence: { threshold_min_cents: 2500000 } });
     if (/\/cases\/[\w-]+\/correspondence$/.test(p) && opts.method === "POST") {
       const b = JSON.parse(opts.body || "{}");
       return json(b.template === "dismissal"
@@ -290,7 +294,10 @@
       body: "Dear provider,\n\nFollowing preliminary review, case CMS-TX-2026-01482 does not meet the program eligibility threshold…",
       to_recipients: ["billing@provider.example"], cc_recipients: ["cdr@ahca.example"], status: "PENDING", drafted_by: "maria.chen", created_at: d(2) });
     if (/\/qa$/.test(p)) return json({ queue: [
-      { id: "qa1", case_id: "c1", artifact: "dismissal", channel: "email", subject: "Dismissal CMS-TX-2026-01482: FL AHCA", status: "PENDING", drafted_by: "maria.chen", created_at: d(2) }] });
+      { id: "qa1", case_id: "c1", artifact: "dismissal", channel: "email", subject: "Dismissal CMS-TX-2026-01482: FL AHCA", status: "PENDING", drafted_by: "maria.chen", created_at: d(2) }] ,
+      recent: [
+        { id: "qa0", case_id: "c3", subject: "Determination letter FL26-014", status: "SENT", drafted_by: "maria.chen", reviewed_by: "atty.rogers", reviewed_at: d(26) },
+        { id: "qa9", case_id: "c5", subject: "Payment chase FL26-009", status: "REJECTED", drafted_by: "sam.ortiz", reviewed_by: "atty.rogers", reviewed_at: d(50) }] });
     if (/\/intake$/.test(p) && opts.method === "POST") return json({ intake_id: "in2", status: "INSTRUCTED" });
     if (/\/intake\/[\w-]+\/advance$/.test(p)) return json({ status: JSON.parse(opts.body || "{}").status });
     if (/\/intake$/.test(p)) return json({ intake: [

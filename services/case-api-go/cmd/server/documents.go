@@ -203,6 +203,10 @@ func (s *server) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	if quarantined {
 		analysis = "BLOCKED"
 	}
+	// Docs on the docket — checklist items whose predicate is "docs exist"
+	// (and any status that follows from them) update themselves.
+	s.autoChecklist(r, tenant, caseID)
+	s.maybeAdvanceStatus(r, tenant, caseID)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"doc_id": docID, "version": version, "bytes": len(raw),
 		"analysis": analysis,

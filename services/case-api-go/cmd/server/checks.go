@@ -204,6 +204,7 @@ func (s *server) clearCheck(w http.ResponseWriter, r *http.Request) {
 
 	s.finEvent(r, tenant, caseID, invID, "PAYMENT_PAID", "IN", amount, "",
 		orDash(in.RemittanceRef), "check-cleared")
+	s.maybeAdvanceStatus(r, tenant, caseID) // all fees PAID => CLOSED_PAID
 	s.logActivity(r.Context(), tenant, caseID, "CHECK_CLEARED",
 		fmt.Sprintf("Check %s cleared — invoice %s paid ($%d.%02d)", checkID, invID, amount/100, amount%100))
 	s.fireEventRules(r, tenant, "invoice.settled", map[string]any{
@@ -218,7 +219,9 @@ func (s *server) listChecks(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	status := r.URL.Query().Get("status")
 	rows, err := s.queryRows(r, `
-		SELECT id, status, check_number, amount_cents, confidence, amount_mismatch,
+		SELECT id, status, check_number, amount_cents AS courtesy_amount_cents, legal_amount_cents, memo,
+		       COALESCE(to_char(check_date,'YYYY-MM-DD'),'') AS check_date,
+		       routing_number, account_number, confidence, amount_mismatch,
 		       invoice_id, case_id, payer_name, created_at
 		FROM public.checks WHERE tenant=$1 AND ($2='' OR status=$2)
 		ORDER BY created_at DESC LIMIT 200`, tenant, status)

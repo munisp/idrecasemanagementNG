@@ -184,10 +184,13 @@ const CrmViews = (() => {
           <input name="subject" placeholder="Subject" required />
           <input name="case_id" placeholder="Case ID (optional)" />
           <input name="due_date" type="date" /><button>Create</button></form>`;
-      const rowsHtml = (list) => list.map((t) => `<tr><td>${esc(t.subject)}</td><td>${esc(t.case_id)}</td><td>${esc(t.due_date)}</td>
+      const rowsHtml = (list) => list.map((t) => `<tr><td class="mono">${esc(t.task_ref || "—")}</td>
+          <td>${esc(t.subject)}</td>
+          <td>${t.case_id ? `<a href="#/cases/${esc(t.case_id)}" class="mono">${esc(t.case_id.slice(0, 8))}…</a>` : "—"}</td>
+          <td>${esc(t.due_date)}</td>
           <td>${badge(t.status)}</td>
           <td>${t.status === "OPEN" ? `<button onclick="CrmViews.done('${t.id}')">Done</button>` : ""}</td></tr>`).join("");
-      html += state.loaded.length ? `<table id="task-tb"><thead><tr><th>Subject</th><th>Case</th><th>Due</th><th>Status</th><th></th></tr></thead>
+      html += state.loaded.length ? `<table id="task-tb"><thead><tr><th>Ref</th><th>Subject</th><th>Case</th><th>Due</th><th>Status</th><th></th></tr></thead>
         <tbody>${rowsHtml(state.loaded)}</tbody></table>` + pagerHtml("task", state.loaded.length, state.total, state.next)
         : `<p class="muted">No open tasks.</p>`;
       afterRender(() => bindPager("task", "#task-tb tbody", state,
@@ -196,7 +199,7 @@ const CrmViews = (() => {
       afterRender(() => document.querySelector("#nt")?.addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const f = Object.fromEntries(new FormData(ev.target));
-        try { await Api.crm.createTask(f); UI.toast("Task created"); App.rerender(); }
+        try { const r = await Api.crm.createTask(f); UI.toast(`Task ${r.task_ref || ""} created`.trim()); App.rerender(); }
         catch (e) { UI.toast(e.message, { kind: "warn" }); }
       }));
       return html;
@@ -223,21 +226,83 @@ const CrmViews = (() => {
     } catch (e) { return err(e); }
   }
 
-  // ---- Calendar (deadline agenda) --------------------------------------------------------
+  // ---- Calendar (month grid + agenda) ----------------------------------------------------
+  // Statutory deadlines deserve a real calendar, not a list: month grid with
+  // color-coded chips (statutory clocks = brass, tasks = green, offers = blue),
+  // today highlighted, month navigation, and an agenda under it.
+  function calMonthGrid(items, y, m) {
+    const first = new Date(y, m, 1);
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const byDay = {};
+    items.forEach((i) => {
+      const d = String(i.due_date || "").slice(0, 10);
+      if (d) (byDay[d] ||= []).push(i);
+    });
+    const chipCls = (t) => t === "OFFER_WINDOW_CLOSE" ? "cal-chip-stat"
+      : /TASK/i.test(t || "") ? "cal-chip-task" : "cal-chip-clock";
+    let cells = "";
+    for (let i = 0; i < first.getDay(); i++) cells += `<div class="cal-cell empty"></div>`;
+    for (let d = 1; d <= daysInMonth; d++) {
+      const iso = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      const dayItems = byDay[iso] || [];
+      cells += `<div class="cal-cell ${iso === todayISO ? "today" : ""} ${dayItems.length ? "has-items" : ""}">
+        <span class="cal-num">${d}</span>
+        ${dayItems.slice(0, 3).map((i) => `<div class="cal-chip ${chipCls(i.type)}"
+            title="${esc(i.type)} — ${esc(i.title)}">${i.case_id
+              ? `<a href="#/cases/${esc(i.case_id)}">${esc(i.case_number || i.title)}</a>`
+              : esc(i.title)}</div>`).join("")}
+        ${dayItems.length > 3 ? `<span class="muted cal-more">+${dayItems.length - 3} more</span>` : ""}</div>`;
+    }
+    return `<div class="cal-grid">
+      ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => `<div class="cal-dow">${d}</div>`).join("")}
+      ${cells}</div>`;
+  }
+
   async function calendar() {
     try {
       const items = await Api.cm.calendar();
       items.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+      const now = new Date();
+      const state = { y: now.getFullYear(), m: now.getMonth() };
+      const render = () => {
+        const label = new Date(state.y, state.m, 1)
+          .toLocaleDateString("en-US", { month: "long", year: "numeric" });
+        const grid = document.getElementById("cal-grid-box");
+        if (grid) {
+          grid.innerHTML = calMonthGrid(items, state.y, state.m);
+          document.getElementById("cal-month-label").textContent = label;
+        }
+      };
+      afterRender(() => {
+        render();
+        document.getElementById("cal-prev")?.addEventListener("click", () => {
+          state.m--; if (state.m < 0) { state.m = 11; state.y--; } render();
+        });
+        document.getElementById("cal-next")?.addEventListener("click", () => {
+          state.m++; if (state.m > 11) { state.m = 0; state.y++; } render();
+        });
+      });
       const groups = {};
-      items.forEach((i) => (groups[i.due_date] ||= []).push(i));
+      items.forEach((i) => (groups[String(i.due_date).slice(0, 10)] ||= []).push(i));
       const day = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-      const html = Object.keys(groups).map((d) =>
-        `<div class="cal-day"><h3>${day(d)}</h3>` + groups[d].map((i) =>
+      const agenda = Object.keys(groups).map((dd) =>
+        `<div class="cal-day"><h3>${day(dd)}</h3>` + groups[dd].map((i) =>
           `<div class="cal-item ${i.type === "OFFER_WINDOW_CLOSE" ? "cal-stat" : "cal-task"}">
              ${badge(i.type)} ${i.case_number
                ? `<a href="#/cases/${i.case_id}">${esc(i.case_number)}</a> — ` : ""}${esc(i.title)}</div>`).join("") +
         `</div>`).join("");
-      return `<h1>Calendar</h1>` + (html || `<p class="muted">No upcoming deadlines or tasks.</p>`);
+      return `<div class="view-head"><h1>Calendar</h1>
+        <span class="muted">statutory clocks, offer windows, and task due dates</span></div>
+        <div class="cal-nav">
+          <button class="mini" id="cal-prev">‹ prev</button>
+          <b id="cal-month-label"></b>
+          <button class="mini" id="cal-next">next ›</button>
+          <span class="cal-legend"><span class="cal-chip cal-chip-stat">statutory</span>
+            <span class="cal-chip cal-chip-clock">clock</span>
+            <span class="cal-chip cal-chip-task">task</span></span></div>
+        <div id="cal-grid-box"></div>
+        <h2>Agenda</h2>` + (agenda || `<p class="muted">No upcoming deadlines or tasks.</p>`);
     } catch (e) { return `<h1>Calendar</h1>` + err(e); }
   }
 

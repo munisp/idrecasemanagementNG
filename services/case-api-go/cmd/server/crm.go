@@ -288,7 +288,7 @@ func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	p := r.Context().Value(ctxPrincipal{}).(principal)
 	mine := r.URL.Query().Get("mine") == "true"
-	q := `SELECT id, subject, COALESCE(case_id,''), COALESCE(assignee,''),
+	q := `SELECT id, COALESCE(task_ref,''), subject, COALESCE(case_id,''), COALESCE(assignee,''),
 	             COALESCE(to_char(due_date,'YYYY-MM-DD'),''), status, created_at
 	      FROM public.tasks WHERE tenant=$1`
 	args := []any{tenant}
@@ -299,7 +299,7 @@ func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pageParams(r, 100, 500)
 	var total int
 	if err := s.db.QueryRow(r.Context(),
-		strings.Replace(q, `SELECT id, subject, COALESCE(case_id,''), COALESCE(assignee,''),
+		strings.Replace(q, `SELECT id, COALESCE(task_ref,''), subject, COALESCE(case_id,''), COALESCE(assignee,''),
 	             COALESCE(to_char(due_date,'YYYY-MM-DD'),''), status, created_at`, `SELECT count(*)`, 1), args...).Scan(&total); err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
@@ -313,11 +313,11 @@ func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, subj, caseID, assignee, due, status string
+		var id, ref, subj, caseID, assignee, due, status string
 		var at time.Time
-		if rows.Scan(&id, &subj, &caseID, &assignee, &due, &status, &at) == nil {
+		if rows.Scan(&id, &ref, &subj, &caseID, &assignee, &due, &status, &at) == nil {
 			out = append(out, map[string]any{
-				"id": id, "subject": subj, "case_id": caseID, "assignee": assignee,
+				"id": id, "task_ref": ref, "subject": subj, "case_id": caseID, "assignee": assignee,
 				"due_date": due, "status": status, "created_at": at,
 			})
 		}
@@ -339,16 +339,22 @@ func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"subject required"}`, http.StatusBadRequest)
 		return
 	}
-	var id string
+	var id, ref string
 	err := s.db.QueryRow(r.Context(), `
-		INSERT INTO public.tasks (tenant, subject, case_id, assignee, due_date, created_by)
-		VALUES ($1,$2,NULLIF($3,''),$4,NULLIF($5,'')::date,$6) RETURNING id`,
-		tenant, in.Subject, in.CaseID, in.Assignee, in.DueDate, p.Subject).Scan(&id)
+		WITH ins AS (
+			INSERT INTO public.tasks (tenant, subject, case_id, assignee, due_date, created_by)
+			VALUES ($1,$2,NULLIF($3,''),$4,NULLIF($5,'')::date,$6) RETURNING id
+		)
+		UPDATE public.tasks t
+		SET task_ref = 'TASK-' || to_char(now(),'YYYY') || '-' ||
+		       lpad(nextval('public.task_ref_seq')::text, 5, '0')
+		FROM ins WHERE t.id = ins.id RETURNING t.id, t.task_ref`,
+		tenant, in.Subject, in.CaseID, in.Assignee, in.DueDate, p.Subject).Scan(&id, &ref)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "task_ref": ref})
 }
 
 func (s *server) completeTask(w http.ResponseWriter, r *http.Request) {
