@@ -58,3 +58,36 @@ CREATE TABLE IF NOT EXISTS public.ledger_reconciliation (
     ran_at         timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ledger_recon_tenant ON public.ledger_reconciliation (tenant, ran_at DESC);
+-- Physical check intake: photo/scan -> OCR/ICR extraction -> invoice match ->
+-- clearing confirmation -> settlement. Images are vault-sealed in MinIO
+-- (checks/<id>.bin); this table holds metadata + extraction + match state.
+CREATE TABLE IF NOT EXISTS public.checks (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant          text NOT NULL,
+    status          text NOT NULL DEFAULT 'RECEIVED',
+        -- RECEIVED -> PROCESSED -> MATCHED | REVIEW -> CLEARED | REJECTED | RETURNED
+    object_key      text NOT NULL,          -- MinIO key of the sealed image
+    content_type    text,
+    -- extracted fields (doc-intel check_processor)
+    routing_number  text,
+    account_number  text,
+    check_number    text,
+    amount_cents    bigint,                 -- courtesy amount (numeric box)
+    legal_amount_cents bigint,              -- written line (ICR; may differ)
+    amount_mismatch boolean NOT NULL DEFAULT false,
+    check_date      date,
+    payer_name      text,
+    memo            text,                   -- often carries the invoice number
+    confidence      text NOT NULL DEFAULT 'low',   -- high|medium|low
+    extraction      jsonb NOT NULL DEFAULT '{}',   -- raw OCR/ICR detail (audit)
+    -- match + settlement
+    invoice_id      uuid REFERENCES public.invoices(id),
+    case_id         text,
+    payment_id      uuid,
+    matched_by      text,                   -- memo_invoice_no|amount|manual
+    cleared_at      timestamptz,            -- funds confirmed (bank/lockbox)
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS checks_tenant ON public.checks (tenant, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS checks_invoice ON public.checks (invoice_id);

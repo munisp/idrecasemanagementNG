@@ -21,6 +21,7 @@ from opensearchpy import OpenSearch
 
 from pipeline import bytes_to_pages, ooxml_safe, run_pipeline, sniff_doc_kind
 from rules_engine import expand_template, fire_rules, load_rules
+from check_processor import extract_check
 
 
 def load_manifest_schemas(tenant: str) -> dict:
@@ -316,6 +317,34 @@ def mark(evt: dict, status: str) -> None:
         )
 
 
+def process_check(evt: dict) -> None:
+    """Physical check intake: vault-sealed image -> MICR/OCR/ICR extraction ->
+    results posted back to case-api, which does invoice matching."""
+    check_id = evt["check_id"]
+    try:
+        raw = fetch_and_decrypt(evt["tenant"], evt["object_key"])
+        result = extract_check(raw)
+        resp = httpx.post(
+            f"{TEMPORAL_SIGNAL_URL}/v1/tenants/{evt['tenant']}/internal/checks/{check_id}/result",
+            json=result.as_dict(),
+            headers={"Authorization": f"Bearer {os.environ.get('WORKER_TOKEN','')}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        print(f"check {check_id}: extracted conf={result.confidence}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"check {check_id} extraction failed: {exc}", file=sys.stderr, flush=True)
+        try:
+            httpx.post(
+                f"{TEMPORAL_SIGNAL_URL}/v1/tenants/{evt['tenant']}/internal/checks/{check_id}/result",
+                json={"confidence": "low", "detail": {"error": str(exc)}},
+                headers={"Authorization": f"Bearer {os.environ.get('WORKER_TOKEN','')}"},
+                timeout=30,
+            )
+        except Exception:
+            pass
+
+
 def main() -> None:
     consumer = Consumer({
         "bootstrap.servers": os.environ.get("KAFKA_BROKERS", "localhost:9092"),
@@ -341,6 +370,8 @@ def main() -> None:
             evt = json.loads(msg.value())
             if evt.get("type") == "doc.uploaded":
                 process(evt)
+            elif evt.get("type") == "check.uploaded":
+                process_check(evt)
             consumer.commit(msg)
         except Exception as exc:  # noqa: BLE001
             print(f"doc-intel error: {exc}", file=sys.stderr, flush=True)

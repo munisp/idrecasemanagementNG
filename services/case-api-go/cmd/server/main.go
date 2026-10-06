@@ -466,6 +466,10 @@ func main() {
 		r.Post("/cases/{caseId}/assign", s.assignCase)
 		r.Post("/cases/{caseId}/escalate", s.escalateCase)
 		r.Get("/internal/ledger/balances", s.ledgerBalances) // worker-token: reconciliation job
+		r.Post("/checks", s.uploadCheck)                        // physical check photo/scan intake
+		r.Get("/checks", s.listChecks)                          // review queue
+		r.Post("/checks/{checkId}/clear", s.clearCheck)         // funds-cleared settlement
+		r.Post("/internal/checks/{checkId}/result", s.checkResult) // worker-token: doc-intel OCR
 		r.Post("/cases/relate", s.relateCases)
 		r.Get("/cases/{caseId}/relationships", s.caseRelationships)
 		r.Get("/cases/{caseId}/checklist", s.getChecklist)
