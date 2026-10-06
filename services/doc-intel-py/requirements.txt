@@ -1,6 +1,8 @@
 docling>=2.20          # IBM Docling: PDF/DOCX/HTML parsing, layout, tables, figures
 paddlepaddle>=3.0
-paddleocr>=3.0         # fallback OCR for low-text-coverage (scanned) pages
+paddleocr>=3.0         # fallback OCR for low-text-coverage (scanned) pages + check intake printed zones
+transformers>=4.45     # TrOCR handwriting ICR (legal amount line); CPU torch already in the image
+pytesseract            # MICR band (E-13B charset) + last-resort OCR fallback; needs apt tesseract-ocr
 openai>=1.40           # OpenAI-compatible client for VLM endpoints (PaddleOCR-VL / Qwen2.5-VL via vLLM)
 confluent-kafka>=2.5
 minio>=7.2
@@ -9,5 +11,4 @@ psycopg[binary]>=3.2
 opensearch-py>=2.6
 pyyaml>=6.0
 pillow>=10.4
-pytesseract
 opencv-python-headless

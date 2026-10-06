@@ -8,14 +8,28 @@ Symbols map: ⑈=transit(A)  ⑆=on-us(B)  ⑇=amount(C)  ⑄=dash(D) — Tesser
 approximates them as letters/symbols; we parse the digit runs around them.
 
 Amounts: the courtesy box (printed digits) OCRs well. The legal line is
-usually HANDWRITTEN — true ICR needs a trained model; Tesseract gives a
-best-effort reading which we mark low confidence. A courtesy/legal mismatch
-always routes the check to REVIEW (never auto-match on conflicting amounts).
+usually HANDWRITTEN — this module reads it with a real ICR engine chain:
+
+  1. TrOCR (microsoft/trocr-base-handwritten) — a transformer trained on the
+     IAM handwriting corpus; the strongest open-source single-line ICR model.
+     Used when `transformers` is installed (CPU torch already ships in the
+     doc-intel image for Docling).
+  2. PaddleOCR (PP-OCRv4, already docked for scanned-page OCR) — strong on
+     printed/clear hand-print and returns real per-line confidence scores.
+  3. Tesseract — last-resort fallback; reading marked low confidence.
+
+Engine selection: CHECK_ICR_ENGINE=trocr|paddle|tesseract|auto (default auto
+= first available in the order above). MICR stays on Tesseract regardless:
+Paddle/TrOCR charsets don't cover the E-13B ⑈⑆⑇ symbols, and the digit-run
+parser + ABA checksum already self-validates.
+
+A courtesy/legal mismatch always routes the check to REVIEW (never
+auto-match on conflicting amounts).
 """
 
 from __future__ import annotations
 
-import io
+import os
 import re
 from dataclasses import dataclass, field, asdict
 
@@ -52,7 +66,8 @@ class CheckExtraction:
 
 
 def _prep(img: np.ndarray) -> np.ndarray:
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # accepts BGR or already-grayscale crops (ICR chain passes grayscale)
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     g = cv2.resize(g, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     return cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                  cv2.THRESH_BINARY, 35, 11)
@@ -63,6 +78,117 @@ def _ocr(img: np.ndarray, psm: int = 6, whitelist: str | None = None) -> str:
     if whitelist:
         cfg += f" -c tessedit_char_whitelist={whitelist}"
     return pytesseract.image_to_string(img, config=cfg).strip()
+
+
+# ---------------------------------------------------------------------------
+# ICR/OCR engine chain. All engines are lazily docked on first use and any
+# import/load failure degrades to the next engine — an extraction returns
+# low-confidence partials rather than ever failing intake.
+# ---------------------------------------------------------------------------
+
+_ENGINE = os.environ.get("CHECK_ICR_ENGINE", "auto").lower()
+_paddle_ocr = None
+_paddle_tried = False
+_trocr_pipe = None
+_trocr_tried = False
+
+
+def _paddle():
+    """Dock PaddleOCR (already a service dependency). Light config: crops are
+    pre-zoned, so orientation classify/unwarping are wasted cycles."""
+    global _paddle_ocr, _paddle_tried
+    if _paddle_tried:
+        return _paddle_ocr
+    _paddle_tried = True
+    try:
+        from paddleocr import PaddleOCR
+        _paddle_ocr = PaddleOCR(
+            lang="en",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        )
+    except Exception:
+        _paddle_ocr = None
+    return _paddle_ocr
+
+
+def _trocr():
+    """Dock TrOCR handwriting pipeline if transformers is installed."""
+    global _trocr_pipe, _trocr_tried
+    if _trocr_tried:
+        return _trocr_pipe
+    _trocr_tried = True
+    try:
+        from transformers import pipeline
+        _trocr_pipe = pipeline("image-to-text",
+                               model="microsoft/trocr-base-handwritten")
+    except Exception:
+        _trocr_pipe = None
+    return _trocr_pipe
+
+
+def _paddle_read(img: np.ndarray) -> tuple[str, float | None]:
+    """Returns (joined_text, mean_rec_score). PaddleOCR 3.x predict() yields
+    result dicts with rec_texts / rec_scores."""
+    ocr = _paddle()
+    if ocr is None:
+        return "", None
+    try:
+        texts: list[str] = []
+        scores: list[float] = []
+        for res in ocr.predict(img):
+            texts.extend(res.get("rec_texts", []))
+            scores.extend(float(s) for s in res.get("rec_scores", []))
+        return " ".join(texts).strip(), (sum(scores) / len(scores) if scores else None)
+    except Exception:
+        return "", None
+
+
+def _trocr_read(img: np.ndarray) -> tuple[str, float | None]:
+    pipe = _trocr()
+    if pipe is None:
+        return "", None
+    try:
+        pil = Image.fromarray(img)
+        out = pipe(pil)
+        return (out[0].get("generated_text", "") if out else "").strip(), None
+    except Exception:
+        return "", None
+
+
+def _icr_order() -> list[str]:
+    return {"trocr": ["trocr", "paddle", "tesseract"],
+            "paddle": ["paddle", "tesseract"],
+            "tesseract": ["tesseract"]}.get(_ENGINE, ["trocr", "paddle", "tesseract"])
+
+
+def read_handwritten_line(img: np.ndarray) -> tuple[str, str, float | None]:
+    """Legal-amount line ICR: (text, engine_used, model_score). Engines expect
+    a natural (non-binarized) crop — aggressive thresholding destroys cursive
+    strokes, so callers pass a grayscale/upscaled region, not _prep() output."""
+    for eng in _icr_order():
+        if eng == "trocr":
+            txt, score = _trocr_read(img)
+        elif eng == "paddle":
+            txt, score = _paddle_read(img)
+        else:
+            txt, score = _ocr(_prep(img), psm=7), None
+        if txt:
+            return txt, eng, score
+    return "", "none", None
+
+
+def read_printed_zone(img: np.ndarray, psm: int = 7,
+                      whitelist: str | None = None) -> tuple[str, str, float | None]:
+    """Printed zones (courtesy box, date, memo): Paddle first for real
+    confidence scores, Tesseract fallback (whitelist support kept for the
+    courtesy box's narrow charset)."""
+    if _ENGINE != "tesseract":
+        txt, score = _paddle_read(img)
+        if txt:
+            return txt, "paddle", score
+    return _ocr(_prep(img), psm=psm, whitelist=whitelist), "tesseract", None
 
 
 def parse_micr(band_text: str) -> tuple[str | None, str | None, str | None]:
@@ -146,41 +272,54 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
             out.detail["routing_checksum"] = "failed"
             out.routing_number = None  # don't trust a failed checksum
 
-        # 2) Courtesy amount box: right-middle region
-        box = _prep(img[int(h*0.30):int(h*0.60), int(w*0.60):w])
-        box_txt = _ocr(box, psm=7, whitelist="$0123456789.,*")
+        # 2) Courtesy amount box: right-middle region (printed — Paddle first,
+        #    narrow-charset Tesseract fallback)
+        box_txt, box_eng, box_score = read_printed_zone(
+            img[int(h*0.30):int(h*0.60), int(w*0.60):w], psm=7,
+            whitelist="$0123456789.,*")
         out.amount_cents = parse_courtesy(box_txt)
         out.detail["courtesy_raw"] = box_txt
+        out.detail["courtesy_engine"] = box_eng
+        if box_score is not None:
+            out.detail["courtesy_score"] = round(box_score, 3)
 
-        # 3) Legal amount line (handwriting — ICR best-effort)
-        line = _prep(img[int(h*0.35):int(h*0.55), int(w*0.05):int(w*0.75)])
-        legal_txt = _ocr(line, psm=7)
+        # 3) Legal amount line — handwriting ICR. Natural grayscale crop
+        #    (upscaled), NOT _prep()'s adaptive threshold: binarization
+        #    destroys cursive strokes that TrOCR/Paddle rely on.
+        line_zone = img[int(h*0.35):int(h*0.55), int(w*0.05):int(w*0.75)]
+        line_gray = cv2.cvtColor(line_zone, cv2.COLOR_BGR2GRAY)
+        line_nat = cv2.resize(line_gray, None, fx=2, fy=2,
+                              interpolation=cv2.INTER_CUBIC)
+        legal_txt, legal_eng, legal_score = read_handwritten_line(line_nat)
         out.legal_amount_cents = words_to_cents(legal_txt)
         out.detail["legal_raw"] = legal_txt
+        out.detail["legal_engine"] = legal_eng
+        if legal_score is not None:
+            out.detail["legal_score"] = round(legal_score, 3)
 
         if out.amount_cents and out.legal_amount_cents \
                 and out.amount_cents != out.legal_amount_cents:
             out.amount_mismatch = True
 
-        # 4) Date / payee / memo zones
-        date_zone = _prep(img[int(h*0.12):int(h*0.30), int(w*0.55):w])
-        date_txt = _ocr(date_zone, psm=7)
+        # 4) Date / memo zones (printed or hand-printed)
+        date_txt, _, _ = read_printed_zone(img[int(h*0.12):int(h*0.30), int(w*0.55):w], psm=7)
         m = re.search(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})", date_txt)
         if m:
             mo, dy, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
             yr = yr + 2000 if yr < 100 else yr
             if 1 <= mo <= 12 and 1 <= dy <= 31:
                 out.check_date = f"{yr:04d}-{mo:02d}-{dy:02d}"
-        memo_zone = _prep(img[int(h*0.62):int(h*0.80), 0:int(w*0.5)])
-        memo_txt = _ocr(memo_zone, psm=7)
+        memo_txt, _, _ = read_printed_zone(img[int(h*0.62):int(h*0.80), 0:int(w*0.5)], psm=7)
         if memo_txt:
             out.memo = memo_txt[:120]
         out.detail["date_raw"], out.detail["memo_raw"] = date_txt, memo_txt
 
-        # 5) Confidence rollup
+        # 5) Confidence rollup — model scores count where available. A
+        #    low-scoring courtesy read (<0.85) doesn't earn "high".
         core = [out.routing_number, out.check_number, out.amount_cents]
         hits = sum(1 for x in core if x)
-        if hits == 3 and not out.amount_mismatch:
+        strong = box_score is None or box_score >= 0.85
+        if hits == 3 and not out.amount_mismatch and strong:
             out.confidence = "high"
         elif hits >= 2:
             out.confidence = "medium"
