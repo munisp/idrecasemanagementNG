@@ -272,7 +272,7 @@ func (s *server) findDuplicates(r *http.Request, tenant, providerID, payerID str
 	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
 		SELECT case_number FROM tenant_%s.cases
 		WHERE provider_id=$1 AND payer_id=$2
-		  AND ABS(qpa_cents - $3) < GREATEST(5000, $3/20)
+		  AND ABS(coalesce(benchmark_cents, qpa_cents) - $3) < GREATEST(5000, $3/20)
 		  AND opened_at > now() - interval '90 days'
 		LIMIT 5`, sanitizeTenant(tenant)), providerID, payerID, qpaCents)
 	if err != nil {
@@ -354,7 +354,7 @@ func (s *server) generateLetter(w http.ResponseWriter, r *http.Request) {
 	var cn, sl string
 	var qpa int64
 	if err := s.db.QueryRow(r.Context(), fmt.Sprintf(`
-		SELECT case_number, COALESCE(service_line,''), qpa_cents
+		SELECT case_number, COALESCE(subject_line, service_line,''), coalesce(benchmark_cents, qpa_cents)
 		FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), caseID).
 		Scan(&cn, &sl, &qpa); err != nil {
 		http.Error(w, `{"error":"case not found"}`, http.StatusNotFound)

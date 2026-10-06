@@ -214,5 +214,13 @@
         }
       ]
     }
-  ]
+  ],
+  "features": {
+    "sealed_offers": false,
+    "negotiation_window": true,
+    "medical_review": false,
+    "escrow_fees": true,
+    "voice_console": false,
+    "crm": true
+  }
 }

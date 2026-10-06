@@ -16,6 +16,8 @@ SET config = jsonb_set(config, '{manifest}', $$
     "neutral": "Reviewer", "intake_noun": "Intake Request",
     "amount_label": "QPA", "service_label": "Service line"
   },
+  "features": { "sealed_offers": true, "negotiation_window": true, "medical_review": true,
+                "escrow_fees": true, "voice_console": true, "crm": true },
   "lifecycle": {
     "intake_statuses": [
       {"name": "INSTRUCTED", "label": "Packet requested"},
@@ -86,6 +88,16 @@ VALUES ('tx', 'tx-auto-appraisal', $$
       {"name": "demand_window", "days": 120, "day_type": "calendar", "basis": "loss_notice_at"},
       {"name": "negotiation_window", "days": 75, "day_type": "calendar", "basis": "demand_at"},
       {"name": "umpire_award", "days": 180, "day_type": "calendar", "basis": "umpire_assigned_at"}
+    ],
+    "features": {"sealed_offers": false, "negotiation_window": true, "medical_review": false,
+                 "escrow_fees": true, "voice_console": false, "crm": true},
+    "determination": {"engine": "comparable"},
+    "intake_fields": [
+      {"name": "policy_number", "label": "Policy number", "type": "text", "required": true},
+      {"name": "claim_number", "label": "Claim number", "type": "text", "required": true},
+      {"name": "loss_date", "label": "Date of loss", "type": "date", "required": true},
+      {"name": "loss_type", "label": "Loss type", "type": "select", "required": true,
+       "options": ["COLLISION", "COMPREHENSIVE", "HAIL", "WIND", "WATER", "FIRE", "OTHER"]}
     ]
   },
   "rules": [

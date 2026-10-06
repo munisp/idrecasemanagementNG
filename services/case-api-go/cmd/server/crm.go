@@ -132,7 +132,7 @@ func (s *server) account360(w http.ResponseWriter, r *http.Request) {
 		SELECT id, name, COALESCE(role_title,''), COALESCE(email,''), COALESCE(phone,'')
 		FROM public.contacts WHERE account_id=$1 ORDER BY name`, id)
 	cases, _ := s.queryRows(r, fmt.Sprintf(`
-		SELECT id, case_number, status, service_line FROM tenant_%s.cases
+		SELECT id, case_number, status, coalesce(subject_line, service_line) AS service_line FROM tenant_%s.cases
 		WHERE provider_id=$1 OR payer_id=$1 ORDER BY opened_at DESC LIMIT 50`, sanitizeTenant(tenant)), a.LegalName)
 	notes, _ := s.queryRows(r, `
 		SELECT stream, body, author, created_at FROM public.notes

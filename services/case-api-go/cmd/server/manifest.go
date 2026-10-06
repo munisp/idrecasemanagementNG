@@ -78,6 +78,9 @@ type ProgramManifest struct {
 		Pack      string   `json:"pack"` // object-store prefix, e.g. packs/fl-ahca/letters
 		Templates []string `json:"templates,omitempty"`
 	} `json:"letters,omitempty"`
+	// Features: sector mechanics toggles (phase 6). Absent key = default true
+	// for sealed_offers/negotiation_window (NSA behavior), false otherwise.
+	Features map[string]bool `json:"features,omitempty"`
 	// Roster: neutral eligibility requirements (phase 5).
 	Roster struct {
 		Certifications []string `json:"certifications,omitempty"`
@@ -196,6 +199,15 @@ func validateManifest(m *ProgramManifest) error {
 			}
 		default:
 			return fmt.Errorf("intake_fields.%s: unknown type %q", f.Name, f.Type)
+		}
+	}
+	// Features (phase 6): unknown keys rejected — a typo'd toggle that silently
+	// did nothing would mislabel a sector's statutory mechanics.
+	knownFeatures := map[string]bool{"sealed_offers": true, "negotiation_window": true,
+		"medical_review": true, "escrow_fees": true, "voice_console": true, "crm": true}
+	for k := range m.Features {
+		if !knownFeatures[k] {
+			return fmt.Errorf("features.%s unknown (registered: sealed_offers, negotiation_window, medical_review, escrow_fees, voice_console, crm)", k)
 		}
 	}
 	// Determination engine (phase 3): must be a registered implementation.

@@ -675,8 +675,8 @@ func (s *server) initiateCase(w http.ResponseWriter, r *http.Request) {
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO cases (case_number, status, service_line, plan_type, qpa_cents,
 		                   provider_id, payer_id, open_negotiation_end,
-		                   disputed_amount_cents, num_claims)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		                   disputed_amount_cents, num_claims, subject_line, benchmark_cents)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$3,$5) RETURNING id`,
 		req.CaseNumber, initialStatus, req.ServiceLine, req.PlanType, req.QPACents,
 		req.ProviderID, req.PayerID, req.OpenNegotiationEnd,
 		req.DisputedAmountCents, req.NumClaims).Scan(&caseID)
@@ -825,7 +825,7 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	query := fmt.Sprintf(`SELECT id, case_number, status, service_line, qpa_cents, opened_at
+	query := fmt.Sprintf(`SELECT id, case_number, status, coalesce(subject_line, service_line) AS service_line, coalesce(benchmark_cents, qpa_cents) AS qpa_cents, opened_at
 		             FROM tenant_%s.cases WHERE true%s
 		             ORDER BY %s %s, id DESC LIMIT %d`, tbl, where, sortCol, sortDir, limit+1)
 	if offsetMode {
@@ -865,7 +865,7 @@ func (s *server) getCase(w http.ResponseWriter, r *http.Request) {
 	var details []byte
 	var internal, agency *string
 	err := s.db.QueryRow(r.Context(),
-		fmt.Sprintf(`SELECT id, case_number, status, service_line, qpa_cents, opened_at,
+		fmt.Sprintf(`SELECT id, case_number, status, coalesce(subject_line, service_line) AS service_line, coalesce(benchmark_cents, qpa_cents) AS qpa_cents, opened_at,
 		                    internal_status, agency_status, details
 		             FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), id).
 		Scan(&c.ID, &c.CaseNumber, &c.Status, &c.ServiceLine, &c.QPA, &c.OpenedAt, &internal, &agency, &details)

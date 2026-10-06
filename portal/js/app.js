@@ -110,6 +110,14 @@
     loadManifest: async () => {
       App.manifest = await Api.program.manifest().catch(() => null);
     },
+    // Sector mechanics toggles (manifest features). Defaults preserve NSA
+    // behavior: sealed offers + negotiation window ON, everything else OFF.
+    feature: (name) => {
+      if (!App.manifest) return true; // legacy tenant: everything on (unchanged behavior)
+      const f = App.manifest.features || {};
+      if (name in f) return f[name];
+      return name === "sealed_offers" || name === "negotiation_window"; // NSA defaults
+    },
   };
   await App.loadManifest();
 
@@ -129,7 +137,7 @@
   if (has("FINANCE", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR")) links.push(["#/finance", "◍", "Financials"]);
   links.push(["#/calendar", "▨", "Calendar"]);
   links.push(["#/onboarding", "⚑", "Onboarding"]);
-  if (has("CASE_MANAGER")) links.push(["#/voice", "☎", "Voice console"]);
+  if (has("CASE_MANAGER") && App.feature("voice_console")) links.push(["#/voice", "☎", "Voice console"]);
   if (has("FEDERAL_ADMIN", "STATE_AUDITOR", "PLATFORM_ADMIN")) links.push(["#/reports", "◫", "Reports"]);
   if (has("FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/rules", "§", "Rules"]);
   nav.innerHTML = links.map(([h, i, l]) =>

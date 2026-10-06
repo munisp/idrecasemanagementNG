@@ -47,7 +47,7 @@ func (s *server) renderTemplate(r *http.Request, tenant, caseID, text string) st
 	var caseNumber, providerID, payerID string
 	var qpa int64
 	_ = s.db.QueryRow(r.Context(), fmt.Sprintf(`
-		SELECT case_number, coalesce(provider_id,''), coalesce(payer_id,''), coalesce(qpa_cents,0)
+		SELECT case_number, coalesce(provider_id,''), coalesce(payer_id,''), coalesce(benchmark_cents, qpa_cents,0)
 		FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), caseID).
 		Scan(&caseNumber, &providerID, &payerID, &qpa)
 	repl := map[string]string{

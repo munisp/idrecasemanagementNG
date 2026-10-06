@@ -62,7 +62,7 @@ func (s *server) computeValuation(r *http.Request, tenant, caseID string) (*Valu
 func (s *server) engineQPA(r *http.Request, tenant, caseID string) (*Valuation, error) {
 	var qpa int64
 	if err := s.db.QueryRow(r.Context(), fmt.Sprintf(
-		`SELECT coalesce(qpa_cents,0) FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), caseID).Scan(&qpa); err != nil {
+		`SELECT coalesce(benchmark_cents, qpa_cents,0) FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), caseID).Scan(&qpa); err != nil {
 		return nil, err
 	}
 	return &Valuation{Engine: "qpa", AmountCents: qpa, ComputedAt: time.Now().UTC(),

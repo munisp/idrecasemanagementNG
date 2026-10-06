@@ -378,7 +378,7 @@ const Views = (() => {
       if (can("PARTY") && c.status === "INITIATED")
         acts.push(["Respond filed", () => Api.cases.signal(id, "RESPONSE_FILED", {})]);
       if (can("PARTY") && ["OFFER_WINDOW_OPEN", "INITIATED"].includes(c.status))
-        acts.push(["Submit sealed offer", () => offerForm(id)]);
+        if (App.feature("sealed_offers")) acts.push(["Submit sealed offer", () => offerForm(id)]);
       if (can("PARTY"))
         acts.push(["Mark fees paid", () => Api.cases.signal(id, "FEES_PAID", { party_id: Auth.claims().sub })]);
       if (can("ARBITRATOR"))

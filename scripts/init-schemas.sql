@@ -86,6 +86,12 @@ BEGIN
             service_line text,
             plan_type text,
             qpa_cents bigint,
+            -- NG phase 6: sector-generic twins (subject_line = "loss type",
+            -- "parcel", "service line"…; benchmark_cents = estimate, assessed
+            -- value, QPA…). Labels come from the manifest; legacy columns are
+            -- kept populated for NSA-era readers and external reports.
+            subject_line text,
+            benchmark_cents bigint,
             provider_id text,
             payer_id text,
             open_negotiation_end date,

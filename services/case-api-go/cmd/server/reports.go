@@ -86,7 +86,7 @@ func (s *server) slaReport(w http.ResponseWriter, r *http.Request) {
 func (s *server) summaryReport(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
-		SELECT status, COUNT(*), COALESCE(AVG(qpa_cents),0)
+		SELECT status, COUNT(*), COALESCE(AVG(coalesce(benchmark_cents, qpa_cents)),0)
 		FROM tenant_%s.cases GROUP BY status ORDER BY 2 DESC`, sanitizeTenant(tenant)))
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)

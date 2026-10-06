@@ -57,3 +57,19 @@ VALUES
     ('fl', 'REVIEW_MEDICAL', 'Claims dispute review — medical review required', 57500, '2026-01-01'),
     ('fl', 'FILING',         'Filing fee',                        25000, '2026-01-01')
 ON CONFLICT DO NOTHING;
+
+-- Phase 6: generic evidence fields on existing tenant case tables
+-- (new tenants get these from init-schemas.sql; this backfills old ones).
+DO $$
+DECLARE t text;
+BEGIN
+    FOR t IN SELECT schema_name FROM information_schema.schemata
+             WHERE schema_name LIKE 'tenant\_%' LOOP
+        EXECUTE format('ALTER TABLE %I.cases
+            ADD COLUMN IF NOT EXISTS subject_line text,
+            ADD COLUMN IF NOT EXISTS benchmark_cents bigint', t);
+        EXECUTE format('UPDATE %I.cases SET
+            subject_line   = coalesce(subject_line, service_line),
+            benchmark_cents = coalesce(benchmark_cents, qpa_cents)', t);
+    END LOOP;
+END $$;
