@@ -1,8 +1,11 @@
-"""Temporal workflows — the statutory lifecycle of a federal IDR dispute.
+"""Temporal workflows — the statutory lifecycle of a dispute case.
 
 One long-running workflow per case. Signals = business events, timers =
-statutory clocks (business-day calendar aware). All side effects are
-activities; this module must stay deterministic (replay-safe).
+statutory clocks. Phase durations are resolved from the tenant's Program
+Manifest (clocks + features, loaded once via activity and recorded in
+history, so replay stays deterministic); absent manifest → NSA defaults,
+so legacy healthcare tenants behave exactly as before. All side effects
+are activities; this module must stay deterministic (replay-safe).
 """
 
 from __future__ import annotations
@@ -13,21 +16,14 @@ from datetime import date, timedelta
 from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
-    from calendar_engine import add_business_days
+    import case_clocks
     from activities import (
         set_case_status, post_ledger_transfer, request_lawful_reveal,
         notify_party, flag_cms_breach, run_cms_monthly_report,
+        load_case_clocks,
     )
 
-# 45 CFR Part 149 + 2026 Final Rule statutory clocks (business days / calendar days)
-OPEN_NEGOTIATION_BD = 30
-INITIATION_BD = 4
-RESPONSE_BD = 3
-OFFER_WINDOW_BD = 10
-DETERMINATION_BD = 30
-PAYMENT_CD = 30
-REFUND_BD = 30
-ADMIN_FEE_USD_2026 = 15  # applicability date 2026-06-11
+ACT_TIMEOUT = timedelta(seconds=30)
 
 
 @dataclass
@@ -35,8 +31,8 @@ class CaseInput:
     tenant: str
     case_id: str
     case_number: str
-    open_negotiation_end: str  # YYYY-MM-DD
-    plan_type: str             # FULLY_INSURED | SELF_FUNDED
+    open_negotiation_end: str  # YYYY-MM-DD ("" if the program has no negotiation phase)
+    plan_type: str             # FULLY_INSURED | SELF_FUNDED (healthcare; opaque elsewhere)
 
 
 @workflow.defn(name="IdrCaseWorkflow")
@@ -85,17 +81,35 @@ class IdrCaseWorkflow:
         tenant = inp.tenant
         case = inp.case_id
 
+        # Manifest clocks + features + holidays — loaded once, then fixed in
+        # history. Missing manifest → NSA defaults (legacy tenants unchanged).
+        cfg = await workflow.execute_activity(
+            load_case_clocks, args=[tenant], start_to_close_timeout=ACT_TIMEOUT,
+        )
+        clocks = case_clocks.resolve(cfg.get("clocks"))
+        holidays = {date.fromisoformat(d) for d in cfg.get("holidays", [])}
+        feats = cfg.get("features")  # None = legacy tenant, everything on
+        sealed_offers = case_clocks.feature(feats, "sealed_offers")
+        negotiation_window = case_clocks.feature(feats, "negotiation_window")
+
+        def window(clock_name: str) -> timedelta:
+            """Calendar upper-bound timeout for a manifest clock, from today."""
+            days, day_type = clocks[clock_name]
+            end = case_clocks.deadline(workflow.now().date(), days, day_type, holidays)
+            return timedelta(days=(end - workflow.now().date()).days + 1)
+
         # --- Pre-phase: open negotiation still running ------------------------
-        # The dispute may be registered before the 30bd negotiation period ends.
-        # The workflow then waits durably and OPENS THE DISPUTE AUTOMATICALLY
-        # the moment the negotiation window expires — no manual step, no lapse.
-        neg_end = date.fromisoformat(inp.open_negotiation_end)
+        # Only for programs whose manifest enables negotiation_window. The case
+        # may be registered before the negotiation period ends; the workflow
+        # waits durably and OPENS THE CASE AUTOMATICALLY at expiry.
+        neg_end = date.fromisoformat(inp.open_negotiation_end) \
+            if inp.open_negotiation_end else workflow.now().date()
         today = workflow.now().date()
-        if neg_end > today:
+        if negotiation_window and neg_end > today:
             await workflow.execute_activity(
                 set_case_status, args=[tenant, case, "NEGOTIATION_TRACKED",
-                                       "Registered; awaiting end of open negotiation"],
-                start_to_close_timeout=timedelta(seconds=30),
+                                       "Registered; awaiting end of negotiation window"],
+                start_to_close_timeout=ACT_TIMEOUT,
             )
             remaining = (neg_end - today).days + 1
             try:
@@ -109,120 +123,127 @@ class IdrCaseWorkflow:
                 return await self._close_early(tenant, case, "SETTLED_IN_NEGOTIATION")
             await workflow.execute_activity(
                 set_case_status, args=[tenant, case, "INITIATED",
-                                       "Open negotiation ended — dispute auto-opened by statutory timer"],
-                start_to_close_timeout=timedelta(seconds=30),
+                                       "Negotiation window ended — case auto-opened by statutory timer"],
+                start_to_close_timeout=ACT_TIMEOUT,
             )
         else:
             await workflow.execute_activity(
-                set_case_status, args=[tenant, case, "INITIATED", "IDR initiated"],
-                start_to_close_timeout=timedelta(seconds=30),
+                set_case_status, args=[tenant, case, "INITIATED", "Case initiated"],
+                start_to_close_timeout=ACT_TIMEOUT,
             )
 
-        # --- 3 business days: non-initiating party response ------------------
+        # --- Non-initiating party response (response_window clock) ----------
         try:
             await workflow.wait_condition(
                 lambda: self.response_filed or self.settled_or_withdrawn,
-                timeout=timedelta(days=RESPONSE_BD + 2),  # calendar upper bound of 3bd
+                timeout=window("response_window"),
             )
         except TimeoutError:
             pass  # response optional; clock still advances per rule
         if self.settled_or_withdrawn:
             return await self._close_early(tenant, case, "SETTLEMENT_PRE_ELIGIBILITY")
 
-        # --- 10 business days: offer window (double-blind) --------------------
-        await workflow.execute_activity(
-            set_case_status, args=[tenant, case, "OFFER_WINDOW_OPEN", ""],
-            start_to_close_timeout=timedelta(seconds=30),
-        )
-        await workflow.wait_condition(
-            lambda: len(self.offers_submitted) >= 2 or self.settled_or_withdrawn,
-            timeout=timedelta(days=OFFER_WINDOW_BD + 4),
-        )
-        if self.settled_or_withdrawn:
-            return await self._close_early(tenant, case, "SETTLEMENT_PRE_ELIGIBILITY")
+        # --- Offer window (offer_window clock) — only for sealed-offer programs
+        if sealed_offers:
+            await workflow.execute_activity(
+                set_case_status, args=[tenant, case, "OFFER_WINDOW_OPEN", ""],
+                start_to_close_timeout=ACT_TIMEOUT,
+            )
+            await workflow.wait_condition(
+                lambda: len(self.offers_submitted) >= 2 or self.settled_or_withdrawn,
+                timeout=window("offer_window"),
+            )
+            if self.settled_or_withdrawn:
+                return await self._close_early(tenant, case, "SETTLEMENT_PRE_ELIGIBILITY")
 
-        reveal_reason = "BOTH_SUBMITTED" if len(self.offers_submitted) >= 2 else "WINDOW_EXPIRED"
-        await workflow.execute_activity(
-            request_lawful_reveal, args=[case],
-            start_to_close_timeout=timedelta(seconds=30),
-        )
-        await workflow.execute_activity(
-            set_case_status, args=[tenant, case, "OFFERS_REVEALED", reveal_reason],
-            start_to_close_timeout=timedelta(seconds=30),
-        )
+            reveal_reason = "BOTH_SUBMITTED" if len(self.offers_submitted) >= 2 else "WINDOW_EXPIRED"
+            await workflow.execute_activity(
+                request_lawful_reveal, args=[case],
+                start_to_close_timeout=ACT_TIMEOUT,
+            )
+            await workflow.execute_activity(
+                set_case_status, args=[tenant, case, "OFFERS_REVEALED", reveal_reason],
+                start_to_close_timeout=ACT_TIMEOUT,
+            )
 
-        # --- IDRE selection ----------------------------------------------------
+        # --- Neutral selection (selection_window clock) ----------------------
         await workflow.wait_condition(
             lambda: self.selection_finalized or self.settled_or_withdrawn,
-            timeout=timedelta(days=10),
+            timeout=window("selection_window"),
         )
         if self.settled_or_withdrawn:
             return await self._close_early(tenant, case, "SETTLEMENT_POST_ELIGIBILITY")
 
-        # --- 30 business days: determination -----------------------------------
+        # --- Determination (determination_window clock) -----------------------
         determined = await workflow.wait_condition(
             lambda: self.determination_issued or self.settled_or_withdrawn,
-            timeout=timedelta(days=DETERMINATION_BD + 8),
+            timeout=window("determination_window"),
         )
         if self.settled_or_withdrawn:
             return await self._close_early(tenant, case, "SETTLEMENT_POST_ELIGIBILITY")
         if not determined:
+            d_days, d_type = clocks["determination_window"]
             await workflow.execute_activity(
                 flag_cms_breach,
-                args=[tenant, case, "DETERMINATION_30BD", "IDRE exceeded statutory window"],
-                start_to_close_timeout=timedelta(seconds=30),
+                args=[tenant, case,
+                      f"DETERMINATION_{d_days}{'BD' if d_type == 'business' else 'CD'}",
+                      "Neutral exceeded statutory determination window"],
+                start_to_close_timeout=ACT_TIMEOUT,
             )
             await workflow.wait_condition(lambda: self.determination_issued)
 
-        # --- settle IDRE fees via TigerBeetle (double-entry) --------------------
+        # --- settle neutral fees via TigerBeetle (double-entry) ---------------
         await workflow.execute_activity(
             post_ledger_transfer,
             args=[tenant, {"case_id": case, "kind": "IDRE_FEE_RESERVE",
                            "party_id": "both", "amount_cents": 0, "post_kind": "POST"}],
-            start_to_close_timeout=timedelta(seconds=30),
+            start_to_close_timeout=ACT_TIMEOUT,
         )
 
-        # --- 30 calendar days: payment by non-prevailing party ------------------
+        # --- Payment by non-prevailing party (payment_window clock) -----------
         paid = await workflow.wait_condition(
-            lambda: self.payment_recorded, timeout=timedelta(days=PAYMENT_CD),
+            lambda: self.payment_recorded, timeout=window("payment_window"),
         )
         if not paid:
+            p_days, p_type = clocks["payment_window"]
             await workflow.execute_activity(
                 flag_cms_breach,
-                args=[tenant, case, "PAYMENT_30CD", "prevailing party unpaid"],
-                start_to_close_timeout=timedelta(seconds=30),
+                args=[tenant, case,
+                      f"PAYMENT_{p_days}{'BD' if p_type == 'business' else 'CD'}",
+                      "prevailing party unpaid"],
+                start_to_close_timeout=ACT_TIMEOUT,
             )
             await workflow.wait_condition(lambda: self.payment_recorded)
 
         await workflow.execute_activity(
             set_case_status, args=[tenant, case, "CLOSED_PAID", ""],
-            start_to_close_timeout=timedelta(seconds=30),
+            start_to_close_timeout=ACT_TIMEOUT,
         )
         await workflow.execute_activity(
             notify_party,
             args=[tenant, "voice", "both", "case_closed", {"case_number": inp.case_number}],
-            start_to_close_timeout=timedelta(seconds=30),
+            start_to_close_timeout=ACT_TIMEOUT,
         )
         return "CLOSED_PAID"
 
     async def _close_early(self, tenant: str, case: str, status: str) -> str:
         await workflow.execute_activity(
             set_case_status, args=[tenant, case, status, ""],
-            start_to_close_timeout=timedelta(seconds=30),
+            start_to_close_timeout=ACT_TIMEOUT,
         )
         # refund/void escrow reservations per settlement fee rules
         await workflow.execute_activity(
             post_ledger_transfer,
             args=[tenant, {"case_id": case, "kind": "REFUND", "party_id": "both",
                            "amount_cents": 0, "post_kind": "VOID"}],
-            start_to_close_timeout=timedelta(seconds=30),
+            start_to_close_timeout=ACT_TIMEOUT,
         )
         return status
 
 
 @workflow.defn(name="CmsMonthlyReportWorkflow")
 class CmsMonthlyReportWorkflow:
-    """Cron-scheduled per tenant: CMS monthly report <= 30bd after month end."""
+    """Cron-scheduled per tenant: regulator monthly report after month end."""
 
     @workflow.run
     async def run(self, args: dict) -> str:

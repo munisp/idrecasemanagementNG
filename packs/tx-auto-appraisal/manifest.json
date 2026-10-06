@@ -94,10 +94,11 @@
       "basis": "demand_at"
     },
     {
-      "name": "umpire_award",
+      "name": "determination_window",
       "days": 180,
       "day_type": "calendar",
-      "basis": "umpire_assigned_at"
+      "basis": "umpire_assigned_at",
+      "label": "Umpire award window"
     }
   ],
   "intake_fields": [

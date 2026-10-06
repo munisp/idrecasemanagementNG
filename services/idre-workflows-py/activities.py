@@ -100,6 +100,32 @@ async def flag_cms_breach(tenant: str, case_id: str, clock: str, detail: str) ->
 
 
 @activity.defn
+async def load_case_clocks(tenant: str) -> dict:
+    """Fresh read of the tenant's program manifest clocks + features + holidays.
+
+    Runs once at workflow start; the result is recorded in workflow history so
+    replay is deterministic while the config itself stays hot-swappable for
+    NEW cases (validate-on-write in case-api is the integrity gate).
+    Absent/invalid manifest → empty blocks → NSA defaults (legacy behavior).
+    """
+    out: dict = {"clocks": [], "features": None, "holidays": []}
+    with _conn() as c:
+        row = c.execute(
+            "SELECT config->'manifest' FROM public.program_rules"
+            " WHERE tenant=%s AND config ? 'manifest'", (tenant,)
+        ).fetchone()
+        if row and isinstance(row[0], dict):
+            m = row[0]
+            out["clocks"] = m.get("clocks") or []
+            out["features"] = m.get("features")  # None = no manifest features block
+        rows = c.execute(
+            "SELECT day::text FROM public.holidays WHERE tenant IN (%s,'*')", (tenant,)
+        ).fetchall()
+        out["holidays"] = [r[0] for r in rows]
+    return out
+
+
+@activity.defn
 async def run_cms_monthly_report(tenant: str, month: str) -> str:
     """Trigger the Spark gold-zone CMS report job; returns the report object key."""
     async with httpx.AsyncClient(timeout=60) as client:

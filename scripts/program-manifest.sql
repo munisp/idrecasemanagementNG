@@ -87,7 +87,7 @@ VALUES ('tx', 'tx-auto-appraisal', $$
     "clocks": [
       {"name": "demand_window", "days": 120, "day_type": "calendar", "basis": "loss_notice_at"},
       {"name": "negotiation_window", "days": 75, "day_type": "calendar", "basis": "demand_at"},
-      {"name": "umpire_award", "days": 180, "day_type": "calendar", "basis": "umpire_assigned_at"}
+      {"name": "determination_window", "days": 180, "day_type": "calendar", "basis": "umpire_assigned_at", "label": "Umpire award window"}
     ],
     "features": {"sealed_offers": false, "negotiation_window": true, "medical_review": false,
                  "escrow_fees": true, "voice_console": false, "crm": true},

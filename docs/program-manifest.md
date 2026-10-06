@@ -76,6 +76,35 @@ same append-only audit trail as rules.
 - **fail-closed**: an invalid stored manifest (edited out-of-band) behaves as
   "no manifest" for labels but blocks status transitions rather than guessing.
 
+## Workflow clocks (Temporal)
+
+The case lifecycle workflow (`IdrCaseWorkflow`) resolves every phase timeout
+from `clocks` — loaded once per case via an activity (recorded in workflow
+history, so replay is deterministic; new cases pick up edits immediately).
+Reserved names:
+
+| clock name             | phase                                   | NSA default    |
+|------------------------|------------------------------------------|----------------|
+| `response_window`      | non-initiating party response            | 3 business     |
+| `offer_window`         | double-blind offer submission            | 10 business    |
+| `selection_window`     | neutral selection                        | 10 calendar    |
+| `determination_window` | neutral's written determination          | 30 business    |
+| `payment_window`       | non-prevailing party pays                | 30 calendar    |
+
+`day_type: "business"` skips weekends and the tenant's `public.holidays`
+rows; `"calendar"` is plain addition. Any name absent from the manifest keeps
+its NSA default, so legacy tenants behave identically. Breach escalations are
+named after the actual clock (e.g. `DETERMINATION_75CD`).
+
+Two feature flags change the workflow's shape, not just the UI:
+
+- `features.negotiation_window: false` — the workflow skips the negotiation
+  pre-phase entirely and opens the case at initiation.
+- `features.sealed_offers: false` — the offer-window and vault-reveal phases
+  are skipped; the case moves from response to neutral selection (e.g. TX
+  auto appraisal, where the umpire weighs appraisals rather than picking a
+  sealed number).
+
 ## API
 
 | Endpoint | Role | Purpose |
