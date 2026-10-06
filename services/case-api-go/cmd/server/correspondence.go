@@ -75,7 +75,8 @@ func (s *server) draftCorrespondence(w http.ResponseWriter, r *http.Request) {
 		To       []string          `json:"to"`       // resolved recipient emails
 		CC       []string          `json:"cc"`
 		Vars     map[string]string `json:"vars"`          // extra placeholders
-		ShareTokens []string       `json:"share_tokens"` // attach share links
+		ShareTokens []string       `json:"share_tokens"` // attach pre-created share links
+		AutoShare bool             `json:"auto_share"`   // mint an upload link and embed it (G9, no copy-paste)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Template == "" {
 		http.Error(w, `{"error":"template required"}`, http.StatusBadRequest)
@@ -98,6 +99,19 @@ func (s *server) draftCorrespondence(w http.ResponseWriter, r *http.Request) {
 	for k, v := range in.Vars {
 		subject = strings.ReplaceAll(subject, "{"+k+"}", v)
 		body = strings.ReplaceAll(body, "{"+k+"}", v)
+	}
+	// Auto-share (G9): the template or the sender wants a secure upload link in
+	// the message. Mint one inline and substitute the {share_link} placeholder —
+	// the case manager never leaves the compose screen to copy-paste a URL.
+	// Fire when explicitly requested OR when the body still carries the
+	// placeholder after variable substitution.
+	if in.AutoShare || strings.Contains(body, "{share_link}") {
+		link := s.autoShareLink(r, tenant, caseID)
+		if strings.Contains(body, "{share_link}") {
+			body = strings.ReplaceAll(body, "{share_link}", link)
+		} else {
+			body += "\n\nSecure upload link: " + link
+		}
 	}
 	// append share links (G9) when requested
 	if len(in.ShareTokens) > 0 {
@@ -293,6 +307,28 @@ func (s *server) createShareLink(w http.ResponseWriter, r *http.Request) {
 	s.logActivity(r.Context(), tenant, caseID, "SHARE_LINK",
 		fmt.Sprintf("Secure %s link created (%d-day expiry) by %s", in.Kind, in.DaysTTL, p.Subject))
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "path": "/s/" + token, "kind": in.Kind})
+}
+
+// autoShareLink mints a 7-day, 10-use upload link for a case and returns the
+// absolute portal URL. Used by draftCorrespondence's auto-share path so the
+// sender never has to pre-create and paste a link. Failure is soft: the
+// placeholder degrades to the relative path rather than failing the draft.
+func (s *server) autoShareLink(r *http.Request, tenant, caseID string) string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "/s/"
+	}
+	token := hex.EncodeToString(buf)
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if _, err := s.db.Exec(r.Context(), `
+		INSERT INTO public.share_links (token, tenant, case_id, kind, expires_at, max_uses, created_by)
+		VALUES ($1,$2,$3,'upload', now() + interval '7 days', 10, $4)`,
+		token, tenant, caseID, p.Subject); err != nil {
+		return "/s/" + token
+	}
+	s.logActivity(r.Context(), tenant, caseID, "SHARE_LINK",
+		fmt.Sprintf("Secure upload link auto-created for correspondence by %s", p.Subject))
+	return strings.TrimRight(s.cfg.PortalBaseURL, "/") + "/s/" + token
 }
 
 // resolveShareLink is the unauthenticated landing for a token (upload/download

@@ -61,3 +61,36 @@ def test_printed_zone_falls_back_to_tesseract(monkeypatch):
     txt, eng, score = cp.read_printed_zone(np.zeros((40, 400), np.uint8))
     assert (txt, eng, score) == ("$412.00", "tesseract", None)
     assert cp.parse_courtesy(txt) == 41200
+
+
+def test_parse_micr_rejects_fake_check_soup():
+    # Digit soup from E-13B symbols reading as digit fragments. The soup
+    # contains a 9-window passing the ABA checksum BY CHANCE ("789012115"):
+    # sliding extraction would fabricate a routing number. Miss, don't guess.
+    r, a, c = cp.parse_micr("45678901211565432109812890987654321091")
+    assert r is None and a is not None  # partial metadata only
+
+
+def test_parse_micr_rejects_bad_checksum_run():
+    r, _, _ = cp.parse_micr("⑈111000026⑈ 12345678901⑆0001")  # off-by-one digit
+    assert r is None
+
+
+def test_words_to_cents_rejects_wordless_garbage():
+    # cursive misread as random digits must not become a phantom amount
+    assert cp.words_to_cents("= tee esa : if flesdend 8 Do.") is None
+    assert cp.words_to_cents("Seven hundred fifteen and 39/100") == 71539
+    assert cp.words_to_cents("715 and 39/100") == 71539  # fraction-marked is ok
+
+
+def test_parse_check_date_month_names():
+    assert cp.parse_check_date("DATE: Aug. 11, 2019") == "2019-08-11"
+    assert cp.parse_check_date("08/11/2019") == "2019-08-11"
+    assert cp.parse_check_date("March 3, 26") == "2026-03-03"
+    assert cp.parse_check_date("no date here") is None
+
+
+def test_parse_courtesy_handwritten_decimal_comma():
+    assert cp.parse_courtesy("715,39") == 71539
+    assert cp.parse_courtesy("$1,234.56") == 123456  # thousands comma still wins
+    assert cp.parse_courtesy("no amount") is None

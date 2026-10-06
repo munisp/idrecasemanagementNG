@@ -783,7 +783,8 @@ const Views = (() => {
           `<option value="${esc(tp.key)}">${esc(tp.key)}${tp.qa_role ? " (QA: " + esc(tp.qa_role) + ")" : ""}</option>`).join("")}</select>
         <input name="to" placeholder="to emails (comma-separated)" required />
         <input name="cc" placeholder="cc emails" />
-        <textarea name="body" rows="3" placeholder="message body" required></textarea>
+        <textarea name="body" rows="3" placeholder="message body — type {share_link} where the secure upload link should appear (or leave blank and it is appended)" required></textarea>
+        <label><input type="checkbox" name="auto_share" checked /> Attach a secure upload link automatically (minted on send — no copy-paste)</label>
         <button>Send / submit for QA</button></form><div id="p-corr"></div></details>
 
       <details class="prog-sec"><summary>Invoices & claims</summary>
@@ -837,7 +838,7 @@ const Views = (() => {
         const f = ev.target;
         const split = (v) => v.split(",").map((x) => x.trim()).filter(Boolean);
         try {
-          const r = await Api.program.send(id, { template: f.template.value, body: f.body.value, to: split(f.to.value), cc: split(f.cc.value) });
+          const r = await Api.program.send(id, { template: f.template.value, body: f.body.value, to: split(f.to.value), cc: split(f.cc.value), auto_share: f.auto_share.checked });
           UI.toast(r.status === "PENDING" ? "Draft submitted to QA gate" : "Sent — logged to correspondence");
         } catch (e) { UI.toast(e.message, { kind: "warn" }); }
       });
