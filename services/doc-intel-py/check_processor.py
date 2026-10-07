@@ -442,7 +442,13 @@ def _vocab_match(tok: str) -> str | None:
             m = _vocab_match(rest)
             if m:
                 return head + " " + m
-    close = difflib.get_close_matches(tok, _VOCAB, n=2, cutoff=0.65)
+    # Fuzzy matching is for cursive ICR misreads of REAL words ('hunderd').
+    # Short tokens ('to', 'the') sit within 0.65 of number words by accident,
+    # and on degraded scans they fabricate phantom amounts — so fuzzy needs
+    # length >= 4 and a stricter cutoff.
+    if len(tok) < 4:
+        return None
+    close = difflib.get_close_matches(tok, _VOCAB, n=2, cutoff=0.78)
     if len(close) == 1 or (
             len(close) == 2
             and difflib.SequenceMatcher(None, tok, close[0]).ratio()
@@ -471,6 +477,7 @@ def words_to_cents(text: str) -> int | None:
     toks = expanded
     total, current, cents = 0, 0, None
     saw_word = False
+    word_hits = 0
     for i, t in enumerate(toks):
         if re.fullmatch(r"\d+/\d+", t):
             cents = int(t.split("/")[0])
@@ -482,11 +489,16 @@ def words_to_cents(text: str) -> int | None:
             else:
                 current += int(t)
         elif t in WORDS:
-            current += WORDS[t]; saw_word = True
+            current += WORDS[t]; saw_word = True; word_hits += 1
         elif t in SCALES:
-            current = max(1, current) * SCALES[t]
+            current = max(1, current) * SCALES[t]; word_hits += 1
             if SCALES[t] >= 1000:
                 total, current = total + current, 0
+    # A real legal line always carries multiple number words ('Seven hundred
+    # fifteen …') or a word plus an explicit n/100 fraction. A single fuzzy
+    # hit in OCR garbage is a phantom — refuse it.
+    if word_hits < 2 and not re.search(r"\d+/\d+", text):
+        return None
     if not saw_word and cents is None:
         return None
     if total + current == 0 and cents is None:
@@ -546,12 +558,17 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
         #    is a miss -> REVIEW (miss, don't guess).
         band = img[int(h*0.85):int(h*0.99), int(w*0.02):int(w*0.98)]
         bg = cv2.resize(gray_up(band, 1), None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(bg)
+        # skew is the most common scan defect — deskew BEFORE binarizing so the
+        # E-13B glyph pitch survives thresholding
+        bg_de = _deskew(bg)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(bg_de)
         _, bw_otsu = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        bw_adapt = cv2.adaptiveThreshold(bg, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        bw_adapt = cv2.adaptiveThreshold(bg_de, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                          cv2.THRESH_BINARY, 41, 13)
+        clahe_raw = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(bg)
+        _, bw_otsu_raw = cv2.threshold(clahe_raw, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         micr_raws: list[str] = []
-        for prep in (bw_otsu, bw_adapt, bg):
+        for prep in (bw_otsu, bw_adapt, bw_otsu_raw, bg_de):
             txt = _ocr(prep, psm=7, whitelist="0123456789⑈⑆⑇⑄ABCDabcd| ") \
                   or _ocr(prep, psm=7)
             if txt:
@@ -560,9 +577,15 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
             if r and routing_checksum_valid(r):
                 out.routing_number, out.account_number, out.check_number = r, a, c
                 break
-            # keep best-effort account/check even when routing misses
-            out.account_number = out.account_number or a
-            out.check_number = out.check_number or c
+            # best-effort account/check ONLY when the read actually saw MICR
+            # separators (normalized to |/~ by parse_micr's symbol map).
+            # Separator-free digit soup is field-boundary garbage: under
+            # degradation it concatenates routing+account+check into one run,
+            # and trusting it writes phantom settlement metadata.
+            norm = txt.translate(str.maketrans("", "", " ")).replace('"', "|").replace(":", "|")
+            if "|" in norm or "~" in norm or "⑈" in txt or "⑆" in txt:
+                out.account_number = out.account_number or a
+                out.check_number = out.check_number or c
         # full-page paddle read of the band (E-13B symbols surface as ':'/'"')
         band_lines = [l for l in page if l["cy"] >= 0.85]
         if band_lines and not out.routing_number:
