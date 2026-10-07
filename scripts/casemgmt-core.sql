@@ -114,3 +114,26 @@ CREATE TABLE IF NOT EXISTS public.user_prefs (
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant, user_sub, key)
 );
+
+
+-- Copilot action batches (Phase 3): a bounded, human-approved batch of
+-- agentic actions proposed by the local model from platform-verified facts.
+-- The Temporal CopilotActionBatchWorkflow gates execution on a staff
+-- APPROVE signal; every action is allowlisted and its result recorded here.
+CREATE TABLE IF NOT EXISTS public.copilot_action_batches (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant       text NOT NULL,
+    case_id      uuid NOT NULL,
+    status       text NOT NULL DEFAULT 'PENDING_APPROVAL', -- PENDING_APPROVAL|APPROVED|REJECTED|EXPIRED|APPLIED|PARTIAL|FAILED
+    proposed_by  text NOT NULL,          -- staff subject who requested the proposal
+    model        text NOT NULL,          -- local model that produced the proposal
+    actions      jsonb NOT NULL,         -- [{type, params, result?, error?}] — allowlisted, ≤5
+    rationale    text,                   -- model's one-paragraph justification (advisory)
+    decided_by   text,
+    decided_at   timestamptz,
+    workflow_id  text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS copilot_batches_case ON public.copilot_action_batches (tenant, case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS copilot_batches_pending ON public.copilot_action_batches (tenant, status) WHERE status = 'PENDING_APPROVAL';

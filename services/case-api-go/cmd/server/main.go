@@ -475,11 +475,12 @@ func main() {
 		// calendar, notifications, saved views, letters.
 		r.Post("/cases/{caseId}/assign", s.assignCase)
 		r.Post("/cases/{caseId}/escalate", s.escalateCase)
-		r.Get("/internal/ledger/balances", s.ledgerBalances)       // worker-token: reconciliation job
-		r.Post("/checks", s.uploadCheck)                           // physical check photo/scan intake
-		r.Get("/checks", s.listChecks)                             // review queue
-		r.Post("/checks/{checkId}/clear", s.clearCheck)            // funds-cleared settlement
-		r.Post("/internal/checks/{checkId}/result", s.checkResult) // worker-token: doc-intel OCR
+		r.Get("/internal/ledger/balances", s.ledgerBalances)            // worker-token: reconciliation job
+		r.Post("/checks", s.uploadCheck)                                // physical check photo/scan intake
+		r.Get("/checks", s.listChecks)                                  // review queue
+		r.Post("/checks/{checkId}/clear", s.clearCheck)                 // funds-cleared settlement
+		r.Post("/internal/checks/{checkId}/result", s.checkResult)      // worker-token: doc-intel OCR
+		r.Post("/internal/copilot/actions/apply", s.copilotApplyAction) // worker-token: Phase 3 batch executor
 		r.Post("/cases/relate", s.relateCases)
 		r.Get("/cases/{caseId}/relationships", s.caseRelationships)
 		r.Get("/cases/{caseId}/checklist", s.getChecklist)
@@ -521,7 +522,11 @@ func main() {
 		r.Post("/cases/{caseId}/eligibility/auto", s.autoEligibility) // Lever 1: auto-adjudicate when inputs complete
 		r.Post("/cases/{caseId}/copilot/brief", s.copilotBrief)       // Phase 1 copilot: grounded advisory brief
 		r.Get("/cases/{caseId}/copilot/brief", s.copilotBriefLatest)
-		r.Post("/cases/{caseId}/correspondence", s.draftCorrespondence) // template draft / send (G3)
+		r.Post("/cases/{caseId}/copilot/draft", s.copilotDraft)            // Phase 2: QA-gated determination/correspondence drafts
+		r.Post("/cases/{caseId}/copilot/actions", s.copilotProposeActions) // Phase 3: bounded action-batch proposal
+		r.Get("/cases/{caseId}/copilot/actions", s.copilotListActionBatches)
+		r.Post("/cases/{caseId}/copilot/actions/{batchId}/decision", s.copilotDecideActions) // human gate -> Temporal signal
+		r.Post("/cases/{caseId}/correspondence", s.draftCorrespondence)                      // template draft / send (G3)
 		r.Get("/cases/{caseId}/correspondence", s.listCorrespondence)
 		r.Post("/cases/{caseId}/share-links", s.createShareLink) // tokenized upload/download (G9)
 		r.Get("/qa", s.qaQueue)                                  // QA gate queue (G4)

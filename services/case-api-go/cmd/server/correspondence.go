@@ -51,10 +51,10 @@ func (s *server) renderTemplate(r *http.Request, tenant, caseID, text string) st
 		FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), caseID).
 		Scan(&caseNumber, &providerID, &payerID, &qpa)
 	repl := map[string]string{
-		"{case_number}":    caseNumber,
-		"{provider_name}":  providerID,
-		"{payer_name}":     payerID,
-		"{qpa}":            fmt.Sprintf("$%d.%02d", qpa/100, qpa%100),
+		"{case_number}":     caseNumber,
+		"{provider_name}":   providerID,
+		"{payer_name}":      payerID,
+		"{qpa}":             fmt.Sprintf("$%d.%02d", qpa/100, qpa%100),
 		"{case_url_suffix}": "#/cases/" + caseID,
 	}
 	for k, v := range repl {
@@ -70,14 +70,14 @@ func (s *server) draftCorrespondence(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	caseID := chi.URLParam(r, "caseId")
 	var in struct {
-		Template string            `json:"template"` // template key from program config
-		Body     string            `json:"body"`     // staff-composed body (subject comes from config)
-		To       []string          `json:"to"`       // resolved recipient emails
-		CC       []string          `json:"cc"`
-		Vars     map[string]string `json:"vars"`          // extra placeholders
-		ShareTokens []string       `json:"share_tokens"` // attach pre-created share links
-		AutoShare bool             `json:"auto_share"`   // mint an upload link and embed it (G9, no copy-paste)
-		AutoDownload bool          `json:"auto_download"` // mint a download link for case documents and embed it
+		Template     string            `json:"template"` // template key from program config
+		Body         string            `json:"body"`     // staff-composed body (subject comes from config)
+		To           []string          `json:"to"`       // resolved recipient emails
+		CC           []string          `json:"cc"`
+		Vars         map[string]string `json:"vars"`          // extra placeholders
+		ShareTokens  []string          `json:"share_tokens"`  // attach pre-created share links
+		AutoShare    bool              `json:"auto_share"`    // mint an upload link and embed it (G9, no copy-paste)
+		AutoDownload bool              `json:"auto_download"` // mint a download link for case documents and embed it
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Template == "" {
 		http.Error(w, `{"error":"template required"}`, http.StatusBadRequest)
@@ -229,6 +229,11 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Decision string `json:"decision"` // APPROVE|REJECT
 		Note     string `json:"note"`
+		// EditedBody implements the EDIT prong of accept/edit/reject: when
+		// present on a PENDING row, the reviewer's text replaces the draft
+		// body before the decision lands. The edit itself is recorded so the
+		// trail always distinguishes model text from human text.
+		EditedBody string `json:"edited_body"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil ||
 		(in.Decision != "APPROVE" && in.Decision != "REJECT") {
@@ -236,11 +241,11 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
-	var caseID, subject, body, status string
+	var caseID, subject, body, status, channel string
 	var toJ, ccJ []byte
 	err := s.db.QueryRow(r.Context(),
-		`SELECT case_id, subject, body, status, to_recipients, cc_recipients FROM public.qa_reviews WHERE tenant=$1 AND id=$2`,
-		tenant, qid).Scan(&caseID, &subject, &body, &status, &toJ, &ccJ)
+		`SELECT case_id, subject, body, status, to_recipients, cc_recipients, coalesce(channel,'email') FROM public.qa_reviews WHERE tenant=$1 AND id=$2`,
+		tenant, qid).Scan(&caseID, &subject, &body, &status, &toJ, &ccJ, &channel)
 	if err != nil || status != "PENDING" {
 		http.Error(w, `{"error":"not pending"}`, http.StatusConflict)
 		return
@@ -249,6 +254,20 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 	if in.Decision == "REJECT" {
 		newStatus = "REJECTED"
 	}
+	// EDIT prong: a PENDING draft the reviewer rewrote lands with the human
+	// text; the review note flags that an edit happened (model text is never
+	// silently replaced — drafted_by attribution stays on the row).
+	if in.EditedBody != "" {
+		body = in.EditedBody
+		editMark := "[human-edited before " + in.Decision + "]"
+		if in.Note != "" {
+			in.Note = editMark + " " + in.Note
+		} else {
+			in.Note = editMark
+		}
+		_, _ = s.db.Exec(r.Context(),
+			`UPDATE public.qa_reviews SET body=$3 WHERE tenant=$1 AND id=$2`, tenant, qid, body)
+	}
 	_, _ = s.db.Exec(r.Context(), `
 		UPDATE public.qa_reviews SET status=$3, reviewed_by=$4, reviewed_at=now(), review_note=$5
 		WHERE tenant=$1 AND id=$2`, tenant, qid, newStatus, p.Subject, in.Note)
@@ -256,6 +275,14 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 	var to, cc []string
 	_ = json.Unmarshal(toJ, &to)
 	_ = json.Unmarshal(ccJ, &cc)
+	if in.Decision == "APPROVE" && channel == "note" {
+		// channel 'note' (copilot determination rationale): approval files the
+		// rationale on the case timeline — nothing is emailed, ever.
+		s.logActivity(r.Context(), tenant, caseID, "DETERMINATION_RATIONALE_FILED",
+			fmt.Sprintf("Rationale approved in QA by %s:\n%s", p.Subject, truncate(body, 6000)))
+		writeJSON(w, http.StatusOK, map[string]string{"status": newStatus})
+		return
+	}
 	if in.Decision == "APPROVE" {
 		// The narrative's send-safety rule (drafts saved without addresses) ends
 		// here: addresses enter only at QA-approved send time, and delivery goes

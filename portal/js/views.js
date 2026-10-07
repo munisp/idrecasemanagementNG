@@ -335,6 +335,71 @@ const Views = (() => {
     }, "Drafting brief…");
   }
 
+  // Phase 2: copilot drafts enter the QA gate — accept/edit/reject there.
+  async function copilotDraftQA(caseId, kind, btn) {
+    await UI.run(btn, async () => {
+      try {
+        await Api.program.copilotDraft(caseId, kind);
+        UI.toast(`${kind === "correspondence" ? "Correspondence" : "Determination rationale"} draft queued for QA review`);
+        location.hash = "#/qa";
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Drafting for QA…");
+  }
+
+  // Phase 3: bounded action batches — propose, list, approve/reject.
+  function copilotBatchCard(caseId, b) {
+    const acts = (b.actions || []).map((a) => {
+      const param = a.params ? Object.values(a.params).filter((v) => typeof v === "string").join(" — ") : "";
+      const outcome = a.result ? ` <span class="ok">✓ ${esc(a.result)}</span>`
+        : a.error ? ` <span class="err">✗ ${esc(a.error)}</span>` : "";
+      return `<li><b>${esc(a.type.replace(/_/g, " "))}</b>${param ? ` — ${esc(param)}` : ""}${outcome}</li>`;
+    }).join("");
+    const pending = b.status === "PENDING_APPROVAL";
+    return `<div class="card"><p><b>Batch ${esc(b.batch_id.slice(0, 8))}…</b>
+        <span class="badge ${pending ? "s-review" : b.status === "APPLIED" ? "s-ok" : "s-closed"}">${esc(b.status)}</span></p>
+      ${b.rationale ? `<p class="muted">${esc(b.rationale)}</p>` : ""}
+      <ul>${acts || "<li class='muted'>no actions proposed</li>"}</ul>
+      <p class="muted">proposed by ${esc(b.proposed_by)} · model ${esc(b.model)}${b.decided_by ? ` · decided by ${esc(b.decided_by)}` : ""}</p>
+      ${pending ? `<div class="actions">
+        <button class="mini" onclick="Views.copilotDecideBatch('${caseId}','${b.batch_id}','APPROVE',this)">✓ Approve & execute</button>
+        <button class="mini danger" onclick="Views.copilotDecideBatch('${caseId}','${b.batch_id}','REJECT',this)">✗ Reject</button></div>` : ""}
+    </div>`;
+  }
+
+  async function copilotLoadBatches(caseId) {
+    try {
+      const r = await Api.program.copilotListActions(caseId);
+      const box = document.getElementById("copilot-batches");
+      if (!box) return;
+      box.innerHTML = (r.batches || []).length
+        ? `<h3>Action batches</h3>` + r.batches.map((b) => copilotBatchCard(caseId, b)).join("")
+        : "";
+    } catch { /* list is best-effort on load */ }
+  }
+
+  async function copilotPropose(caseId, btn) {
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.copilotProposeActions(caseId);
+        UI.toast(`Copilot proposed ${(r.actions || []).length} action(s) — review and approve below`);
+        copilotLoadBatches(caseId);
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Proposing actions…");
+  }
+
+  async function copilotDecideBatch(caseId, batchId, decision, btn) {
+    if (decision === "APPROVE" &&
+        !(await UI.confirm("Approve and execute?", "The listed actions run now via the workflow — each is applied and recorded on the case.", "Approve & execute"))) return;
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.copilotDecideActions(caseId, batchId, decision);
+        if (r.error) UI.toast(r.error, { kind: "warn", sticky: true });
+        else UI.toast(decision === "APPROVE" ? "Approved — actions executing via workflow" : "Batch rejected");
+        copilotLoadBatches(caseId);
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, decision === "APPROVE" ? "Executing…" : "Rejecting…");
+  }
+
   async function escalate(caseId) {
     const v = await UI.modal({ title: "Escalate case", danger: true, submitLabel: "Escalate",
       body: "Supervisors and federal administrators are notified immediately. This is logged to the audit trail.",
@@ -493,12 +558,18 @@ const Views = (() => {
         html += `<div class="actions">` + acts.map((a, i) =>
           `<button data-act="${i}">${a[0]}</button>`).join("") + `</div>`;
 
-      // Copilot brief (Phase 1): grounded, advisory-only decision prep for
-      // staff. Rendered from the latest persisted brief; generation is a
-      // single bounded call against the local model, audit-logged.
+      // Copilot (Phases 1-3): grounded brief; QA-gated drafts; bounded,
+      // human-approved action batches via Temporal. Everything the model
+      // produces is advisory until a person approves it.
       if (can("CASE_MANAGER", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
-        html += `<h2>Copilot brief <span class="badge s-review">DRAFT · advisory</span></h2>
-          <div id="copilot"><p class="muted">Loading…</p></div>`;
+        html += `<h2>Copilot <span class="badge s-review">DRAFT · advisory</span></h2>
+          <div id="copilot"><p class="muted">Loading…</p></div>
+          <div class="actions">
+            <button class="mini" onclick="Views.copilotDraftQA('${id}','determination_rationale',this)">✍ Draft determination rationale</button>
+            <button class="mini" onclick="Views.copilotDraftQA('${id}','correspondence',this)">✉ Draft correspondence</button>
+            <button class="mini" onclick="Views.copilotPropose('${id}',this)">⚙ Propose action batch</button>
+          </div>
+          <div id="copilot-batches"></div>`;
         Api.program.copilotBriefLatest(id).then((r) => {
           const b = document.getElementById("copilot");
           if (b) b.innerHTML = copilotCard(r.brief, r.generated_at, id);
@@ -506,6 +577,7 @@ const Views = (() => {
           const b = document.getElementById("copilot");
           if (b) b.innerHTML = copilotCard(null, null, id);
         });
+        copilotLoadBatches(id);
       }
 
       // Documents — docket grouped by folder with full metadata + RBAC controls
@@ -1250,28 +1322,48 @@ const Views = (() => {
     try {
       const d = await Api.program.qaGet(qaId);
       const to = (d.to_recipients || []).join(", ");
+      const isNote = d.channel === "note";
+      const isCopilot = (d.artifact || "").startsWith("copilot_");
+      box.dataset.channel = d.channel || "email";
+      // Copilot drafts are accept/EDIT/reject: the reviewer rewrites in place
+      // and the edited text is what gets approved (server records the edit).
+      const bodyHtml = isCopilot
+        ? `<textarea id="qa-edit" rows="14" style="width:100%">${esc(d.body)}</textarea>
+           <p class="muted">Copilot draft — edit freely; the approved text is what gets ${isNote ? "filed" : "sent"}, and the edit is recorded.</p>`
+        : `<pre class="qa-body">${esc(d.body)}</pre>`;
       box.innerHTML = `<div class="card"><h3>${esc(d.subject)}</h3>
-        <p class="muted">to: ${esc(to)} · channel ${esc(d.channel)}</p>
-        <pre class="qa-body">${esc(d.body)}</pre>
+        <p class="muted">${isNote ? "determination rationale · files to the case timeline on approval" : `to: ${esc(to)} · channel ${esc(d.channel)}`}
+          ${isCopilot ? ' · <span class="badge s-review">COPILOT DRAFT</span>' : ""}</p>
+        ${bodyHtml}
         <div class="actions">
-          <button onclick="Views.qaDecide('${qaId}','APPROVE',this)">Approve & send</button>
+          <button onclick="Views.qaDecide('${qaId}','APPROVE',this)">${isNote ? "Approve & file" : "Approve & send"}</button>
           <button class="danger" onclick="Views.qaDecide('${qaId}','REJECT',this)">Reject</button></div></div>`;
     } catch (e) { UI.toast(e.message, { kind: "warn" }); }
   }
 
   async function qaDecide(qaId, decision, el) {
     let note = "";
+    const isNote = $("#qa-detail")?.dataset.channel === "note";
+    const edited = $("#qa-edit") ? $("#qa-edit").value : "";
     if (decision === "REJECT") {
       const v = await UI.modal({ title: "Reject draft", danger: true, submitLabel: "Reject",
         fields: [{ name: "note", label: "Rejection note", type: "textarea", required: true,
           hint: "Returned to the drafter with the draft." }] });
       if (!v) return;
       note = v.note;
+    } else if (isNote) {
+      if (!(await UI.confirm("Approve and file?", "The rationale is recorded on the case timeline. Nothing is emailed.", "Approve & file"))) return;
     } else if (!(await UI.confirm("Approve and send?", "The email is delivered to all recipients now and logged to correspondence.", "Approve & send"))) return;
     await UI.run(el, async () => {
-      try { await Api.program.qaDecision(qaId, decision, note);
-          UI.toast(decision === "APPROVE" ? "Approved — sent and logged" : "Rejected"); App.rerender(); }
-      catch (e) { UI.toast(e.message, { kind: "warn" }); }
+      try {
+        const r = await Api.program.qaDecision(qaId, decision, note, edited);
+        if (r && r.email_delivery_error) {
+          UI.toast(`Approved, but email delivery failed: ${r.email_delivery_error}`, { kind: "warn", sticky: true });
+        } else {
+          UI.toast(decision === "APPROVE" ? (isNote ? "Approved — filed to case timeline" : "Approved — sent and logged") : "Rejected");
+        }
+        App.rerender();
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
     });
   }
 
@@ -1857,5 +1949,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

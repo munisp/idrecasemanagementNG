@@ -30,6 +30,10 @@ from onboarding_activities import (
 from workflows import (
     IdrCaseWorkflow, CmsMonthlyReportWorkflow, LedgerReconciliationWorkflow,
 )
+from copilot_actions import (
+    CopilotActionBatchWorkflow, fetch_batch_action_count,
+    apply_copilot_action, expire_copilot_batch,
+)
 from onboarding import StakeholderOnboardingWorkflow, TenantOnboardingWorkflow
 
 
@@ -40,11 +44,12 @@ async def run_workers(client: Client) -> None:
         client,
         task_queue="idre-cases",
         workflows=[IdrCaseWorkflow, CmsMonthlyReportWorkflow,
-                   LedgerReconciliationWorkflow],
+                   LedgerReconciliationWorkflow, CopilotActionBatchWorkflow],
         activities=[
             set_case_status, post_ledger_transfer, request_lawful_reveal,
             notify_party, flag_cms_breach, run_cms_monthly_report,
             export_ledger_snapshot, reconcile_ledger,
+            fetch_batch_action_count, apply_copilot_action, expire_copilot_batch,
         ],
         max_concurrent_activities=100,
         max_concurrent_workflow_tasks=200,
