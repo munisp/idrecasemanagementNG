@@ -287,3 +287,55 @@ def test_ensure_pages_renders_pdf_lazily_and_caches():
 def test_ensure_pages_noop_for_non_pdf():
     ctx = {"raw_bytes": b"not a pdf", "content_type": "text/plain", "pages": []}
     assert pl.ensure_pages(ctx) == []
+
+
+# --- OCR stage batching (paddleocr stubbed) ---------------------------------
+
+def _stub_paddle(monkeypatch, predict_fn):
+    fake = types.ModuleType("paddleocr")
+
+    class PaddleOCR:
+        def __init__(self, **kwargs):
+            pass
+        def predict(self, inp):
+            return predict_fn(inp)
+
+    fake.PaddleOCR = PaddleOCR
+    monkeypatch.setitem(sys.modules, "paddleocr", fake)
+    pl._MODEL_CACHE.clear()
+
+
+def _ocr_ctx(n_pages=6):
+    from PIL import Image
+    page = Image.new("RGB", (400, 300), (255, 255, 255))
+    return {"pages": [page.copy() for _ in range(n_pages)],
+            "raw_bytes": b"\x89PNG\r\n\x1a\n...", "content_type": "image/png"}
+
+
+def test_ocr_batches_pages(monkeypatch):
+    calls = []
+
+    def predict(inp):
+        calls.append(inp)
+        n = len(inp) if isinstance(inp, list) else 1
+        return [{"rec_texts": [f"line-from-{n}-page-batch"]} for _ in range(n)]
+
+    _stub_paddle(monkeypatch, predict)
+    ctx = pl.stage_ocr(_ocr_ctx(6), {"batch_pages": 4})
+    # 6 pages at batch 4 -> 2 predict calls, both list input
+    assert len(calls) == 2
+    assert all(isinstance(c, list) for c in calls)
+    assert [len(c) for c in calls] == [4, 2]
+    assert "line-from-4-page-batch" in ctx["text"]
+    assert "line-from-2-page-batch" in ctx["text"]
+
+
+def test_ocr_falls_back_to_serial_when_batch_rejected(monkeypatch):
+    def predict(inp):
+        if isinstance(inp, list) and len(inp) > 1:
+            raise RuntimeError("this paddle build rejects list input")
+        return [{"rec_texts": ["serial-line"]}]
+
+    _stub_paddle(monkeypatch, predict)
+    ctx = pl.stage_ocr(_ocr_ctx(3), {"batch_pages": 4})
+    assert ctx["text"].count("serial-line") == 3

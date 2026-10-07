@@ -297,11 +297,27 @@ def stage_ocr(ctx: dict, cfg: dict) -> dict:
             use_textline_orientation=cfg.get("use_textline_orientation", True),
         ),
     )
+    # Batched inference: PaddleOCR 3.x predict() accepts a LIST of images
+    # and pipelines detection/recognition across them internally — per-page
+    # calls pay Python-side and scheduler overhead on every page of every
+    # scanned document. Small batches bound the memory spike (each page is
+    # a full bitmap in worker RAM). Falls back to per-page if a Paddle
+    # version rejects list input — OCR must never fail the document.
     texts: list[str] = []
-    for page in pages:  # list[PIL.Image]
-        result = ocr.predict(np_from_pil(page))
-        for res in result:
+    arrays = [np_from_pil(p) for p in pages]
+    batch_n = max(1, int(cfg.get("batch_pages", 4)))
+
+    def collect(results) -> None:
+        for res in results:
             texts.extend(res.get("rec_texts", []))
+
+    try:
+        for i in range(0, len(arrays), batch_n):
+            collect(ocr.predict(arrays[i:i + batch_n]))
+    except Exception:
+        texts.clear()
+        for arr in arrays:
+            collect(ocr.predict(arr))
     ctx["text"] = "\n".join(texts)
     # OCR recovered text for a scanned doc: markdown has no structure, but
     # downstream stages read markdown first, so mirror it.
