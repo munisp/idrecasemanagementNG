@@ -167,9 +167,51 @@
   const initials = (me.name || "?").split(/[\s._-]+/).map((s) => s[0]).join("").slice(0, 2).toUpperCase();
   document.getElementById("whoami").innerHTML =
     `<span class="avatar">${initials}</span><span class="who-txt">${me.name} · <a href="javascript:void(0)" id="lo">sign out</a></span>`;
-  document.getElementById("gq").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") location.hash = `#/search/${encodeURIComponent(e.target.value)}`;
-  });
+  // Global search: live dropdown (debounced) + full-results page on Enter.
+  // The field used to respond to Enter ONLY — typing showed nothing, which
+  // read as "search does nothing". Now: 2+ chars queries /search after a
+  // 250ms debounce, arrows select, Enter opens the hit or the full page.
+  (() => {
+    const gq = document.getElementById("gq"), drop = document.getElementById("gq-drop");
+    const escHtml = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const linkFor = (h) => h.kind === "case" ? `#/cases/${h.id}`
+      : h.kind === "document" ? `#/cases/${h.case_id || ""}`
+      : h.kind === "account" ? `#/crm/accounts/${h.id}`
+      : h.kind === "lead" ? "#/crm/leads" : "#/crm/accounts";
+    const iconFor = (h) => h.kind === "case" ? "▦" : h.kind === "document" ? "🗎" : "◈";
+    let timer = 0, items = [], sel = -1;
+    const closeDrop = () => { drop.hidden = true; items = []; sel = -1; };
+    async function refresh() {
+      const q = gq.value.trim();
+      if (q.length < 2) { closeDrop(); return; }
+      let hits = [];
+      try { hits = (await Api.crm.search(q)).slice(0, 8); } catch { hits = []; }
+      if (gq.value.trim() !== q) return; // a newer keystroke owns the box
+      items = hits; sel = -1;
+      drop.innerHTML = hits.map((h, i) =>
+        `<div class="palette-item gq-item" data-i="${i}" role="option">
+           <span class="ri">${iconFor(h)}</span><span class="pl">${escHtml(h.label)}</span>
+           ${h.detail ? `<span class="pd">${escHtml(h.detail)}</span>` : ""}</div>`).join("") ||
+        `<div class="palette-empty">No matches — press Enter for full search</div>`;
+      drop.hidden = false;
+      drop.querySelectorAll(".gq-item").forEach((el) =>
+        el.addEventListener("mousedown", () => { location.hash = linkFor(items[+el.dataset.i]); closeDrop(); }));
+    }
+    gq.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(refresh, 250); });
+    gq.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (sel >= 0 && items[sel]) { location.hash = linkFor(items[sel]); closeDrop(); }
+        else location.hash = `#/search/${encodeURIComponent(gq.value)}`;
+      } else if (e.key === "Escape") closeDrop();
+      else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !drop.hidden && items.length) {
+        e.preventDefault();
+        sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+        drop.querySelectorAll(".gq-item").forEach((el, i) => el.classList.toggle("sel", i === sel));
+      }
+    });
+    gq.addEventListener("blur", () => setTimeout(closeDrop, 150)); // mousedown lands first
+  })();
   document.getElementById("lo").onclick = Auth.logout;
 
   const routes = [

@@ -6,8 +6,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -421,13 +421,29 @@ func (s *server) addNote(w http.ResponseWriter, r *http.Request) {
 func (s *server) globalSearch(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	term := "%" + r.URL.Query().Get("q") + "%"
-	type hit struct{ Kind, ID, Label, Detail string }
+	// JSON tags matter: the portal reads lowercase h.kind/h.id/h.label/
+	// h.detail, and without tags encoding/json emits Go's capitalized field
+	// names -- every hit rendered as an empty row, which is exactly why the
+	// search box "didn't appear to do anything" even when SQL found matches.
+	type hit struct {
+		Kind   string `json:"kind"`
+		ID     string `json:"id"`
+		Label  string `json:"label"`
+		Detail string `json:"detail"`
+		CaseID string `json:"case_id,omitempty"` // document hits: parent case for linking
+	}
 	out := []hit{}
 	queries := []struct {
 		kind, sql string
 	}{
+		// Case matching used to be case_number ONLY — a search for the
+		// provider or payer name returned "No matches" even when the case
+		// was right there, which read as "search is broken". Now matches
+		// the identifiers AND the party name fields (column + details bag).
 		{"case", fmt.Sprintf(`SELECT id, case_number, status FROM tenant_%s.cases
-			WHERE case_number ILIKE $1 LIMIT 10`, sanitizeTenant(tenant))},
+			WHERE case_number ILIKE $1 OR provider_id ILIKE $1 OR payer_id ILIKE $1
+			   OR details->>'provider_name' ILIKE $1 OR details->>'payer_name' ILIKE $1
+			   OR details->>'patient_name' ILIKE $1 LIMIT 10`, sanitizeTenant(tenant))},
 		{"account", `SELECT id::text, legal_name, type FROM public.accounts
 			WHERE tenant=$1 AND legal_name ILIKE $2 LIMIT 10`},
 		{"contact", `SELECT id::text, name, COALESCE(role_title,'') FROM public.contacts
@@ -459,7 +475,38 @@ func (s *server) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		rows.Close()
 	}
+	// Document full-text hits from OpenSearch (idre-docs-{tenant}, written by
+	// doc-intel). Best-effort: cluster down/absent just means no doc hits —
+	// the SQL results above always stand on their own.
+	if docHits, ok := s.searchDocsOpenSearch(r.Context(), tenant, r.URL.Query().Get("q")); ok {
+		for _, d := range docHits {
+			label := "document"
+			if d.DocType != "" {
+				label = d.DocType
+			}
+			out = append(out, hit{
+				Kind: "document", ID: d.DocID, Label: label, Detail: d.Snippet, CaseID: d.CaseID,
+			})
+		}
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// uuidString converts pgx's raw Values() representation of a uuid column
+// ([16]byte, confirmed empirically -- it does not come back as a string
+// through this generic path, only through an explicit Scan(&stringVar))
+// into the canonical 8-4-4-12-4 hex string. Every other column type passes
+// through unchanged. Without this, a uuid value JSON-marshals as a bare
+// array of 16 numbers, and any frontend code that interpolates it into a
+// URL (template literal on an array -- confirmed live: a settleInvoice
+// call landed at /invoices/161,145,22,...,68/settle) gets a comma-joined
+// garbage id instead of the real one, 404ing with no indication why.
+func uuidString(v any) any {
+	b, ok := v.([16]byte)
+	if !ok {
+		return v
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func (s *server) queryRows(r *http.Request, sql string, args ...any) ([]map[string]any, error) {

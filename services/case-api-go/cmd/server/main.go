@@ -59,6 +59,9 @@ type Config struct {
 	VaultURL        string // http://vault:8081 (mTLS via Dapr in k8s)
 	GraphIntelURL   string // http://graph-intel:8082 ("" = graph features disabled)
 	CopilotEndpoint string // local Ollama OpenAI-compatible /v1 base ("" = copilot disabled)
+	OpenSearchURL   string // http://opensearch:9200 ("" = document full-text search disabled)
+	OpenSearchUser  string // basic-auth user ("" = no auth, dev only)
+	OpenSearchPass  string // basic-auth password
 	CopilotModel    string // e.g. qwen2.5:7b-instruct — LOCAL model only, no vendor APIs
 	StripeSecret    string // sk_live_… / sk_test_… ("" = card payments disabled)
 	StripeWebhook   string // whsec_… signing secret for /api/webhooks/stripe
@@ -106,6 +109,9 @@ func configFromEnv() Config {
 		VaultURL:        get("VAULT_URL", "http://localhost:8081"),
 		GraphIntelURL:   get("GRAPH_INTEL_URL", "http://localhost:8082"),
 		CopilotEndpoint: get("COPILOT_ENDPOINT", get("VLM_ENDPOINT", "http://ollama.ollama.svc.cluster.local:11434/v1")),
+		OpenSearchURL:   get("OPENSEARCH_URL", ""),
+		OpenSearchUser:  get("OPENSEARCH_USER", ""),
+		OpenSearchPass:  get("OPENSEARCH_PASSWORD", ""),
 		CopilotModel:    get("COPILOT_MODEL", get("VLM_MODEL", "qwen2.5:7b-instruct")),
 		StripeSecret:    get("STRIPE_SECRET_KEY", ""),
 		StripeWebhook:   get("STRIPE_WEBHOOK_SECRET", ""),

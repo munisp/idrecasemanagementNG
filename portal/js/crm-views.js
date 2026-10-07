@@ -217,6 +217,7 @@ const CrmViews = (() => {
     try {
       const hits = await Api.crm.search(q);
       const link = (h) => h.kind === "case" ? `#/cases/${h.id}`
+        : h.kind === "document" ? `#/cases/${h.case_id || ""}`
         : h.kind === "account" ? `#/crm/accounts/${h.id}` : h.kind === "lead" ? "#/crm/leads" : "#/crm/accounts";
       return `<h1>Search: “${esc(q)}”</h1>` +
         (hits.length ? `<table><tbody>` + hits.map((h) =>
