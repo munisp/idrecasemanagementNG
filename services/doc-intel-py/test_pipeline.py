@@ -1,0 +1,236 @@
+"""Pipeline stage tests — heavy models (docling/paddleocr) and the OpenAI
+client are stubbed; the endpoint under test is the LOCAL Ollama, never a
+network service."""
+
+import sys
+import time
+import types
+
+import pytest
+
+import pipeline as pl
+
+
+# --- classify --------------------------------------------------------------
+
+def test_classify_strong_signal_wins():
+    dtype, score, margin = pl.classify_text(
+        "eob.pdf", "Explanation of Benefits. Allowed amount: $120.00. Patient responsibility applies.")
+    assert dtype == "eob"
+    assert score >= pl.CLASSIFY_MIN_SCORE
+
+
+def test_classify_no_signal_is_unrelated():
+    dtype, score, margin = pl.classify_text("menu.pdf", "today's specials: soup, salad, sandwich")
+    assert dtype == "unrelated"
+    assert score == 0
+
+
+def test_stage_classify_flags_thin_margin():
+    ctx = pl.stage_classify({"filename": "x.pdf",
+                             "text": "determination and claim number and cpt"}, {})
+    assert "classify_ambiguous" in ctx
+
+
+# --- model singletons --------------------------------------------------------
+
+def test_model_singleton_builds_once_even_under_threads():
+    pl._MODEL_CACHE.clear()
+    builds = []
+
+    def factory():
+        builds.append(1)
+        time.sleep(0.02)  # widen the race window
+        return object()
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        objs = list(pool.map(lambda _: pl._model(("test", 1), factory), range(16)))
+    assert len(builds) == 1
+    assert all(o is objs[0] for o in objs)
+
+
+def test_model_cache_keys_by_config():
+    pl._MODEL_CACHE.clear()
+    a = pl._model(("k", True), lambda: "A")
+    b = pl._model(("k", False), lambda: "B")
+    assert a == "A" and b == "B"
+
+
+# --- pipeline spec cache -----------------------------------------------------
+
+def test_load_pipeline_caches_and_invalidates_on_mtime(tmp_path):
+    p = tmp_path / "spec.yaml"
+    p.write_text("stages: []\n")
+    s1 = pl.load_pipeline(str(p))
+    s2 = pl.load_pipeline(str(p))
+    assert s1 is s2  # cached object, not a re-parse
+    time.sleep(0.02)
+    p.write_text("stages: [{name: classify}]\n")
+    import os
+    os.utime(str(p), (time.time() + 5, time.time() + 5))
+    s3 = pl.load_pipeline(str(p))
+    assert s3["stages"] == [{"name": "classify"}]
+
+
+# --- verify / grounding ------------------------------------------------------
+
+def test_grounded_tolerates_punctuation_variance():
+    hay = "claim number: abc-12345, billed $1,234.56"
+    squashed = pl._grounded.__defaults__  # not used; explicit below
+    import re
+    hs = re.sub(r"[^a-z0-9]", "", hay)
+    assert pl._grounded("ABC 12345", hay, hs)
+    assert pl._grounded("$1234.56", hay, hs)
+    assert not pl._grounded("ZZZ-999", hay, hs)
+
+
+def test_stage_verify_drops_ungrounded_from_trusted_normalized():
+    ctx = {
+        "markdown": "billed amount $500.00 for CPT 99213",
+        "extracted": {"billed_amount_usd": 500.0, "qpa_usd": 9999.0},
+        "normalized": {"billed_amount_usd": 500.0, "qpa_usd": 9999.0},
+    }
+    ctx = pl.stage_verify(ctx, {})
+    assert ctx["field_confidence"]["billed_amount_usd"] == "high"
+    assert ctx["field_confidence"]["qpa_usd"] == "low"
+    assert "qpa_usd" in ctx["ungrounded_fields"]
+    assert "qpa_usd" not in ctx["normalized"]
+    assert ctx["normalized"]["billed_amount_usd"] == 500.0
+
+
+# --- normalization -----------------------------------------------------------
+
+def test_norm_amount_and_date():
+    assert pl._norm_amount("$1,234.56") == 1234.56
+    assert pl._norm_amount("garbage") is None
+    assert pl._norm_date("January 5, 2026") == "2026-01-05"
+    assert pl._norm_date("01/05/26") == "2026-01-05"
+    assert pl._norm_date("2026-13-45") is None
+
+
+def test_merge_extractions_first_non_null_and_list_union():
+    merged = pl._merge_extractions(
+        [{"a": 1, "b": ["x", "y"], "c": None},
+         {"a": 2, "b": ["y", "z"], "c": "seen"}],
+        ["a", "b", "c"])
+    assert merged == {"a": 1, "b": ["x", "y", "z"], "c": "seen"}
+
+
+# --- VLM extraction: local Ollama stubbed ------------------------------------
+
+def _stub_openai(monkeypatch):
+    """stage_vlm_extract builds its client via `from openai import OpenAI`;
+    inject a fake module so no real client (or network) exists."""
+    fake = types.ModuleType("openai")
+
+    class OpenAI:  # noqa: D401 - test stub
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake.OpenAI = OpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake)
+
+
+def _long_ctx(monkeypatch, n_chunks=4):
+    monkeypatch.setattr(pl, "_chunk_markdown",
+                        lambda md, n: [f"chunk-{i} billed amount ${100+i}.00" for i in range(n_chunks)])
+    return {"markdown": "x" * 50, "doc_type": "idr_claim", "pages": []}
+
+
+_SCHEMAS = {"idr_claim": {"fields": ["billed_amount_usd", "claim_number"]}}
+
+
+def test_vlm_chunks_run_concurrently_and_merge_in_order(monkeypatch):
+    _stub_openai(monkeypatch)
+    pl._MODEL_CACHE.clear()
+    calls = []
+
+    def fake_call(client, model, content, max_tokens):
+        import re as _re
+        calls.append(time.monotonic())
+        time.sleep(0.15)  # simulate Ollama round-trip
+        m = _re.search(r"section (\d+) of", content[0]["text"])
+        i = int(m.group(1)) - 1
+        return {"_in_domain": True, "billed_amount_usd": 100 + i,
+                "claim_number": f"C{i}"}
+
+    monkeypatch.setattr(pl, "_vlm_call", fake_call)
+    ctx = _long_ctx(monkeypatch)
+    t0 = time.monotonic()
+    ctx = pl.stage_vlm_extract(ctx, {"endpoint": "http://ollama:11434/v1",
+                                     "model": "qwen2.5:7b-instruct",
+                                     "parallel_chunks": 4,
+                                     "chunk_chars": 10}, _SCHEMAS)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.45  # 4 x 0.15s serial would be 0.60s+
+    # merge is order-deterministic: first non-null wins -> chunk 0's amount
+    assert ctx["extracted"]["billed_amount_usd"] == 100
+    assert ctx["in_domain"] is True
+
+
+def test_vlm_parallel_default_is_conservative_for_local_ollama(monkeypatch):
+    """Without explicit config the concurrency default must be gentle —
+    the endpoint is the shared local Ollama, not OpenAI."""
+    _stub_openai(monkeypatch)
+    pl._MODEL_CACHE.clear()
+    inflight = {"cur": 0, "max": 0}
+
+    def fake_call(client, model, content, max_tokens):
+        inflight["cur"] += 1
+        inflight["max"] = max(inflight["max"], inflight["cur"])
+        time.sleep(0.1)
+        inflight["cur"] -= 1
+        return {"_in_domain": True, "billed_amount_usd": 1}
+
+    monkeypatch.setattr(pl, "_vlm_call", fake_call)
+    monkeypatch.delenv("VLM_PARALLEL_CHUNKS", raising=False)
+    ctx = _long_ctx(monkeypatch, n_chunks=6)
+    pl.stage_vlm_extract(ctx, {"endpoint": "http://ollama:11434/v1",
+                               "model": "m", "chunk_chars": 10}, _SCHEMAS)
+    assert inflight["max"] <= 2
+
+
+def test_vlm_out_of_domain_short_circuits(monkeypatch):
+    _stub_openai(monkeypatch)
+    pl._MODEL_CACHE.clear()
+    monkeypatch.setattr(pl, "_vlm_call",
+                        lambda *a, **k: {"_in_domain": False, "billed_amount_usd": None})
+    ctx = _long_ctx(monkeypatch, n_chunks=1)
+    ctx = pl.stage_vlm_extract(ctx, {"endpoint": "http://x/v1", "model": "m",
+                                     "chunk_chars": 10}, _SCHEMAS)
+    assert ctx["in_domain"] is False
+
+
+def test_vlm_client_cached_per_endpoint(monkeypatch):
+    _stub_openai(monkeypatch)
+    pl._MODEL_CACHE.clear()
+    monkeypatch.setattr(pl, "_vlm_call",
+                        lambda *a, **k: {"_in_domain": True})
+    cfg = {"endpoint": "http://ollama:11434/v1", "model": "m", "chunk_chars": 10}
+    pl.stage_vlm_extract(_long_ctx(monkeypatch, 1), cfg, _SCHEMAS)
+    pl.stage_vlm_extract(_long_ctx(monkeypatch, 1), cfg, _SCHEMAS)
+    clients = [k for k in pl._MODEL_CACHE if k[0] == "vlm_client"]
+    assert len(clients) == 1
+
+
+# --- scan quality (cv2 available, no paddle needed) --------------------------
+
+def test_assess_page_quality_flags_blur_not_crisp():
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    # NB: int fill on an RGB image is a packed color (255 -> red), not white
+    crisp = Image.new("RGB", (1000, 1400), (255, 255, 255))
+    d = ImageDraw.Draw(crisp)
+    try:
+        f = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    except OSError:
+        f = ImageFont.load_default()
+    for y in range(60, 1300, 44):
+        d.text((50, y), "Billed amount $1,234.56  CPT 99213  NPI 1234567890",
+               font=f, fill=(0, 0, 0))
+    blurry = crisp.filter(ImageFilter.GaussianBlur(6))
+    q_crisp = pl.assess_page_quality(crisp)
+    q_blur = pl.assess_page_quality(blurry)
+    assert q_crisp["blur"] > q_blur["blur"]
+    assert q_blur["poor"] is True
+    assert q_crisp["poor"] is False

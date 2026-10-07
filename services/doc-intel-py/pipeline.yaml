@@ -26,7 +26,16 @@ stages:
       use_textline_orientation: true
 
   - name: layout             # PP-StructureV3 seal/stamp detection (Docling has none)
-    enabled: true
+    enabled: false           # disabled: PaddleX unconditionally constructs its full
+    # model cascade at init regardless of which use_*_recognition flags are set
+    # (confirmed live: use_formula_recognition=False does not stop
+    # PP-FormulaNet_plus-L from being built). That one sub-model's construction
+    # OOMKilled the pod at every memory ceiling tried -- 2Gi, 6Gi, 10Gi, 16Gi,
+    # then again at 8Gi/12Gi even after fixing PaddlePaddle's own greedy
+    # allocator (FLAGS_allocator_strategy=auto_growth, a real, separate bug
+    # fixed and kept). Formula recognition has no relevance to AHCA billing/
+    # claims documents; re-enable once PP-StructureV3 offers a real way to
+    # exclude a sub-pipeline from construction, not just from inference.
     config:
       use_table_recognition: false  # tables already handled by Docling
       use_formula_recognition: false
@@ -38,11 +47,45 @@ stages:
   - name: vlm_extract        # VLM semantic extraction over Docling markdown + page images
     enabled: true
     config:
-      endpoint: ${VLM_ENDPOINT:-http://vllm:8000/v1}
-      model: ${VLM_MODEL:-paddleocr-vl}   # or Qwen2.5-VL-72B-Instruct etc.
+      # Reuses the in-cluster Ollama (OpenAI-compatible /v1 API) rather than
+      # a dedicated vLLM deployment -- no such deployment exists in this
+      # cluster. Swap via env var if a real vLLM server is ever stood up.
+      endpoint: ${VLM_ENDPOINT:-http://ollama.ollama.svc.cluster.local:11434/v1}
+      # Live deployment actually runs VLM_MODEL=qwen2.5vl:7b / VLM_VISION=
+      # true (a real vision model, pulled and in active use) -- the
+      # text-only qwen2.5:7b-instruct default below is the no-vision
+      # fallback, not what's really serving traffic. Keep both pulled.
+      model: ${VLM_MODEL:-qwen2.5:7b-instruct}
+      vision: ${VLM_VISION:-false}
       max_tokens: 2048
       max_pages: 3           # page images per chunk for layout cues
-      chunk_chars: 12000     # long docs are extracted per chunk and merged
+      # Root cause of every past "exceeds context size" failure: with
+      # vision on, pdf_to_pages' 200-300dpi page render (1700x2200+ px)
+      # was sent to the VLM as-is, and image tokens from that are entirely
+      # separate from -- and uncounted by -- MAX_PROMPT_CHARS below, which
+      # only ever bounded the text portion. Confirmed live against this
+      # endpoint/model: a 2000-char text prompt alone costs ~1030 prompt
+      # tokens; the same request with a page image attached costs ~2095 --
+      # and that ~1065-token image cost held CONSTANT (not proportional)
+      # for every size tried from 350px to 612px on the long edge, so
+      # shrinking into that range is free fidelity-wise. vlm_extract now
+      # thumbnails to this box before encoding instead of sending the raw
+      # render. Cut well below Ollama's 4096 ceiling rather than raise it:
+      # that's a shared platform instance other apps also use, and a
+      # larger context multiplies KV-cache memory per request on a
+      # cluster with a known OOM history.
+      vlm_image_max_px: 650
+      chunk_chars: 1200      # long docs are extracted per chunk and merged -- the vlm_extract
+                             # stage's own MAX_PROMPT_CHARS hard-truncates at 2000 regardless,
+                             # so a chunk much larger than that would just get silently cut off
+                             # mid-content by that backstop; sized to actually fit instead
+      # Chunk concurrency for multi-chunk docs. This endpoint is the LOCAL
+      # in-cluster Ollama, NOT OpenAI: requests past OLLAMA_NUM_PARALLEL
+      # (default 1) just serialize server-side while multiplying KV-cache
+      # memory on a shared instance with an OOM history. 2 overlaps HTTP/
+      # JSON overhead with inference; raise ONLY together with
+      # OLLAMA_NUM_PARALLEL on the Ollama deployment itself.
+      parallel_chunks: ${VLM_PARALLEL_CHUNKS:-2}
       schema: idr_claim      # FALLBACK schema — the classified doc_type's
                              # schema is preferred automatically (see schemas:)
 
