@@ -194,6 +194,21 @@ func (s *server) draftCorrespondence(w http.ResponseWriter, r *http.Request) {
 // reaches a party without passing the gate.
 func (s *server) qaQueue(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
+	// Optional ?case_id= filter — the conversational QA gate (Assistant thread)
+	// renders the gate for ONE case inline, while the QA screen keeps the
+	// full queue. Same query otherwise; the filter never changes semantics.
+	if cid := r.URL.Query().Get("case_id"); cid != "" {
+		rows, err := s.queryRows(r, `
+			SELECT id, case_id, artifact, channel, subject, status, drafted_by, created_at
+			FROM public.qa_reviews WHERE tenant=$1 AND status='PENDING' AND case_id=$2
+			ORDER BY created_at`, tenant, cid)
+		if err != nil {
+			http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"queue": rows})
+		return
+	}
 	rows, err := s.queryRows(r, `
 		SELECT id, case_id, artifact, channel, subject, status, drafted_by, created_at
 		FROM public.qa_reviews WHERE tenant=$1 AND status='PENDING' ORDER BY created_at`, tenant)

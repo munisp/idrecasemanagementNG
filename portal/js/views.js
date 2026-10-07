@@ -408,8 +408,34 @@ const Views = (() => {
     if (!can("CASE_MANAGER", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
       return `<div class="view-head"><h1>Assistant</h1></div><p class="muted">Requires a case staff role.</p>`;
     if (!caseId) {
-      // Case picker: most recent cases first — the thread always belongs to
-      // one case, so grounding never drifts across records.
+      // Morning briefing (conversation-first step 2): the Assistant home opens
+      // with the worker-scoped digest, narrated — the case picker sits below
+      // it. The briefing is read-only and never fails: when the model is down
+      // the server narrates the digest itself (fallback badge).
+      afterRender(async () => {
+        const box = document.getElementById("asst-briefing");
+        if (!box) return;
+        try {
+          const r = await Api.program.briefing();
+          const d = r.digest || {};
+          const stat = (n, label) => n ? `<span class="chip-stat"><b>${n}</b> ${label}</span>` : "";
+          const risk = (d.at_risk_sla || []).map((c) =>
+            `<tr class="click" onclick="location.hash='#/assistant/${c.case_id}'"><td class="mono">${esc(c.case_number)}</td>
+             <td>${badge(c.status)}</td><td>${esc(c.lane)}</td><td class="sla-hot">${c.sla_days_remaining}d left</td></tr>`).join("");
+          box.innerHTML = `<div class="asst-turn asst-ai">
+            <div class="asst-who">briefing${r.model ? ` · ${esc(r.model)}` : " · structured digest"}</div>
+            <div class="asst-body">${esc(r.narration || "")}</div></div>
+            <div class="asst-chips" style="margin:8px 0 0 0">
+              ${stat(d.my_open_cases, "open assigned")}${stat((d.at_risk_sla || []).length, "SLA risk")}
+              ${stat(d.pending_qa, "at QA gate")}${stat(d.checks_in_review, "checks in review")}
+              ${stat(d.new_docs_24h, "docs analyzed 24h")}${stat((d.tasks_due || []).length, "tasks due")}
+            </div>
+            ${risk ? `<h3 style="margin:10px 0 4px">SLA risk — open a thread to act</h3>
+              <table><thead><tr><th>Case</th><th>Status</th><th>Lane</th><th>SLA</th></tr></thead><tbody>${risk}</tbody></table>` : ""}`;
+        } catch (e) {
+          box.innerHTML = `<p class="muted">Briefing unavailable: ${esc(e.message)}</p>`;
+        }
+      });
       try {
         const r = await Api.cases.list({ limit: 50 });
         const rows = (r.cases || []).map((c) =>
@@ -417,6 +443,8 @@ const Views = (() => {
            <td>${esc(c.service_line || "")}</td><td>${badge(c.status)}</td></tr>`).join("");
         return `<div class="view-head"><h1>Assistant</h1>
           <span class="muted">grounded on platform-verified case facts · advisory only · every turn is on the record</span></div>
+          <div id="asst-briefing"><p class="muted">Preparing your briefing…</p></div>
+          <h2 style="margin-top:14px">Case threads</h2>
           <p>Pick a case to open its thread:</p>
           <table><thead><tr><th>Case</th><th>Line</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
       } catch (e) { return err(e); }
@@ -441,10 +469,12 @@ const Views = (() => {
         const msg = input.value.trim();
         if (msg) { input.value = ""; assistantSend(caseId, msg); }
       });
+      asstQaLoad(caseId);
     });
     return `<div class="view-head"><h1>Assistant</h1>
       <span class="muted" id="asst-case">loading case…</span></div>
       <div id="asst-thread" class="asst-thread"></div>
+      <div id="asst-qa"></div>
       <div class="asst-chips">
         <button class="mini" onclick="Views.assistantChip('${caseId}','brief',this)">▤ Brief me</button>
         <button class="mini" onclick="Views.assistantChip('${caseId}','determination_rationale',this)">✍ Draft rationale</button>
@@ -510,6 +540,68 @@ const Views = (() => {
         }
       } catch (e) { asstAppend(caseId, "assistant", `⚠ ${e.message}`, ""); }
     }, "Working…");
+  }
+
+  // ---- Conversational QA gate (conversation-first step 3) -----------------
+  // Pending gate items for THIS case render inline in the thread as cards;
+  // approve / edit & approve / reject call the SAME qaDecision endpoint the
+  // QA screen uses — the gate moves into the conversation, its semantics
+  // (audit note, [human-edited] marker, send-on-approve) are untouched.
+  async function asstQaLoad(caseId) {
+    const box = document.getElementById("asst-qa");
+    if (!box) return;
+    try {
+      const r = await Api.program.qaQueue(caseId);
+      const q = r.queue || [];
+      if (!q.length) { box.innerHTML = ""; return; }
+      const cards = await Promise.all(q.map(async (i) => {
+        const d = await Api.program.qaGet(i.id);
+        const isNote = d.channel === "note";
+        const isCopilot = (d.artifact || "").startsWith("copilot_");
+        const bodyHtml = isCopilot
+          ? `<textarea id="asst-qa-edit-${d.id}" rows="10" style="width:100%">${esc(d.body)}</textarea>
+             <p class="muted">Copilot draft — edit freely; the approved text is what gets ${isNote ? "filed" : "sent"}, and the edit is recorded.</p>`
+          : `<pre class="qa-body">${esc(d.body)}</pre>`;
+        return `<div class="card asst-qa-card" data-qa="${d.id}" data-channel="${esc(d.channel || "email")}">
+          <h3>⛨ Gate: ${esc(d.subject)}</h3>
+          <p class="muted">${esc(d.drafted_by)} · ${isNote ? "determination rationale · files to timeline" : `to: ${esc((d.to_recipients || []).join(", "))}`}
+            ${isCopilot ? ' · <span class="badge s-review">COPILOT DRAFT</span>' : ""}</p>
+          ${bodyHtml}
+          <div class="actions">
+            <button onclick="Views.asstQaDecide('${caseId}','${d.id}','APPROVE',this)">${isNote ? "Approve & file" : "Approve & send"}</button>
+            <button class="danger" onclick="Views.asstQaDecide('${caseId}','${d.id}','REJECT',this)">Reject</button></div></div>`;
+      }));
+      box.innerHTML = `<h3 style="margin:10px 0 6px">${q.length} item(s) at the QA gate for this case</h3>` + cards.join("");
+    } catch (e) { box.innerHTML = ""; }
+  }
+
+  async function asstQaDecide(caseId, qaId, decision, btn) {
+    const card = document.querySelector(`.asst-qa-card[data-qa="${qaId}"]`);
+    const isNote = card?.dataset.channel === "note";
+    const edited = document.getElementById(`asst-qa-edit-${qaId}`)?.value || "";
+    let note = "";
+    if (decision === "REJECT") {
+      const v = await UI.modal({ title: "Reject draft", danger: true, submitLabel: "Reject",
+        fields: [{ name: "note", label: "Rejection note", type: "textarea", required: true,
+          hint: "Returned to the drafter with the draft." }] });
+      if (!v) return;
+      note = v.note;
+    } else if (isNote) {
+      if (!(await UI.confirm("Approve and file?", "The rationale is recorded on the case timeline. Nothing is emailed.", "Approve & file"))) return;
+    } else if (!(await UI.confirm("Approve and send?", "The email is delivered to all recipients now and logged to correspondence.", "Approve & send"))) return;
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.qaDecision(qaId, decision, note, edited);
+        card?.remove();
+        asstAppend(caseId, "assistant",
+          decision === "APPROVE"
+            ? (r.email_delivery_error ? `⚠ Approved but email failed: ${r.email_delivery_error}`
+              : isNote ? "Rationale approved and filed to the case timeline." : "Draft approved and sent — logged to correspondence.")
+            : "Draft rejected and returned to the drafter.", "");
+        const box = document.getElementById("asst-qa");
+        if (box && !box.querySelector(".asst-qa-card")) box.innerHTML = "";
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, decision === "APPROVE" ? "Approving…" : "Rejecting…");
   }
 
   async function escalate(caseId) {
@@ -2061,5 +2153,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

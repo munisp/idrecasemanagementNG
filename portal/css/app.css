@@ -457,3 +457,7 @@ button.mini.danger{color:#991b1b;border-color:#fecaca}
 .asst-chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .asst-form{display:flex;gap:8px;margin-top:10px}
 .asst-form input{flex:1;height:38px;padding:0 13px;border:1px solid var(--border-subtle);border-radius:var(--radius-input);background:var(--surface-sunken);color:var(--text-primary);font:inherit}
+.asst-qa-card textarea{font:inherit;font-size:13px}
+.chip-stat{background:var(--surface-raised,#fff);border:1px solid var(--border-subtle);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--text-secondary)}
+.chip-stat b{color:var(--text-primary)}
+.sla-hot{color:var(--danger,#c92a2a);font-weight:600}
