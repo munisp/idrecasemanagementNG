@@ -82,12 +82,18 @@ Rules: use ONLY the JSON facts below. If a fact is absent write "not in record".
 // ollamaChat is one bounded OpenAI-compatible chat call against the LOCAL
 // ollama. Extracted pure for testing (httptest fake).
 func ollamaChat(ctx context.Context, endpoint, model, system, user string, maxTokens int) (string, error) {
+	return ollamaChatMessages(ctx, endpoint, model, []map[string]string{
+		{"role": "system", "content": system},
+		{"role": "user", "content": user},
+	}, maxTokens)
+}
+
+// ollamaChatMessages is the shared wire call — the chat thread's history
+// variant and the single-shot primitives both bottom out here.
+func ollamaChatMessages(ctx context.Context, endpoint, model string, messages []map[string]string, maxTokens int) (string, error) {
 	body, _ := json.Marshal(map[string]any{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "system", "content": system},
-			{"role": "user", "content": user},
-		},
+		"model":       model,
+		"messages":    messages,
 		"temperature": 0,
 		"max_tokens":  maxTokens,
 		"stream":      false,

@@ -528,7 +528,9 @@ func main() {
 		r.Post("/cases/{caseId}/eligibility/auto", s.autoEligibility) // Lever 1: auto-adjudicate when inputs complete
 		r.Post("/cases/{caseId}/copilot/brief", s.copilotBrief)       // Phase 1 copilot: grounded advisory brief
 		r.Get("/cases/{caseId}/copilot/brief", s.copilotBriefLatest)
-		r.Post("/cases/{caseId}/copilot/draft", s.copilotDraft)            // Phase 2: QA-gated determination/correspondence drafts
+		r.Post("/cases/{caseId}/copilot/draft", s.copilotDraft)     // Phase 2: QA-gated determination/correspondence drafts
+		r.Get("/cases/{caseId}/copilot/chat", s.copilotChatHistory) // Assistant thread (conversational surface)
+		r.Post("/cases/{caseId}/copilot/chat", s.copilotChat)
 		r.Post("/cases/{caseId}/copilot/actions", s.copilotProposeActions) // Phase 3: bounded action-batch proposal
 		r.Get("/cases/{caseId}/copilot/actions", s.copilotListActionBatches)
 		r.Post("/cases/{caseId}/copilot/actions/{batchId}/decision", s.copilotDecideActions) // human gate -> Temporal signal

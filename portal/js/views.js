@@ -400,6 +400,118 @@ const Views = (() => {
     }, decision === "APPROVE" ? "Executing…" : "Rejecting…");
   }
 
+  // ---- Assistant (conversational surface) -----------------------------------
+  // The per-case thread over the copilot primitives: grounded Q&A in plain
+  // language, with the Phase 1-3 actions as chips — the thread advises, the
+  // chips act, and every action still passes its human gate.
+  async function assistant(caseId) {
+    if (!can("CASE_MANAGER", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+      return `<div class="view-head"><h1>Assistant</h1></div><p class="muted">Requires a case staff role.</p>`;
+    if (!caseId) {
+      // Case picker: most recent cases first — the thread always belongs to
+      // one case, so grounding never drifts across records.
+      try {
+        const r = await Api.cases.list({ limit: 50 });
+        const rows = (r.cases || []).map((c) =>
+          `<tr class="click" onclick="location.hash='#/assistant/${c.id}'"><td class="mono">${esc(c.case_number)}</td>
+           <td>${esc(c.service_line || "")}</td><td>${badge(c.status)}</td></tr>`).join("");
+        return `<div class="view-head"><h1>Assistant</h1>
+          <span class="muted">grounded on platform-verified case facts · advisory only · every turn is on the record</span></div>
+          <p>Pick a case to open its thread:</p>
+          <table><thead><tr><th>Case</th><th>Line</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+      } catch (e) { return err(e); }
+    }
+    afterRender(async () => {
+      const thread = document.getElementById("asst-thread");
+      try {
+        const c = await Api.cases.get(caseId);
+        document.getElementById("asst-case").innerHTML =
+          `Case <a href="#/cases/${caseId}">${esc(c.case_number)}</a> · ${esc(c.status)}`;
+        const h = await Api.program.copilotChatHistory(caseId);
+        thread.innerHTML = (h.turns || []).map(asstTurnHtml).join("") ||
+          `<div class="muted" style="padding:12px">No turns yet — ask anything about this case, or use a chip below.</div>`;
+        thread.scrollTop = thread.scrollHeight;
+      } catch (e) {
+        thread.innerHTML = `<div class="muted" style="padding:12px">${esc(e.message)}</div>`;
+      }
+      const form = document.getElementById("asst-form");
+      form?.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const input = form.message;
+        const msg = input.value.trim();
+        if (msg) { input.value = ""; assistantSend(caseId, msg); }
+      });
+    });
+    return `<div class="view-head"><h1>Assistant</h1>
+      <span class="muted" id="asst-case">loading case…</span></div>
+      <div id="asst-thread" class="asst-thread"></div>
+      <div class="asst-chips">
+        <button class="mini" onclick="Views.assistantChip('${caseId}','brief',this)">▤ Brief me</button>
+        <button class="mini" onclick="Views.assistantChip('${caseId}','determination_rationale',this)">✍ Draft rationale</button>
+        <button class="mini" onclick="Views.assistantChip('${caseId}','correspondence',this)">✉ Draft correspondence</button>
+        <button class="mini" onclick="Views.assistantChip('${caseId}','actions',this)">⚙ Propose actions</button>
+      </div>
+      <form id="asst-form" class="asst-form">
+        <input name="message" autocomplete="off" placeholder="Ask about this case… (e.g. what's blocking eligibility?)" aria-label="Message the assistant" />
+        <button>Send</button>
+      </form>
+      <p class="muted" style="margin-top:6px">Advisory only — the assistant cannot change case state; chips route through the same gates as the screens. Every turn is recorded.</p>`;
+  }
+
+  function asstTurnHtml(t) {
+    const who = t.role === "user" ? "you" : `assistant${t.model ? ` · ${esc(t.model)}` : ""}`;
+    return `<div class="asst-turn ${t.role === "user" ? "asst-user" : "asst-ai"}">
+      <div class="asst-who">${who}</div>
+      <div class="asst-body">${esc(t.body)}</div></div>`;
+  }
+
+  function asstAppend(caseId, role, body, model) {
+    const thread = document.getElementById("asst-thread");
+    if (!thread) return;
+    thread.insertAdjacentHTML("beforeend", asstTurnHtml({ role, body, model }));
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  async function assistantSend(caseId, msg) {
+    asstAppend(caseId, "user", msg);
+    asstAppend(caseId, "assistant", "…", "");
+    try {
+      const r = await Api.program.copilotChat(caseId, msg);
+      const thread = document.getElementById("asst-thread");
+      thread?.querySelector(".asst-turn:last-child")?.remove();
+      asstAppend(caseId, "assistant", r.reply, r.model);
+    } catch (e) {
+      const thread = document.getElementById("asst-thread");
+      thread?.querySelector(".asst-turn:last-child")?.remove();
+      asstAppend(caseId, "assistant", `⚠ ${e.message}`, "");
+    }
+  }
+
+  // Chips run the Phase 1-3 primitives and narrate the outcome into the
+  // thread — same endpoints, same gates, conversational surface.
+  async function assistantChip(caseId, kind, btn) {
+    await UI.run(btn, async () => {
+      try {
+        if (kind === "brief") {
+          asstAppend(caseId, "user", "Brief me on this case.");
+          const r = await Api.program.copilotBrief(caseId);
+          asstAppend(caseId, "assistant", r.brief, r.model || "");
+        } else if (kind === "actions") {
+          asstAppend(caseId, "user", "Propose an action batch.");
+          const r = await Api.program.copilotProposeActions(caseId);
+          const acts = (r.actions || []).map((a) => `• ${a.type.replace(/_/g, " ")}`).join("\n") || "• (none)";
+          asstAppend(caseId, "assistant",
+            `Proposed ${(r.actions || []).length} action(s) — review and approve on the case page:\n${r.rationale || ""}\n${acts}`, r.model || "");
+        } else {
+          asstAppend(caseId, "user", kind === "correspondence" ? "Draft correspondence." : "Draft a determination rationale.");
+          const r = await Api.program.copilotDraft(caseId, kind);
+          asstAppend(caseId, "assistant",
+            `Draft queued in the QA gate (${r.subject}). Approve, edit, or reject it there — nothing is sent or filed automatically.`, "");
+        }
+      } catch (e) { asstAppend(caseId, "assistant", `⚠ ${e.message}`, ""); }
+    }, "Working…");
+  }
+
   async function escalate(caseId) {
     const v = await UI.modal({ title: "Escalate case", danger: true, submitLabel: "Escalate",
       body: "Supervisors and federal administrators are notified immediately. This is logged to the audit trail.",
@@ -1949,5 +2061,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

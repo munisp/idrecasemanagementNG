@@ -137,3 +137,17 @@ CREATE TABLE IF NOT EXISTS public.copilot_action_batches (
 );
 CREATE INDEX IF NOT EXISTS copilot_batches_case ON public.copilot_action_batches (tenant, case_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS copilot_batches_pending ON public.copilot_action_batches (tenant, status) WHERE status = 'PENDING_APPROVAL';
+
+-- Copilot conversational threads (Assistant surface): both directions of
+-- every turn, per case, with the model attribution — the thread is part of
+-- the case record.
+CREATE TABLE IF NOT EXISTS public.copilot_threads (
+    id         bigserial PRIMARY KEY,
+    tenant     text NOT NULL,
+    case_id    uuid NOT NULL,
+    role       text NOT NULL,          -- user | assistant
+    body       text NOT NULL,
+    model      text,                   -- assistant turns only
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS copilot_threads_case ON public.copilot_threads (tenant, case_id, created_at);
