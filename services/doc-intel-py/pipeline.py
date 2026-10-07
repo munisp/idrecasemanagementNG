@@ -261,7 +261,7 @@ def stage_ocr(ctx: dict, cfg: dict) -> dict:
     ctx['scan_quality_poor'] tells validate() to demand human verification."""
     from paddleocr import PaddleOCR
 
-    pages = ctx["pages"]
+    pages = ensure_pages(ctx, dpi=cfg.get("render_dpi", 200))
     qualities = [assess_page_quality(p) for p in pages[:10]]  # sample bound
     poor_pages = [i for i, q in enumerate(qualities) if q["poor"]]
     ctx["scan_quality"] = qualities
@@ -328,7 +328,7 @@ def stage_layout(ctx: dict, cfg: dict) -> dict:
         ),
     )
     regions: list[dict] = []
-    for i, page in enumerate(ctx["pages"]):
+    for i, page in enumerate(ensure_pages(ctx)):
         for res in engine.predict(np_from_pil(page)):
             for blk in res.get("parsing_res_list", []):
                 regions.append({
@@ -473,7 +473,10 @@ def stage_vlm_extract(ctx: dict, cfg: dict, schemas: dict) -> dict:
     # anyway -- this just avoids that cap being spent entirely on a
     # redundant copy of content `md` already has.
     tables_hint = json.dumps(ctx.get("tables", [])[:1])[:300]
-    pages = ctx.get("pages", [])
+    # Page images only when the configured model actually consumes them —
+    # with the text-only local Ollama default, rasterizing pages for the
+    # VLM is pure waste (ensure_pages renders lazily on first real need).
+    pages = ensure_pages(ctx) if cfg.get("vision") else ctx.get("pages", [])
     max_pages = cfg.get("max_pages", 3)
 
     instructions = (
@@ -823,8 +826,12 @@ def load_pipeline(path: str = "pipeline.yaml") -> dict:
     return spec
 
 
-def run_pipeline(ctx: dict, case: dict | None = None) -> dict:
+def run_pipeline(ctx: dict, case: dict | None = None, schema_overrides: dict | None = None) -> dict:
     spec = load_pipeline()
+    # Tenants may declare their own extraction schemas (NG: Program Manifest
+    # documents.schemas). Overrides MERGE onto the built-ins — a tenant
+    # schema shadows the same-named built-in, unknown names just extend.
+    schemas = {**spec["schemas"], **(schema_overrides or {})}
     for st in spec["stages"]:
         if not st.get("enabled", True):
             continue
@@ -836,7 +843,7 @@ def run_pipeline(ctx: dict, case: dict | None = None) -> dict:
         name, cfg = st["name"], st.get("config", {})
         try:
             if name == "vlm_extract":
-                ctx = stage_vlm_extract(ctx, cfg, spec["schemas"])
+                ctx = stage_vlm_extract(ctx, cfg, schemas)
             elif name == "validate":
                 ctx = stage_validate(ctx, cfg, case)
             else:
@@ -946,6 +953,23 @@ def sniff_doc_kind(data: bytes, content_type: str) -> str:
         if printable / len(sample) > 0.95:
             return "text"
     return "unknown"
+
+
+def ensure_pages(ctx: dict, dpi: int = 200) -> list[Image.Image]:
+    """Lazily rasterize PDF pages. Only stages that truly need bitmaps
+    (OCR fallback, vision VLM, layout analysis) pay the render cost —
+    previously EVERY PDF was rasterized at 200dpi before Docling even
+    ran, and for born-digital documents (the common case) those bitmaps
+    were never used: seconds of CPU and hundreds of MB per doc, wasted."""
+    if ctx.get("pages"):
+        return ctx["pages"]
+    if sniff_doc_kind(ctx.get("raw_bytes", b""), ctx.get("content_type", "")) != "pdf":
+        return ctx.get("pages") or []
+    pages, truncated = pdf_to_pages(ctx["raw_bytes"], dpi=dpi)
+    ctx["pages"] = pages
+    if truncated:
+        ctx["pages_truncated"] = True
+    return pages
 
 
 def bytes_to_pages(data: bytes, content_type: str,

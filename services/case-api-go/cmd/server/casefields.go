@@ -207,7 +207,7 @@ func (s *server) requestAdhocDeliverable(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
 		return
 	}
-	due := addBusinessDays(time.Now(), 10)
+	due := addBusinessDays(time.Now(), 10, nil)
 	var id int64
 	err := s.db.QueryRow(r.Context(), `
 		INSERT INTO public.deliverables (tenant, name, contract_ref, due_rule, due_date)

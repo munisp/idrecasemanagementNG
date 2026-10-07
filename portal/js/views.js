@@ -62,7 +62,17 @@ const Views = (() => {
 
   // Server-driven column sort, stored in the hash so it survives refresh and
   // is shareable: '#/cases?sort=-qpa_cents' (prefix '-' = descending).
-  const SORTABLE = new Set(["case_number", "status", "service_line", "qpa_cents", "opened_at"]);
+  const SORTABLE = new Set(["case_number", "status", "service_line", "qpa_cents", "opened_at", "sla"]);
+  // Lever 2/3/4: triage lane chip, signed SLA badge, batch group headers.
+  const laneChip = (lane) => lane === "AUTO_REVIEW" ? `<span class="chip lane-auto" title="Everything needed for a one-click confirm is present">AUTO</span>`
+    : lane === "COMPLEX" ? `<span class="chip lane-complex" title="Batched, duplicated, escalated, or high-dollar">COMPLEX</span>`
+    : `<span class="chip lane-std">STANDARD</span>`;
+  const slaBadge = (days) => {
+    if (days === undefined || days === null) return '<span class="muted">—</span>';
+    const cls = days < 0 ? "sla breach" : days <= 3 ? "sla risk" : days <= 7 ? "sla watch" : "sla ok";
+    const label = days < 0 ? `${-days}bd overdue` : days === 0 ? "due today" : `${days}bd left`;
+    return `<span class="${cls}" title="Statutory determination clock (exact business days, tenant holidays)">${label}</span>`;
+  };
   function sortableTh(col, label, cur) {
     if (!cur && cur !== "") return `<th>${label}</th>`;
     const active = cur === col || cur === "-" + col;
@@ -79,21 +89,51 @@ const Views = (() => {
     const s = q.toString();
     location.hash = "#/cases" + (s ? "?" + s : "");
   }
-  const caseTable = (rows, clocks = {}, sort = "") => rows.length ? `
+  const caseTable = (rows, clocks = {}, sort = "", groupBatch = false) => {
+    if (!rows.length) return `<p class="muted">No disputes.</p>`;
+    const row = (c) => `<tr class="click" data-case="${c.id}">
+        <td class="selcol"><input type="checkbox" class="sel-one" data-id="${c.id}" ${selection.has(c.id) ? "checked" : ""} aria-label="Select ${esc(c.case_number)}"></td>
+        <td class="mono">${esc(c.case_number)}</td><td>${badge(c.status)}</td><td>${esc(c.service_line)}</td>
+        <td class="num">$${((c.qpa_cents || 0) / 100).toLocaleString()}</td>
+        <td>${laneChip(c.triage_lane)}</td>
+        <td>${slaBadge(c.sla_days_remaining)}</td>
+        <td>${clocks[c.id] && clocks[c.id].length ? clockChip(nearestClock(clocks[c.id])) : '<span class="muted">—</span>'}</td>
+        <td class="muted">${fmtDate(c.opened_at)}</td>
+        <td><button class="mini peek" data-id="${c.id}" title="Peek without losing your place">▸</button></td></tr>`;
+    let body = "";
+    if (groupBatch) {
+      // Lever 3: batch-as-one — batched disputes collapse under a group header
+      // so a 40-claim batch reads as ONE unit of work, not 40 queue rows.
+      const groups = new Map();
+      const singles = [];
+      for (const c of rows) {
+        if (c.batch_id) {
+          if (!groups.has(c.batch_id)) groups.set(c.batch_id, []);
+          groups.get(c.batch_id).push(c);
+        } else singles.push(c);
+      }
+      for (const [bid, members] of groups) {
+        const sum = members.reduce((a, c) => a + (c.qpa_cents || 0), 0);
+        const worst = Math.min(...members.map((c) => (c.sla_days_remaining ?? 9999)));
+        body += `<tr class="batch-head"><td colspan="10">▦ Batch ${esc(bid.slice(0, 8))} — ${members.length} ${esc(App.t("case_plural"))} ·
+          $${(sum / 100).toLocaleString()} combined · ${slaBadge(worst)}
+          <span class="muted">(review as one: same payer, same fact pattern)</span></td></tr>` +
+          members.map((c) => row(c).replace('<tr class="click"', '<tr class="click batched"')).join("");
+      }
+      body += singles.map(row).join("");
+    } else {
+      body = rows.map(row).join("");
+    }
+    return `
     <div class="dg-wrap">
       <table class="dg"><thead><tr>
         <th class="selcol"><input type="checkbox" id="sel-all" aria-label="Select all"></th>
         ${[["case_number", "Case #"], ["status", "Status"], ["service_line", App.t("service_label")], ["qpa_cents", App.t("amount_label")]]
           .map(([c, l]) => sortableTh(c, l, sort)).join("")}
+        <th>Lane</th>${sortableTh("sla", "SLA", sort)}
         <th>Statutory clock</th>${sortableTh("opened_at", "Opened", sort)}<th></th></tr></thead><tbody>` +
-      rows.map((c) => `<tr class="click" data-case="${c.id}">
-        <td class="selcol"><input type="checkbox" class="sel-one" data-id="${c.id}" ${selection.has(c.id) ? "checked" : ""} aria-label="Select ${esc(c.case_number)}"></td>
-        <td class="mono">${esc(c.case_number)}</td><td>${badge(c.status)}</td><td>${esc(c.service_line)}</td>
-        <td class="num">$${(c.qpa_cents / 100).toLocaleString()}</td>
-        <td>${clocks[c.id] && clocks[c.id].length ? clockChip(nearestClock(clocks[c.id])) : '<span class="muted">—</span>'}</td>
-        <td class="muted">${fmtDate(c.opened_at)}</td>
-        <td><button class="mini peek" data-id="${c.id}" title="Peek without losing your place">▸</button></td></tr>`).join("") +
-      `</tbody></table></div>` : `<p class="muted">No disputes.</p>`;
+      body + `</tbody></table></div>`;
+  };
 
   function bindGrid(rows) {
     $("#sel-all")?.addEventListener("change", (e) => {
@@ -179,10 +219,12 @@ const Views = (() => {
       const hq = new URLSearchParams(location.hash.split("?")[1] || "");
       const v = hq.get("view");
       const sort = hq.get("sort") || "";
+      const lane = hq.get("lane") || "";
+      const groupBatch = hq.get("batch") === "1";
       const saved = await Api.cm.views().catch(() => []);
       const sv = saved.find((s) => s.id === v);
       const status = sv && sv.filters && sv.filters.status ? sv.filters.status : "";
-      const reqParams = { limit: PAGE_SIZE, ...(status ? { status } : {}), ...(sort ? { sort } : {}) };
+      const reqParams = { limit: PAGE_SIZE, ...(status ? { status } : {}), ...(sort ? { sort } : {}), ...(lane ? { lane } : {}) };
       const [page, clocks] = await Promise.all([Api.cases.list(reqParams), clockMap()]);
       let loaded = page.cases.slice();   // accumulated rows across pages
       let cursor = page.next_cursor;     // "" when no more pages
@@ -194,6 +236,20 @@ const Views = (() => {
         ${cursor ? `<button class="mini" id="more">Load more (${Math.min(PAGE_SIZE, total - loaded.length)} of ${total - loaded.length} remaining)</button>` : ""}</p>`;
       afterRender(() => {
         bindGrid(loaded);
+        // Lever 2: lane tabs re-filter server-side; Lever 3: batch grouping
+        // toggles batch-as-one rows. Both live in the hash = shareable.
+        document.querySelectorAll(".lane-tab").forEach((b) => b.addEventListener("click", () => {
+          const q = new URLSearchParams(location.hash.split("?")[1] || "");
+          b.dataset.lane ? q.set("lane", b.dataset.lane) : q.delete("lane");
+          const s = q.toString();
+          location.hash = "#/cases" + (s ? "?" + s : "");
+        }));
+        $("#batch-tgl")?.addEventListener("click", () => {
+          const q = new URLSearchParams(location.hash.split("?")[1] || "");
+          groupBatch ? q.delete("batch") : q.set("batch", "1");
+          const s = q.toString();
+          location.hash = "#/cases" + (s ? "?" + s : "");
+        });
         $("#density").onclick = () => {
           const next = (localStorage.getItem("idre.density") || "comfortable") === "comfortable" ? "compact" : "comfortable";
           (window.Prefs ? Prefs.push("density", next) : localStorage.setItem("idre.density", next));
@@ -210,12 +266,12 @@ const Views = (() => {
         const loadMore = async (ev) => {
           await UI.run(ev.currentTarget, async () => {
             try {
-              const more = { limit: PAGE_SIZE, ...(status ? { status } : {}), ...(sort ? { sort } : {}) };
+              const more = { limit: PAGE_SIZE, ...(status ? { status } : {}), ...(sort ? { sort } : {}), ...(lane ? { lane } : {}) };
               if (cursor.startsWith("offset:")) more.offset = cursor.slice(7); else more.cursor = cursor;
               const next = await Api.cases.list(more);
               loaded = loaded.concat(next.cases);
               cursor = next.next_cursor;
-              document.querySelector(".dg-wrap").outerHTML = caseTable(loaded, clocks, sort || "opened_at");
+              document.querySelector(".dg-wrap").outerHTML = caseTable(loaded, clocks, sort || "opened_at", groupBatch);
               $("#pg").innerHTML = pager();
               bindGrid(loaded);
               $("#more")?.addEventListener("click", loadMore);
@@ -229,12 +285,17 @@ const Views = (() => {
         <span style="flex:1"></span>
         <button class="mini" id="grab">⇪ Grab next</button>
         <button class="mini" id="density">Density: ${density}</button></div>
+        <p class="lane-tabs" role="tablist" aria-label="Triage lanes">
+          ${[["", "All"], ["AUTO_REVIEW", "Auto-review"], ["STANDARD", "Standard"], ["COMPLEX", "Complex"]]
+            .map(([l, lab]) => `<button class="mini lane-tab${lane === l ? " active" : ""}" data-lane="${l}" role="tab" aria-selected="${lane === l}">${lab}</button>`).join("")}
+          <button class="mini" id="batch-tgl" aria-pressed="${groupBatch}" title="Collapse batched disputes into one reviewable group">${groupBatch ? "▦ Batches: grouped" : "▦ Group batches"}</button>
+        </p>
         <p class="viewbar">
           <select onchange="location.hash='#/cases?view='+this.value" aria-label="Saved views">
             <option value="">All disputes</option>${opts}</select>
           <button class="mini" onclick="Views.saveCurrentView()">Save current view</button>
           ${sv ? `<span class="muted">filter: status = ${esc(sv.filters.status)}</span>` : ""}</p>` +
-        caseTable(loaded, clocks, sort || "opened_at") + `<div id="pg">${pager()}</div>`;
+        caseTable(loaded, clocks, sort || "opened_at", groupBatch) + `<div id="pg">${pager()}</div>`;
     } catch (e) { return `<h1>${esc(App.t("case_plural"))}</h1>` + err(e); }
   }
 
@@ -892,6 +953,8 @@ const Views = (() => {
         Result is ELIGIBLE, INELIGIBLE (with reason code), or HOLD_AOR — and INELIGIBLE/HOLD move the case status
         automatically.</p>
       <div id="p-elig-history"></div>
+      <div class="actions"><button id="p-elig-auto" title="Derives every rule input from the case record and analyzed documents, then decides — or tells you exactly which inputs are still missing">⚡ Auto-adjudicate from case + documents</button></div>
+      <div id="p-elig-auto-out"></div>
       <form id="p-elig" class="inline-form">
         <input name="provider_type" placeholder="provider type (e.g. hospital_inpatient)" required />
         <label>contracted <input type="checkbox" name="contracted" /></label>
@@ -974,6 +1037,23 @@ const Views = (() => {
         const f = ev.target;
         try { await Api.program.setDate(id, f.key.value, f.value.value); UI.toast("Program date recorded — clocks re-projected"); loadDates(); }
         catch (e) { UI.toast(e.message, { kind: "warn" }); }
+      });
+      $("#p-elig-auto")?.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        const out = document.getElementById("p-elig-auto-out");
+        await UI.run(ev.currentTarget, async () => {
+          try {
+            const r = await Api.program.eligibilityAuto(id);
+            if (r.result === "NEEDS_HUMAN") {
+              out.innerHTML = `<p class="warn-box">⚠ Can't auto-decide — missing rule inputs:
+                <b>${(r.missing || []).map(esc).join(", ")}</b>. Fill them in the form below and compute manually.</p>`;
+            } else {
+              out.innerHTML = `<p>${badge(r.result)} ${r.reason ? esc(r.reason) : ""}
+                <span class="muted">auto review ${esc(r.review_id)} — inputs derived from case record + analyzed documents</span></p>`;
+              loadElig();
+            }
+          } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+        }, "Evaluating…");
       });
       $("#p-elig")?.addEventListener("submit", async (ev) => {
         ev.preventDefault();

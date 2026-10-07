@@ -360,3 +360,14 @@ th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--accent-fg)}
 th.sorted{color:var(--accent-fg);font-weight:700}
 .pager{display:flex;align-items:center;gap:12px;margin:10px 2px;font-size:12.5px}
+
+/* ---------- triage lanes / batch-as-one / auto-eligibility (productivity levers) ---------- */
+.chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:var(--radius-chip);font-size:10.5px;font-weight:700;letter-spacing:.03em;white-space:nowrap}
+.chip.lane-auto{background:color-mix(in srgb,var(--success-fg) 14%,transparent);color:var(--success-fg)}
+.chip.lane-std{background:var(--surface-sunken);color:var(--text-secondary)}
+.chip.lane-complex{background:color-mix(in srgb,var(--danger-fg) 12%,transparent);color:var(--danger-fg)}
+.lane-tabs{display:flex;gap:6px;align-items:center;margin:6px 0 2px;flex-wrap:wrap}
+.lane-tab.active{outline:2px solid var(--accent-fg,var(--attention-fg));outline-offset:1px}
+tr.batch-head td{background:var(--surface-sunken);font-weight:600;border-top:2px solid var(--border-default);padding:8px 10px}
+tr.batched td:first-child{border-left:3px solid var(--attention-fg)}
+.warn-box{padding:8px 12px;border:1px solid var(--warning-fg);border-radius:8px;background:color-mix(in srgb,var(--warning-fg) 10%,transparent)}

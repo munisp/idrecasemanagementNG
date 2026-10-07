@@ -32,13 +32,13 @@ type ClockView struct {
 	BasisNote string `json:"basis_note"` // provenance of the start timestamp
 }
 
-// addBusinessDays returns the date n business days after start (weekend-aware;
-// tenant holiday calendars in state_config.extra_holidays can refine this later).
-func addBusinessDays(start time.Time, n int) time.Time {
+// addBusinessDays returns the date n business days after start, honoring the
+// tenant holiday calendar when provided (nil = weekends only).
+func addBusinessDays(start time.Time, n int, holidays map[string]bool) time.Time {
 	d := start
 	for n > 0 {
 		d = d.AddDate(0, 0, 1)
-		if wd := d.Weekday(); wd != time.Saturday && wd != time.Sunday {
+		if isBusinessDay(d, holidays) {
 			n--
 		}
 	}
@@ -100,7 +100,7 @@ func projectClocks(c clockRow, today time.Time) []ClockView {
 			note = "offer-window close"
 		}
 		out = append(out, mk("DETERMINATION_30BD", "Determination due (30bd)", "business", 30,
-			addBusinessDays(start, 30), "45 CFR 149.510(c)(4)(ii)(B)", note))
+			addBusinessDays(start, 30, nil), "45 CFR 149.510(c)(4)(ii)(B)", note))
 	case "DETERMINED", "PAYMENT_PENDING":
 		out = append(out, mk("PAYMENT_30CD", "Payment due (30cd)", "calendar", 30,
 			c.updatedAt.AddDate(0, 0, 30), "45 CFR 149.510(c)(4)(vii)",

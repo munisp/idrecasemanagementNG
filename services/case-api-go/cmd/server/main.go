@@ -133,6 +133,12 @@ type Case struct {
 	QPA             int64     `json:"qpa_cents"`
 	OpenedAt        time.Time `json:"opened_at"`
 	OfferWindowEnds time.Time `json:"offer_window_ends_at"`
+	// Triage enrichment (triage.go): lane, SLA and batching signals so the
+	// portal can sort/filter the queue without a second round-trip.
+	BatchID          *string `json:"batch_id,omitempty"`
+	PayerID          string  `json:"payer_id,omitempty"`
+	TriageLane       string  `json:"triage_lane,omitempty"`
+	SLADaysRemaining int     `json:"sla_days_remaining"`
 }
 
 type InitiateRequest struct {
@@ -508,6 +514,7 @@ func main() {
 		r.Post("/cases/{caseId}/status", s.setDualStatus)             // dual internal/agency status (G5)
 		r.Post("/cases/{caseId}/eligibility", s.checkEligibility)     // threshold matrix + filing window (G2)
 		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)     // past reviews (G2)
+		r.Post("/cases/{caseId}/eligibility/auto", s.autoEligibility) // Lever 1: auto-adjudicate when inputs complete
 		r.Post("/cases/{caseId}/correspondence", s.draftCorrespondence) // template draft / send (G3)
 		r.Get("/cases/{caseId}/correspondence", s.listCorrespondence)
 		r.Post("/cases/{caseId}/share-links", s.createShareLink)      // tokenized upload/download (G9)
@@ -809,32 +816,41 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
 		limit = min(n, 200)
 	}
-	where, args := "", []any{}
+	where, args := "", []any{tenant}
 	add := func(clause string, v any) {
 		args = append(args, v)
 		where += fmt.Sprintf(" AND "+clause, len(args))
 	}
 	if st := q.Get("status"); st != "" {
-		add("status = $%d", st)
+		add("c.status = $%d", st)
 	}
 	if qs := q.Get("q"); qs != "" {
-		add("case_number ILIKE '%%' || $%d || '%%'", qs)
+		add("c.case_number ILIKE '%%' || $%d || '%%'", qs)
+	}
+	// Lever 2: lane filter (whitelisted — never interpolate raw values).
+	if lane := q.Get("lane"); lane == "AUTO_REVIEW" || lane == "STANDARD" || lane == "COMPLEX" {
+		where += fmt.Sprintf(" AND %s = '%s'", triageLaneSQL, lane)
 	}
 	// Sort: default opened_at DESC uses keyset pagination; any explicit column
 	// sort switches to offset mode (keyset over arbitrary columns isn't stable).
-	sortCol, sortDir := "opened_at", "DESC"
+	// sort=sla = soonest determination deadline first = oldest opened_at ASC.
+	sortCol, sortDir := "c.opened_at", "DESC"
 	if s := q.Get("sort"); s != "" {
-		whitelist := map[string]string{"opened_at": "opened_at", "case_number": "case_number",
-			"status": "status", "qpa_cents": "qpa_cents", "service_line": "service_line"}
+		whitelist := map[string]string{"opened_at": "c.opened_at", "case_number": "c.case_number",
+			"status": "c.status", "qpa_cents": "coalesce(c.benchmark_cents, c.qpa_cents)",
+			"service_line": "coalesce(c.subject_line, c.service_line)", "sla": "c.opened_at"}
 		col, dir := s, "ASC"
 		if strings.HasPrefix(s, "-") {
 			col, dir = strings.TrimPrefix(s, "-"), "DESC"
+		}
+		if col == "sla" {
+			dir = "ASC" // soonest deadline first, always
 		}
 		if c, ok := whitelist[col]; ok {
 			sortCol, sortDir = c, dir
 		}
 	}
-	offsetMode := sortCol != "opened_at" || sortDir != "DESC"
+	offsetMode := sortCol != "c.opened_at" || sortDir != "DESC"
 	offset := 0
 	if offsetMode {
 		if n, err := strconv.Atoi(q.Get("offset")); err == nil && n >= 0 {
@@ -845,20 +861,25 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 		if len(parts) == 2 {
 			if ts, err := time.Parse(time.RFC3339Nano, parts[0]); err == nil {
 				args = append(args, ts, parts[1])
-				where += fmt.Sprintf(" AND (opened_at, id) < ($%d, $%d::uuid)", len(args)-1, len(args))
+				where += fmt.Sprintf(" AND (c.opened_at, c.id) < ($%d, $%d::uuid)", len(args)-1, len(args))
 			}
 		}
 	}
 	tbl := sanitizeTenant(tenant)
+	fromClause := fmt.Sprintf(
+		`FROM tenant_%s.cases c LEFT JOIN (SELECT DISTINCT case_id FROM public.escalations WHERE tenant=$1) esc ON esc.case_id = c.id`, tbl)
 	var total int
 	if err := s.db.QueryRow(r.Context(),
-		fmt.Sprintf(`SELECT count(*) FROM tenant_%s.cases WHERE true%s`, tbl, where), args...).Scan(&total); err != nil {
+		fmt.Sprintf(`SELECT count(*) %s WHERE true%s`, fromClause, where), args...).Scan(&total); err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
-	query := fmt.Sprintf(`SELECT id, case_number, status, coalesce(subject_line, service_line) AS service_line, coalesce(benchmark_cents, qpa_cents) AS qpa_cents, opened_at
-		             FROM tenant_%s.cases WHERE true%s
-		             ORDER BY %s %s, id DESC LIMIT %d`, tbl, where, sortCol, sortDir, limit+1)
+	query := fmt.Sprintf(`SELECT c.id, c.case_number, c.status,
+		                 coalesce(c.subject_line, c.service_line) AS service_line,
+		                 coalesce(c.benchmark_cents, c.qpa_cents) AS qpa_cents, c.opened_at,
+		                 c.batch_id::text, coalesce(c.payer_id,''), %s AS triage_lane
+		             %s WHERE true%s
+		             ORDER BY %s %s, c.id DESC LIMIT %d`, triageLaneSQL, fromClause, where, sortCol, sortDir, limit+1)
 	if offsetMode {
 		query += fmt.Sprintf(" OFFSET %d", offset)
 	}
@@ -868,11 +889,18 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
+	// SLA is exact here: 30 statutory business days against the tenant's
+	// holiday calendar (calendar.go), not a calendar-day approximation.
+	holidays := s.holidaysFor(r.Context(), tenant)
 	out := []Case{}
 	for rows.Next() {
 		var c Case
-		if err := rows.Scan(&c.ID, &c.CaseNumber, &c.Status, &c.ServiceLine, &c.QPA, &c.OpenedAt); err == nil {
+		var batchID *string
+		if err := rows.Scan(&c.ID, &c.CaseNumber, &c.Status, &c.ServiceLine, &c.QPA, &c.OpenedAt,
+			&batchID, &c.PayerID, &c.TriageLane); err == nil {
 			c.Tenant = tenant
+			c.BatchID = batchID
+			c.SLADaysRemaining = slaDaysRemaining(c.OpenedAt, holidays)
 			out = append(out, c)
 		}
 	}

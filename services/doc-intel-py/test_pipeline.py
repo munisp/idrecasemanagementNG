@@ -234,3 +234,56 @@ def test_assess_page_quality_flags_blur_not_crisp():
     assert q_crisp["blur"] > q_blur["blur"]
     assert q_blur["poor"] is True
     assert q_crisp["poor"] is False
+
+
+# --- tenant schema overrides --------------------------------------------------
+
+def test_run_pipeline_merges_schema_overrides(monkeypatch):
+    """NG Program Manifest schemas must SHADOW same-named built-ins and extend
+    with new ones, without touching the pipeline spec on disk."""
+    captured = {}
+    fake_spec = {"stages": [{"name": "vlm_extract", "enabled": True}],
+                 "schemas": {"idr_claim": {"fields": {"builtin": {}}}}}
+    monkeypatch.setattr(pl, "load_pipeline", lambda: fake_spec)
+    def fake_extract(ctx, cfg, schemas):
+        captured["schemas"] = schemas
+        return ctx
+    monkeypatch.setattr(pl, "stage_vlm_extract", fake_extract)
+    pl.run_pipeline({}, schema_overrides={"idr_claim": {"fields": {"tenant": {}}},
+                                                "custom_doc": {"fields": {"x": {}}}})
+    assert captured["schemas"]["idr_claim"]["fields"] == {"tenant": {}}  # shadowed
+    assert "custom_doc" in captured["schemas"]                            # extended
+    # no overrides -> built-ins pass through untouched
+    captured.clear()
+    pl.run_pipeline({})
+    assert captured["schemas"] == fake_spec["schemas"]
+
+
+# --- lazy page rasterization -------------------------------------------------
+
+_TINY_PDF = b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length 58>>stream
+BT /F1 24 Tf 100 700 Td (Billed $500.00 CPT 99213) Tj ET
+endstream
+endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+trailer<</Root 1 0 R>>
+%%EOF"""
+
+
+def test_ensure_pages_renders_pdf_lazily_and_caches():
+    pypdfium2 = pytest.importorskip("pypdfium2")
+    ctx = {"raw_bytes": _TINY_PDF, "content_type": "application/pdf", "pages": []}
+    pages = pl.ensure_pages(ctx)
+    assert len(pages) == 1
+    assert ctx["pages"] is pages
+    again = pl.ensure_pages(ctx)
+    assert again is pages  # no second render
+
+
+def test_ensure_pages_noop_for_non_pdf():
+    ctx = {"raw_bytes": b"not a pdf", "content_type": "text/plain", "pages": []}
+    assert pl.ensure_pages(ctx) == []

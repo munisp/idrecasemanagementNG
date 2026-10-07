@@ -141,6 +141,7 @@ const Api = (() => {
       setDate: (caseId, key, value) => req("POST", `${t()}/cases/${caseId}/program-date`, { key, value }),
       setStatus: (caseId, p) => req("POST", `${t()}/cases/${caseId}/status`, p),
       eligibility: (caseId, p) => req("POST", `${t()}/cases/${caseId}/eligibility`, p),
+      eligibilityAuto: (caseId) => req("POST", `${t()}/cases/${caseId}/eligibility/auto`),
       eligibilityHistory: (caseId) => req("GET", `${t()}/cases/${caseId}/eligibility`),
       optOut: (caseId, eligible, rationale) => req("POST", `${t()}/cases/${caseId}/opt-out`, { eligible, rationale }),
       send: (caseId, p) => req("POST", `${t()}/cases/${caseId}/correspondence`, p),

@@ -12,6 +12,9 @@ import os
 import re
 import signal
 import sys
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import psycopg
@@ -22,26 +25,6 @@ from opensearchpy import OpenSearch
 from pipeline import bytes_to_pages, ooxml_safe, run_pipeline, sniff_doc_kind
 from rules_engine import expand_template, fire_rules, load_rules
 from check_processor import extract_check
-
-
-def load_manifest_schemas(tenant: str) -> dict:
-    """Extraction schemas declared by the tenant's Program Manifest
-    (config.manifest.documents.schemas). Fresh read per document — a schema
-    edit in the admin UI applies to the next analysis with no redeploy.
-    Empty/missing = built-in healthcare schemas (unchanged behavior)."""
-    try:
-        with psycopg.connect(DSN) as c:
-            row = c.execute(
-                "SELECT config->'manifest'->'documents'->'schemas' "
-                "FROM public.program_rules WHERE tenant=%s",
-                (tenant,),
-            ).fetchone()
-        if row and isinstance(row[0], dict):
-            return row[0]
-    except psycopg.Error as exc:
-        print(f"doc-intel: manifest schema load failed for {tenant}: {exc}",
-              file=sys.stderr, flush=True)
-    return {}
 
 
 def is_blocked(evt: dict, kind: str, subj_id: str) -> bool:
@@ -138,8 +121,15 @@ minio = Minio(
     secret_key=os.environ.get("MINIO_PASSWORD", "idre-secret"),
     secure=False,
 )
+# The shared OpenSearch cluster's security plugin is on -- constructed with
+# no credentials, every index() call below 401'd (opensearchpy raises
+# AuthenticationException), uncaught, which escaped persist() into main()'s
+# poll-loop catch-all and overwrote the already-successful analysis with a
+# generic ERROR status. Confirmed live.
+OPENSEARCH_PASSWORD = os.environ.get("OPENSEARCH_PASSWORD", "")
 search = OpenSearch(
     hosts=[os.environ.get("OPENSEARCH_URL", "http://localhost:9200")],
+    http_auth=("admin", OPENSEARCH_PASSWORD) if OPENSEARCH_PASSWORD else None,
     use_ssl=False,
 )
 
@@ -161,6 +151,43 @@ def load_case(tenant: str, case_id: str) -> dict | None:
             (case_id,),
         ).fetchone()
     return {"case_number": row[0], "qpa_cents": row[1]} if row else None
+
+
+def load_manifest_schemas(tenant: str) -> dict:
+    """Extraction schemas declared by the tenant's Program Manifest
+    (config.manifest.documents.schemas) — the NG manifest-terminology layer.
+    Fresh read per document: a schema edit in the admin UI applies to the
+    next analysis with no redeploy. Empty/missing = built-in schemas
+    (unchanged behavior). Failures degrade to built-ins, never to a crash."""
+    try:
+        with psycopg.connect(DSN) as c:
+            row = c.execute(
+                "SELECT config->'manifest'->'documents'->'schemas' "
+                "FROM public.program_rules WHERE tenant=%s",
+                (tenant,),
+            ).fetchone()
+        if row and isinstance(row[0], dict):
+            return row[0]
+    except psycopg.Error as exc:
+        print(f"doc-intel: manifest schema load failed for {tenant}: {exc}",
+              file=sys.stderr, flush=True)
+    return {}
+
+
+def unwrap_cloudevent(raw: dict) -> dict:
+    """This consumer reads Kafka directly (confluent-kafka), not through a
+    Dapr app-level subscription, but case-api publishes through its Dapr
+    sidecar -- which wraps every message in a CloudEvents envelope
+    (real payload nested under "data", top-level "type" forced to
+    "com.dapr.event.sent") regardless of the pubsub component's config.
+    Without this, every `evt.get("type") == "doc.uploaded"` check below
+    silently never matched: the message was still consumed and committed
+    (just skipped, no exception raised), so document analysis -- and the
+    DOCS_VERIFIED/DOC_ANALYZED signals that unblock onboarding and offer
+    workflows -- was dead with zero trace anywhere."""
+    if raw.get("specversion") and isinstance(raw.get("data"), dict):
+        return raw["data"]
+    return raw
 
 
 def subject(evt: dict) -> tuple[str, str]:
@@ -201,18 +228,25 @@ def persist(evt: dict, ctx: dict) -> None:
                  "ocr_enhanced": ctx.get("ocr_enhanced", False),
              })),
         )
-    search.index(
-        index=f"idre-docs-{evt['tenant']}",
-        id=evt["doc_id"],
-        # stage_index builds the searchable body; fall back to raw fields if
-        # the pipeline stopped before indexing (e.g. early ERROR paths).
-        body={**ctx.get("index_body", {}), "case_id": case_id, "application_id": application_id}
-        if ctx.get("index_body") else {
-            "case_id": case_id, "application_id": application_id, "doc_type": ctx.get("doc_type"),
-            "text": ctx.get("text", "")[:100000],
-            "extracted": ctx.get("extracted", {}),
-        },
-    )
+    # Best-effort, like the Temporal signal call below it: the Postgres
+    # insert just above is the real system of record for analysis status.
+    # A search-index outage should never cost the already-persisted result
+    # (confirmed live: it did, before this was guarded).
+    try:
+        search.index(
+            index=f"idre-docs-{evt['tenant']}",
+            id=evt["doc_id"],
+            # stage_index builds the searchable body; fall back to raw fields if
+            # the pipeline stopped before indexing (e.g. early ERROR paths).
+            body={**ctx.get("index_body", {}), "case_id": case_id, "application_id": application_id}
+            if ctx.get("index_body") else {
+                "case_id": case_id, "application_id": application_id, "doc_type": ctx.get("doc_type"),
+                "text": ctx.get("text", "")[:100000],
+                "extracted": ctx.get("extracted", {}),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — opensearchpy's exceptions don't share one base worth catching narrowly
+        print(f"doc-intel: OpenSearch index failed (non-fatal): {exc}", file=sys.stderr, flush=True)
     if kind != "case":
         return  # case_activities is a case-timeline table; applications have no equivalent here
     # Unified timeline: analysis result appears on the case activity stream
@@ -264,7 +298,10 @@ def process(evt: dict) -> None:
             print(f"doc-intel: refused office container {evt.get('doc_id')}: {reason}",
                   file=sys.stderr, flush=True)
             return
-    pages, truncated = bytes_to_pages(raw, evt.get("content_type", ""), kind=kind_of)
+    # Raster pages only for image uploads. PDFs render LAZILY inside the
+    # pipeline (ensure_pages) — a born-digital PDF never pays for bitmaps.
+    pages, truncated = (bytes_to_pages(raw, evt.get("content_type", ""), kind=kind_of)
+                        if kind_of == "image" else ([], False))
     ctx = {
         "filename": evt.get("object_key", ""),
         "raw_bytes": raw,                                   # Docling parses bytes directly
@@ -273,11 +310,12 @@ def process(evt: dict) -> None:
     }
     ctx = run_pipeline(ctx, case=load_case(evt["tenant"], subj_id) if kind == "case" else None,
                        schema_overrides=load_manifest_schemas(evt["tenant"]))
+    truncated = truncated or ctx.get("pages_truncated", False)
     if truncated:
         # Page-capped render: analysis covers the first DOC_INTEL_MAX_PAGES
         # pages; a human must look at the rest.
         ctx.setdefault("findings", []).append(
-            {"field": None, "issue": f"Document exceeds page cap — analysis covers first {len(pages)} pages only; remainder needs manual review"})
+            {"field": None, "issue": f"Document exceeds page cap — analysis covers first {len(ctx.get('pages', []))} pages only; remainder needs manual review"})
         ctx["status"] = "ANALYZED_WITH_FINDINGS"
         ctx["result_truncated"] = True
     persist(evt, ctx)
@@ -319,7 +357,8 @@ def mark(evt: dict, status: str) -> None:
 
 def process_check(evt: dict) -> None:
     """Physical check intake: vault-sealed image -> MICR/OCR/ICR extraction ->
-    results posted back to case-api, which does invoice matching."""
+    results posted back to case-api, which does invoice matching. The image
+    never lingers unsealed; extraction detail persists via case-api (audit)."""
     check_id = evt["check_id"]
     try:
         raw = fetch_and_decrypt(evt["tenant"], evt["object_key"])
@@ -331,8 +370,9 @@ def process_check(evt: dict) -> None:
             timeout=30,
         )
         resp.raise_for_status()
-        print(f"check {check_id}: extracted conf={result.confidence}", flush=True)
-    except Exception as exc:  # noqa: BLE001
+        print(f"check {check_id}: extracted conf={result.confidence} "
+              f"amount={result.amount_cents} match={resp.json().get('match')}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — tell case-api extraction failed
         print(f"check {check_id} extraction failed: {exc}", file=sys.stderr, flush=True)
         try:
             httpx.post(
@@ -361,30 +401,61 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    print("doc-intel consuming idre.*.documents ...", flush=True)
+    # Bounded worker pool: analysis is I/O-heavy (vault fetch, VLM round-
+    # trips) plus CPU bursts (OCR). Serial poll->process->commit left the
+    # pool idle during every network wait. Documents are processed
+    # concurrently but commits stay IN ORDER (head-of-line drain), so an
+    # offset is only committed once every preceding message has finished —
+    # at-least-once semantics unchanged. DOC_INTEL_WORKERS default 3: the
+    # heavy models are process singletons now, so each extra worker costs
+    # threads, not model copies.
+    workers = int(os.environ.get("DOC_INTEL_WORKERS", "3"))
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="doc")
+    pending = deque()  # (msg, future), FIFO for in-order commit
+
+    def run(evt: dict) -> None:
+        if evt.get("type") == "doc.uploaded":
+            process(evt)
+        elif evt.get("type") == "check.uploaded":
+            process_check(evt)
+
+    def drain(block: bool = False) -> None:
+        while pending and (block or pending[0][1].done()):
+            msg, fut = pending[0]
+            try:
+                fut.result()  # raises only on a bug that escaped process()
+            except Exception as exc:  # noqa: BLE001
+                # Poison message handling: park on doc_processing_errors,
+                # keep consuming. mark() itself must never raise here.
+                print(f"doc-intel error: {exc}", file=sys.stderr, flush=True)
+                try:
+                    mark(unwrap_cloudevent(json.loads(msg.value())), "ERROR")
+                except Exception as mark_exc:  # noqa: BLE001
+                    print(f"doc-intel error (while marking a previous error): {mark_exc}",
+                          file=sys.stderr, flush=True)
+            consumer.commit(msg)
+            pending.popleft()
+            block = False
+
+    print(f"doc-intel consuming idre.*.documents (workers={workers}) ...", flush=True)
     while running:
-        msg = consumer.poll(1.0)
+        drain()
+        if len(pending) >= workers * 2:
+            time.sleep(0.05)  # backpressure: don't outrun the pool
+            continue
+        msg = consumer.poll(0.5)
         if msg is None or msg.error():
             continue
         try:
-            evt = json.loads(msg.value())
-            if evt.get("type") == "doc.uploaded":
-                process(evt)
-            elif evt.get("type") == "check.uploaded":
-                process_check(evt)
-            consumer.commit(msg)
-        except Exception as exc:  # noqa: BLE001
+            evt = unwrap_cloudevent(json.loads(msg.value()))
+            pending.append((msg, pool.submit(run, evt)))
+        except Exception as exc:  # noqa: BLE001 — unparseable envelope
             print(f"doc-intel error: {exc}", file=sys.stderr, flush=True)
-            # Poison message handling: park on doc_processing_errors, keep
-            # consuming. mark() itself must never be able to raise here -- it
-            # used to (a blind evt["case_id"] on an application event), which
-            # escaped uncaught and killed the whole consumer, not just this
-            # one message, stopping document processing for every tenant.
-            try:
-                mark(json.loads(msg.value()), "ERROR")
-            except Exception as mark_exc:  # noqa: BLE001
-                print(f"doc-intel error (while marking a previous error): {mark_exc}", file=sys.stderr, flush=True)
             consumer.commit(msg)
+    # graceful shutdown: finish in-flight work before closing
+    while pending:
+        drain(block=True)
+    pool.shutdown(wait=True)
     consumer.close()
 
 

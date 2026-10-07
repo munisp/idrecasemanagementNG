@@ -128,7 +128,7 @@ func projectProgramClocks(rules []ClockRule, dates map[string]string, today time
 		var due time.Time
 		var remaining int
 		if rl.DayType == "business" {
-			due = addBusinessDays(basis, rl.Days)
+			due = addBusinessDays(basis, rl.Days, nil)
 			remaining = businessDaysBetween(today, due, nil)
 		} else {
 			due = basis.AddDate(0, 0, rl.Days)
@@ -228,7 +228,9 @@ func (s *server) setDualStatus(w http.ResponseWriter, r *http.Request) {
 
 // checkEligibility (G2): computes the eligibility result from program rules —
 // threshold matrix, 12-month filing window, explicit ineligibility flags —
-// and stores the review with its evidence.
+// and stores the review with its evidence. The decision logic itself lives
+// in triage.go:evalEligibility, shared with the auto-adjudication path so
+// the two can never drift apart.
 func (s *server) checkEligibility(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	id := chi.URLParam(r, "caseId")
@@ -237,80 +239,15 @@ func (s *server) checkEligibility(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"no program rules for tenant"}`, http.StatusBadRequest)
 		return
 	}
-	var in struct {
-		ProviderType         string   `json:"provider_type"`
-		Contracted           *bool    `json:"contracted"`
-		DisputedAmountCents  int64    `json:"disputed_amount_cents"`
-		FinalDeterminationAt string   `json:"final_determination_at"` // YYYY-MM-DD (proof: EOB/service/appeal)
-		Flags                []string `json:"flags"`                  // ineligibility reason codes
-		AORValid             *bool    `json:"aor_valid"`
-	}
+	var in eligibilityInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 		return
 	}
 
-	result, reason := "ELIGIBLE", ""
-	evidence := map[string]any{"flags": in.Flags, "provider_type": in.ProviderType}
-
-	// explicit ineligibility flags win
-	for _, f := range in.Flags {
-		if contains(cfg.Eligibility.Reasons, f) {
-			result, reason = "INELIGIBLE", f
-			break
-		}
-	}
-	// 12-month filing window
-	if result == "ELIGIBLE" && cfg.Eligibility.FilingWindowMonths > 0 && in.FinalDeterminationAt != "" {
-		if fd, err := time.Parse("2006-01-02", in.FinalDeterminationAt); err == nil {
-			deadline := fd.AddDate(0, cfg.Eligibility.FilingWindowMonths, 0)
-			evidence["filing_deadline"] = deadline.Format("2006-01-02")
-			if time.Now().After(deadline) {
-				result, reason = "INELIGIBLE", "over_12_months"
-			}
-		}
-	}
-	// threshold matrix
-	if result == "ELIGIBLE" {
-		for _, th := range cfg.Eligibility.Thresholds {
-			if th.ProviderType != in.ProviderType {
-				continue
-			}
-			if th.Contracted != nil && in.Contracted != nil && *th.Contracted != *in.Contracted {
-				continue
-			}
-			evidence["threshold_min_cents"] = th.MinCents
-			if in.DisputedAmountCents < th.MinCents {
-				result, reason = "INELIGIBLE", "below_threshold"
-			}
-			break
-		}
-	}
-	// AOR hold
-	if result == "ELIGIBLE" && in.AORValid != nil && !*in.AORValid {
-		result, reason = "HOLD_AOR", "aor_invalid_pending_attorney"
-	}
-
+	result, reason, evidence := evalEligibility(cfg, in)
 	p := r.Context().Value(ctxPrincipal{}).(principal)
-	ev, _ := json.Marshal(evidence)
-	var reviewID string
-	_ = s.db.QueryRow(r.Context(), `
-		INSERT INTO public.eligibility_reviews (tenant, case_id, result, reason, evidence, decided_by)
-		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-		tenant, id, result, reason, ev, p.Subject).Scan(&reviewID)
-
-	// side effects per program semantics
-	switch result {
-	case "HOLD_AOR":
-		_, _ = s.db.Exec(r.Context(),
-			fmt.Sprintf(`UPDATE tenant_%s.cases SET internal_status='Hold', agency_status='Other', updated_at=now() WHERE id=$1`, sanitizeTenant(tenant)), id)
-		s.notify(r, tenant, "*", "AOR_REVIEW", fmt.Sprintf("Case %s: AOR flagged invalid — attorney confirmation requested", id), "#/cases/"+id)
-	case "INELIGIBLE":
-		_, _ = s.db.Exec(r.Context(),
-			fmt.Sprintf(`UPDATE tenant_%s.cases SET internal_status='Provider Closure Letter Issued', updated_at=now() WHERE id=$1`, sanitizeTenant(tenant)), id)
-	}
-	s.logActivity(r.Context(), tenant, id, "ELIGIBILITY_REVIEW",
-		fmt.Sprintf("Eligibility %s%s — evidence recorded (review %s)", result, orDash(" — "+reason), reviewID))
+	reviewID := s.persistEligibilityOutcome(r, tenant, id, p.Subject, result, reason, evidence)
 	writeJSON(w, http.StatusOK, map[string]any{"review_id": reviewID, "result": result, "reason": reason, "evidence": evidence})
 }
 
