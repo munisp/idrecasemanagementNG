@@ -552,7 +552,8 @@ func main() {
 		r.Get("/reports/financial", s.financialReport)         // finance dashboard aggregate
 		r.Post("/cases/{caseId}/claims", s.importClaims)       // bulk claim lines (G10)
 		r.Get("/cases/{caseId}/claims", s.listClaims)
-		r.Post("/intake", s.createIntake) // pre-case intake (G12)
+		r.Post("/intake/converse", s.intakeConverse) // conversational intake (step 5): extraction only — filing stays on /intake
+		r.Post("/intake", s.createIntake)            // pre-case intake (G12)
 		r.Get("/intake", s.listIntake)
 		r.Post("/intake/{intakeId}/advance", s.advanceIntake) // refund window enforced
 
@@ -584,6 +585,7 @@ func main() {
 	r.Get("/api/share/{token}", s.shareLanding)
 	r.Head("/api/share/{token}", s.resolveShareLink)
 	r.Get("/api/share/{token}/meta", s.resolveShareLink)
+	r.Post("/api/share/{token}/chat", s.partyChat)                       // party voice (step 4): token-gated, no use consumed
 	r.Post("/api/share/{token}/upload", s.shareUpload)                   // one-shot, small files
 	r.Post("/api/share/{token}/uploads", s.shareCreateUpload)            // resumable: create
 	r.Head("/api/share/{token}/uploads/{uploadId}", s.shareUploadOffset) // resume probe

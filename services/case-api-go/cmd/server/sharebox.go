@@ -89,6 +89,7 @@ func (s *server) shareLanding(w http.ResponseWriter, r *http.Request) {
 			<script>%s</script>`,
 			escHTML(caseNumber), g.ExpiresAt.Format("Jan 2, 2006 15:04 MST"), g.MaxUses-g.Uses, g.MaxUses,
 			resumableJS(token))
+		body += shareChatSection(token)
 	} else {
 		body = fmt.Sprintf(`
 			<h1>Secure document download</h1>
@@ -96,6 +97,7 @@ func (s *server) shareLanding(w http.ResponseWriter, r *http.Request) {
 			<p><a class="btn" href="/api/share/%s/download">Download document</a></p>
 			<p class="fine">This link grants access to one specific document. Downloads are logged to the case record.</p>`,
 			escHTML(caseNumber), g.ExpiresAt.Format("Jan 2, 2006 15:04 MST"), g.MaxUses-g.Uses, g.MaxUses, escHTML(token))
+		body += shareChatSection(token)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, sharePage("Secure exchange", body, ""))
@@ -281,6 +283,53 @@ button,.btn{display:inline-block;background:#123B2F;color:#fff;border:0;border-r
 func escHTML(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
 	return r.Replace(s)
+}
+
+// shareChatSection is the party-voice panel (step 4) embedded in every
+// ShareBox landing page: a small thread + input that POSTs to the token-gated
+// chat endpoint. Self-contained, no libraries, matches sharePage's inline
+// style. Chatting never consumes a link use.
+func shareChatSection(token string) string {
+	return `
+	<div style="margin-top:34px;border-top:1px solid #e5e7eb;padding-top:18px">
+	  <h2 style="font-size:16px;margin:0 0 4px">Ask about this dispute</h2>
+	  <p class="muted" style="font-size:13px;margin:0 0 10px">Questions about case status or what we still need — answered from the case record. For anything else, contact your case coordinator.</p>
+	  <div id="pc-thread" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
+	  <form id="pc-form" style="display:flex;gap:8px;margin:0">
+	    <input id="pc-in" autocomplete="off" maxlength="1000" placeholder="e.g. What documents do you still need?" style="flex:1;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;font:inherit" />
+	    <button id="pc-go" type="submit" style="padding:10px 16px">Ask</button>
+	  </form>
+	</div>
+	<script>(function(){
+	var T = ` + "`" + escHTML(token) + "`" + `;
+	var thread = document.getElementById("pc-thread"), form = document.getElementById("pc-form"),
+	    input = document.getElementById("pc-in"), go = document.getElementById("pc-go");
+	function esc(s){ var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+	function add(role, body){
+	  var mine = role === "party";
+	  thread.insertAdjacentHTML("beforeend",
+	    '<div style="max-width:88%;padding:8px 12px;border-radius:10px;font-size:14px;white-space:pre-wrap;' +
+	    (mine ? 'align-self:flex-end;background:#123B2F;color:#fff'
+	          : 'align-self:flex-start;background:#f3f4f6;border:1px solid #e5e7eb') + '">' + esc(body) + '</div>');
+	}
+	form.onsubmit = async function(e){
+	  e.preventDefault();
+	  var m = input.value.trim(); if (!m) return;
+	  input.value = ""; add("party", m); add("assistant", "…");
+	  go.disabled = true;
+	  try {
+	    var r = await fetch("/api/share/" + T + "/chat", { method: "POST",
+	      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: m }) });
+	    var j = await r.json();
+	    thread.lastElementChild.remove();
+	    add("assistant", j.reply || j.error || "No answer available — contact your case coordinator.");
+	  } catch (err) {
+	    thread.lastElementChild.remove();
+	    add("assistant", "Connection problem — try again, or contact your case coordinator.");
+	  }
+	  go.disabled = false;
+	};
+	})();</script>`
 }
 
 // resumableJS is the landing-page uploader: small files use the one-shot

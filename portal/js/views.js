@@ -1632,9 +1632,34 @@ const Views = (() => {
       const intakeNext = r.next_offset ?? -1;
       const intakeTotal = r.total ?? rows.length;
       window._intakePager = { next: intakeNext }; // reset on every view render
+      // Conversational intake (step 5): the chat EXTRACTS into the form
+      // (including manifest sector fields); the human reviews and files with
+      // the same button as always. The model never files.
+      afterRender(() => {
+        window._intakeChat = { fields: {}, history: [] };
+        // Human keystrokes win over extraction: once a field is touched, the
+        // assistant never overwrites it.
+        const f0 = document.getElementById("intake-form");
+        f0 && Array.from(f0.elements).forEach((el) =>
+          el.name && el.addEventListener("input", () => { el.dataset.touched = "1"; }));
+        document.getElementById("intake-chat-form")?.addEventListener("submit", (ev) => {
+          ev.preventDefault();
+          const msg = ev.target.message.value.trim();
+          if (msg) { ev.target.message.value = ""; intakeChatTurn(msg); }
+        });
+      });
       return `<div class="view-head"><h1>Pre-case intake</h1>
         <span class="muted">instruction requests awaiting documents and fees — the 10-day initial review starts at PACKET_COMPLETE</span></div>
-        <form class="inline-form" onsubmit="return Views.newIntake(this)">
+        <details open class="card" style="margin-bottom:12px"><summary><b>✦ Describe it, I'll fill the form</b> — conversational intake (extraction only; you review and file)</summary>
+          <div id="intake-chat-thread" class="asst-thread" style="min-height:80px;max-height:30vh;margin:10px 0">
+            <div class="asst-turn asst-ai"><div class="asst-who">intake assistant</div>
+            <div class="asst-body">Describe the request in your own words — who called, who files, amounts, reference numbers, anything else. I'll fill the form below as we go.</div></div>
+          </div>
+          <form id="intake-chat-form" class="asst-form">
+            <input name="message" autocomplete="off" placeholder="Describe the intake in one or two sentences…" aria-label="Describe the intake" />
+            <button>Send</button></form>
+          <p class="muted" id="intake-chat-missing" style="margin:6px 0 0"></p></details>
+        <form id="intake-form" class="inline-form" onsubmit="return Views.newIntake(this)">
           <input name="email" type="email" placeholder="requester email" required />
           <input name="contact_name" placeholder="contact" /><input name="org" placeholder="organization" />
           ${intakePartySelect()}
@@ -1677,6 +1702,46 @@ const Views = (() => {
         else if (pg) pg.querySelector("button").textContent = "Load more";
       } catch (e) { UI.toast(e.message, { kind: "warn" }); }
     }, "Loading…");
+  }
+
+  // One turn of conversational intake: send the worker's words plus the
+  // fields extracted so far (client-carried state, endpoint is stateless),
+  // render the follow-up, and prefill the REAL form — filing stays manual.
+  async function intakeChatTurn(msg) {
+    const thread = document.getElementById("intake-chat-thread");
+    const add = (role, body) => thread?.insertAdjacentHTML("beforeend",
+      `<div class="asst-turn ${role === "user" ? "asst-user" : "asst-ai"}">
+         <div class="asst-who">${role === "user" ? "you" : "intake assistant"}</div>
+         <div class="asst-body">${esc(body)}</div></div>`);
+    const st = window._intakeChat || (window._intakeChat = { fields: {}, history: [] });
+    add("user", msg); add("assistant", "…");
+    try {
+      const r = await Api.program.intakeConverse(msg, st.fields, st.history);
+      thread.lastElementChild.remove();
+      add("assistant", r.reply || "");
+      st.history.push(msg);
+      st.fields = r.fields || {};
+      // Prefill the form; never overwrite text the human has typed.
+      const f = document.getElementById("intake-form");
+      if (f) {
+        if (st.fields.email && !f.email.dataset.touched) f.email.value = st.fields.email;
+        if (st.fields.contact_name && !f.contact_name.dataset.touched) f.contact_name.value = st.fields.contact_name;
+        if (st.fields.org && !f.org.dataset.touched) f.org.value = st.fields.org;
+        if (st.fields.filing_party_type) f.filing_party_type.value = st.fields.filing_party_type;
+        Object.entries(st.fields.extra || {}).forEach(([name, v]) => {
+          const el = f.elements["fld_" + name];
+          if (el && !el.dataset.touched) el.value = v;
+        });
+      }
+      const miss = document.getElementById("intake-chat-missing");
+      if (miss) miss.textContent = r.ready
+        ? "✓ Ready — review the form and file when you're satisfied."
+        : (r.missing || []).length ? "Still needed: " + r.missing.join(", ") : "";
+    } catch (e) {
+      thread?.lastElementChild?.remove();
+      add("assistant", `⚠ ${e.message}`);
+    }
+    thread && (thread.scrollTop = thread.scrollHeight);
   }
 
   async function newIntake(form) {
@@ -2153,5 +2218,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

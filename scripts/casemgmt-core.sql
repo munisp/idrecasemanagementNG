@@ -151,3 +151,20 @@ CREATE TABLE IF NOT EXISTS public.copilot_threads (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS copilot_threads_case ON public.copilot_threads (tenant, case_id, created_at);
+
+
+-- Party voice (conversation-first step 4): counterparty chat turns on secure
+-- share links. token_fp is a sha256 prefix of the share token — correlation
+-- for the record without ever storing the bearer credential itself.
+CREATE TABLE IF NOT EXISTS public.party_threads (
+    id         bigserial PRIMARY KEY,
+    tenant     text NOT NULL,
+    case_id    uuid NOT NULL,
+    token_fp   text NOT NULL,
+    role       text NOT NULL,          -- party | assistant
+    body       text NOT NULL,
+    model      text,                   -- assistant turns only; NULL = fallback
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS party_threads_token ON public.party_threads (token_fp, created_at);
+CREATE INDEX IF NOT EXISTS party_threads_case ON public.party_threads (tenant, case_id, created_at);
