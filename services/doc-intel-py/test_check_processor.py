@@ -178,3 +178,97 @@ def test_consensus_parsed_beats_garbage_majority():
         assert cp.parse_courtesy(txt) == 71539
     finally:
         check_processor._engine_read = orig
+
+
+# --- in-house MICR E-13B engine (micr_engine.py) ---------------------------
+
+def test_micr_engine_reads_clean_synthetic_line():
+    import micr_engine
+    img = micr_engine.render_line("⑆021000021⑆123456789⑈1001", ink_height=34)
+    txt, score = micr_engine.recognize(img)
+    assert txt is not None
+    r = micr_engine.extract_routing(txt)
+    assert r == "021000021"
+    assert cp.routing_checksum_valid(r)
+    _, a, c = cp.parse_micr(txt)
+    assert a == "123456789"
+    assert c == "1001"
+    assert score >= 0.85
+
+
+def test_micr_engine_reads_mildly_degraded_line():
+    import micr_engine
+    img = micr_engine.render_line("⑆021000021⑆123456789⑈1001", ink_height=30)
+    img = micr_engine.degrade(img, blur=1.5, skew_deg=2.5, noise=10, seed=3)
+    txt, score = micr_engine.recognize(img)
+    assert txt is not None
+    assert micr_engine.extract_routing(txt) == "021000021"
+
+
+def test_micr_engine_torture_never_phantoms():
+    """Torture degradation must produce either the truth, unknowns ('?'),
+    or None — NEVER a checksum-valid routing that wasn't printed."""
+    import micr_engine
+    truth = "021000021"
+    img = micr_engine.render_line(f"⑆{truth}⑆123456789⑈1001", ink_height=26)
+    img = micr_engine.degrade(img, blur=3.5, skew_deg=-7, noise=30,
+                              gamma=1.8, jpeg=30, seed=11)
+    txt, _ = micr_engine.recognize(img)
+    if txt is None:
+        return  # clean miss — correct posture
+    assert micr_engine.extract_routing(txt) in (None, truth)
+
+
+def test_micr_engine_blank_band_is_a_miss():
+    import micr_engine
+    blank = np.full((60, 400), 255, dtype=np.uint8)
+    txt, score = micr_engine.recognize(blank)
+    assert txt is None
+    assert score == 0.0
+
+
+def test_micr_engine_unknown_glyph_splits_digit_runs():
+    """'?' in the read must break digit runs so parse_micr cannot slide
+    into a merged soup and fabricate a routing number."""
+    t = "02100?0021⑆123456789⑈1001"
+    r, a, c = cp.parse_micr(t)
+    assert r is None or cp.routing_checksum_valid(r)
+    assert a == "123456789"
+
+
+def test_micr_engine_symbols_render_natively():
+    """All four separator symbols must be in the recognized alphabet —
+    losing them is what turns tesseract reads into phantom soup."""
+    import micr_engine
+    img = micr_engine.render_line("⑆123⑇456⑈789⑉0", ink_height=40)
+    txt, _ = micr_engine.recognize(img)
+    assert txt is not None
+    assert "⑆" in txt and "⑈" in txt
+
+
+def test_micr_engine_routing_requires_transit_bracket():
+    """A checksum-valid 9-run NOT bracketed by ⑆…⑆ (e.g. a substituted
+    account field) must not surface as a routing number."""
+    import micr_engine
+    assert micr_engine.extract_routing("⑈381945127⑈") is None
+    assert micr_engine.extract_routing("381945127") is None
+    assert micr_engine.extract_routing("⑆123456789⑈381945127") is None
+    assert micr_engine.extract_routing("⑆021000021⑆12345⑈1001") == "021000021"
+    assert micr_engine.extract_routing(None) is None
+
+
+def test_micr_engine_end_to_end_synthetic_check():
+    """Full extract_check on a synthetic check carrying a rendered E-13B
+    band: the in-house engine must supply the checksum-valid routing."""
+    import io
+    import cv2
+    import micr_engine
+    band = micr_engine.render_line("⑆021000021⑆123456789⑈1001", ink_height=22)
+    img = np.full((600, 1500, 3), 255, dtype=np.uint8)
+    b3 = cv2.cvtColor(band, cv2.COLOR_GRAY2BGR)
+    y = int(600 * 0.885)
+    img[y:y + b3.shape[0], 40:40 + b3.shape[1]] = b3
+    _, png = cv2.imencode(".png", img)
+    out = cp.extract_check(png.tobytes())
+    assert out.routing_number == "021000021"
+    assert "e13b:" in out.detail.get("micr_raw", "")

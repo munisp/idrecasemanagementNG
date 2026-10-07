@@ -19,9 +19,13 @@ usually HANDWRITTEN — this module reads it with a real ICR engine chain:
   3. Tesseract — last-resort fallback; reading marked low confidence.
 
 Engine selection: CHECK_ICR_ENGINE=trocr|paddle|tesseract|auto (default auto
-= first available in the order above). MICR stays on Tesseract regardless:
-Paddle/TrOCR charsets don't cover the E-13B ⑈⑆⑇ symbols, and the digit-run
-parser + ABA checksum already self-validates.
+= first available in the order above). MICR is read FIRST by the in-house
+E-13B engine (micr_engine.py — monospace cell-grid segmentation + template
+NCC against the bundled Nimra font, fonts/Nimra-E13B.ttf, SIL OFL 1.1),
+which recognizes the ⑈⑆⑇⑉ separator symbols natively; tesseract remains
+as the fallback ensemble, and every routing must still pass the ⑆…⑆
+structural bracket + ABA checksum (with unique-solution single-digit
+repair) — miss, don't guess.
 
 A courtesy/legal mismatch always routes the check to REVIEW (never
 auto-match on conflicting amounts).
@@ -645,7 +649,44 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
         clahe_raw = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(bg)
         _, bw_otsu_raw = cv2.threshold(clahe_raw, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         micr_raws: list[str] = []
+        # 1a) In-house E-13B engine (micr_engine.py): monospace cell-grid
+        #     segmentation + template NCC against the bundled Nimra font.
+        #     It reads the four MICR separator symbols NATIVELY — where
+        #     tesseract approximates them as ':'/'"' and loses field
+        #     boundaries. Acceptance posture mirrors the phantom-guard:
+        #     a clean high-score read is trusted immediately; a read with
+        #     unknown cells ('?') is held as a candidate and only accepted
+        #     if a later independent read corroborates the same routing.
+        eng_candidate = None
+        try:
+            import micr_engine
+            for prep in (bg_de, bw_otsu):
+                try:
+                    etxt, escore = micr_engine.recognize(prep)
+                except Exception:
+                    etxt, escore = None, 0.0
+                if not etxt:
+                    continue
+                micr_raws.append(f"e13b:{etxt}({escore:.2f})")
+                r = micr_engine.extract_routing(etxt)  # ⑆…⑆ bracket + checksum (+1-digit repair)
+                _, a, c = parse_micr(etxt)
+                if r:
+                    unknowns = etxt.count("?")
+                    # clean high-score read, or a single-unknown read whose
+                    # routing was pinned by the unique checksum solution
+                    if (unknowns == 0 and escore >= 0.85) or (unknowns == 1 and escore >= 0.75):
+                        out.routing_number, out.account_number, out.check_number = r, a, c
+                        break
+                    eng_candidate = eng_candidate or (r, a, c)
+                if "⑆" in etxt or "⑈" in etxt:
+                    out.account_number = out.account_number or a
+                    out.check_number = out.check_number or c
+        except ImportError:
+            pass
+        # 1b) tesseract preps
         for prep in (bw_otsu, bw_adapt, bw_otsu_raw, bg_de):
+            if out.routing_number:
+                break
             txt = _ocr(prep, psm=7, whitelist="0123456789⑈⑆⑇⑄ABCDabcd| ") \
                   or _ocr(prep, psm=7)
             if txt:
@@ -671,6 +712,14 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
             r, a, c = parse_micr(ptxt)
             if r and routing_checksum_valid(r):
                 out.routing_number, out.account_number, out.check_number = r, a, c
+        # deferred engine candidate: accept only when a non-engine read
+        # independently contains the same checksum-valid routing
+        if not out.routing_number and eng_candidate:
+            r, a, c = eng_candidate
+            if any(r in raw for raw in micr_raws if not raw.startswith("e13b:")):
+                out.routing_number = r
+                out.account_number = out.account_number or a
+                out.check_number = out.check_number or c
         out.detail["micr_raw"] = " || ".join(micr_raws)
         out.detail["micr_preps_tried"] = len(micr_raws)
 
