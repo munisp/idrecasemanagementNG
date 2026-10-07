@@ -1,0 +1,37 @@
+# IDRE copilot model — deterministic, domain-grounded.
+#
+# Build:
+#   Base (start here):     ollama create idre-copilot -f Modelfile.idre
+#   After fine-tuning:     point FROM at the merged GGUF instead:
+#                          FROM ./qwen25-7b-idre-q8_0.gguf
+# Then: COPILOT_MODEL=idre-copilot on case-api.
+#
+# Quantization choice matters more than any parameter below for legal text:
+#   q4_K_M  — default download; fine for drafts, occasionally fumbles exact
+#             citations (45 CFR 149.510 -> "149.510(b)" inventions).
+#   q8_0    — ~2x VRAM, measurably better exact-recall of section numbers and
+#             defined terms. RECOMMENDED for this domain if the GPU allows.
+# Evaluate BOTH against services/llm/training/golden_set.jsonl before choosing;
+# once chosen, pin it — changing quantization changes outputs.
+
+FROM qwen2.5:7b-instruct-q8_0
+
+# --- Deterministic decode ---------------------------------------------------
+# temperature 0 = greedy argmax. top_k 1 / top_p 0 reinforce greedy even if a
+# caller ever overrides temperature upward. seed pins residual sampling.
+# repeat_penalty 1.0 (off): any penalty reweights argmax and makes outputs
+# sensitive to context length — unacceptable when the same question must
+# produce the same answer every time.
+PARAMETER temperature 0
+PARAMETER seed 42
+PARAMETER top_k 1
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.0
+PARAMETER num_ctx 8192
+
+# --- Domain posture ----------------------------------------------------------
+# The system prompt is part of the artifact: every platform call passes its
+# own grounding rules, but this floor applies even to ad-hoc use of the
+# model (debug shells, future callers). Keep it short — the per-call system
+# prompts in cmd/server carry the operative constraints.
+SYSTEM """You are the copilot for a multi-program dispute-resolution case platform (federal NSA IDR under 45 CFR Part 149, Florida AHCA Claims Dispute Resolution, and other programs as onboarded). Each question names its program — answer inside THAT program's frame and authorities only; never blend rules across programs. You never invent citations, section numbers, dates, dollar amounts, party names, or case facts: if a fact is not in the provided record or question, you say it is not in the record. You speak plainly and briefly. You are advisory; determinations are human decisions."""

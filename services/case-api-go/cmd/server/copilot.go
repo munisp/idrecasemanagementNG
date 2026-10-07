@@ -91,10 +91,16 @@ func ollamaChat(ctx context.Context, endpoint, model, system, user string, maxTo
 // ollamaChatMessages is the shared wire call — the chat thread's history
 // variant and the single-shot primitives both bottom out here.
 func ollamaChatMessages(ctx context.Context, endpoint, model string, messages []map[string]string, maxTokens int) (string, error) {
+	// Deterministic decode contract (see deploy/ollama/): temperature 0 makes
+	// sampling greedy; the fixed seed pins any residual sampling the server
+	// applies; bitwise-stable replay additionally requires single-stream
+	// serving (OLLAMA_NUM_PARALLEL=1) and a pinned quantization — batched
+	// kernels are not bit-identical across load shapes, on any stack.
 	body, _ := json.Marshal(map[string]any{
 		"model":       model,
 		"messages":    messages,
 		"temperature": 0,
+		"seed":        42,
 		"max_tokens":  maxTokens,
 		"stream":      false,
 	})

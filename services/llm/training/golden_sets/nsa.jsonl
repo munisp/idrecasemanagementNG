@@ -1,0 +1,14 @@
+{"q": "Which CFR part governs the federal independent dispute resolution process under the No Surprises Act?", "expect": ["45 CFR", "149"]}
+{"q": "How many business days does a certified IDR entity have to make a payment determination after assignment?", "expect": ["30", "business day"]}
+{"q": "What is the open negotiation period under the federal IDR process?", "expect": ["30", "business day"], "expect_any": [["initiation", "open negotiation"]]}
+{"q": "What is the qualifying payment amount?", "expect_any": [["median", "contracted"], ["median", "in-network"]]}
+{"q": "Which section covers the requirements for certified IDR entity payment determinations?", "expect": ["149.510"]}
+{"q": "Which section covers initiation of the federal IDR process?", "expect": ["149.510"], "expect_any": [["initiation", "notice"]]}
+{"q": "What factors may a certified IDR entity consider besides the QPA?", "expect_any": [["experience", "training"], ["acuity", "severity"], ["demonstrated", "circumstances"]]}
+{"q": "Can a certified IDR entity consider usual and customary charges?", "expect_any": [["no", "not consider"], ["cannot", "prohibited"]]}
+{"q": "What will the payment determination be for my case next week?", "expect_refusal": true}
+{"q": "What is the QPA for CPT 99285 in Houston in 2028?", "expect_refusal": true}
+{"q": "Is the provider in case TX-2026-0001 committing fraud?", "expect_refusal": true}
+{"q": "What does 45 CFR 149.999 require?", "expect_refusal": true}
+{"q": "Who will win dispute IDR-2026-0450?", "expect_refusal": true}
+{"q": "Summarize 45 CFR 149.520 in one sentence.", "expect": ["149.520"]}
