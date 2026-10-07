@@ -79,7 +79,8 @@ func (s *server) shareLanding(w http.ResponseWriter, r *http.Request) {
 		body = fmt.Sprintf(`
 			<h1>Secure document upload</h1>
 			<p class="muted">Case <b>%s</b> · link expires %s · %d of %d use(s) remaining</p>
-			<input type="file" id="f" />
+			<input type="file" id="f" accept="image/*,application/pdf" capture="environment" />
+			<p id="qual" class="muted"></p>
 			<button id="go" disabled>Upload securely</button>
 			<div id="bar" style="display:none;height:8px;background:#e5e7eb;border-radius:4px;margin:14px 0">
 			  <div id="fill" style="height:8px;width:0%%;background:#123B2F;border-radius:4px"></div></div>
@@ -291,7 +292,45 @@ var T = ` + "`" + token + "`" + `, CHUNK = 8*1024*1024, MAX = 100*1024*1024;
 var f = document.getElementById("f"), go = document.getElementById("go"),
     fill = document.getElementById("fill"), bar = document.getElementById("bar"),
     msg = document.getElementById("msg");
-f.onchange = function(){ go.disabled = !f.files.length; msg.textContent=""; };
+f.onchange = function(){
+  go.disabled = !f.files.length; msg.textContent=""; qualCheck(f.files[0]);
+};
+// Capture guidance: grade photos BEFORE upload (blur via Laplacian variance
+// on a downscaled canvas, brightness, resolution). Warns, never blocks — the
+// server-side gate makes the final call. No libraries; nothing leaves the
+// browser.
+var qual = document.getElementById("qual");
+function qualCheck(file){
+  qual.textContent = "";
+  if (!file || !/^image\//.test(file.type)) return;
+  var url = URL.createObjectURL(file), im = new Image();
+  im.onload = function(){
+    try {
+      var W = 320, sc = Math.min(1, W / im.width), H = Math.max(1, Math.round(im.height * sc));
+      var cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+      var cx = cv.getContext("2d", { willReadFrequently: true });
+      cx.drawImage(im, 0, 0, W, H);
+      var d = cx.getImageData(0, 0, W, H).data, g = new Float32Array(W * H), sum = 0;
+      for (var i = 0; i < W * H; i++){ var y = (d[4*i]*0.299 + d[4*i+1]*0.587 + d[4*i+2]*0.114); g[i] = y; sum += y; }
+      var lap = 0, n = 0;
+      for (var y2 = 1; y2 < H - 1; y2++) for (var x2 = 1; x2 < W - 1; x2++){
+        var v = 4*g[y2*W+x2] - g[y2*W+x2-1] - g[y2*W+x2+1] - g[(y2-1)*W+x2] - g[(y2+1)*W+x2];
+        lap += v*v; n++;
+      }
+      var blur = lap / Math.max(1, n), bright = sum / (W * H), mp = im.width * im.height / 1e6;
+      var warn = [];
+      if (blur < 60) warn.push("the photo looks blurry — hold steady and tap to focus");
+      if (bright < 80) warn.push("the photo looks dark — more light will help");
+      if (mp < 0.3) warn.push("resolution is low — move closer to the document");
+      if (im.width < im.height) warn.push("checks scan best in landscape (sideways)");
+      qual.textContent = warn.length
+        ? "Tip: " + warn.join("; ") + ". You can still upload, but a clearer photo processes faster."
+        : "Photo quality looks good.";
+    } catch(e) {}
+    URL.revokeObjectURL(url);
+  };
+  im.src = url;
+}
 go.onclick = async function(){
   var file = f.files[0]; if(!file) return;
   if(file.size > MAX){ msg.textContent = "File exceeds the 100MB limit."; return; }
