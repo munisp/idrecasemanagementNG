@@ -47,29 +47,31 @@ import (
 // ---------------------------------------------------------------------------
 
 type Config struct {
-	Addr           string // :8080
-	DatabaseURL    string // postgres://...
-	KeycloakJWKS   string // https://keycloak/realms/idre/protocol/openid-connect/certs
-	KeycloakIssuer string // https://keycloak/realms/idre
-	TemporalHost   string // temporal-frontend:7233
-	TemporalNS     string // idre
-	TBAddresses    string // tigerbeetle-0:3000,tigerbeetle-1:3000,...
-	TBClusterID    string // decimal cluster ID this TigerBeetle deployment was formatted with
-	DaprHTTP       string // http://localhost:3500
-	VaultURL       string // http://vault:8081 (mTLS via Dapr in k8s)
-	GraphIntelURL  string // http://graph-intel:8082 ("" = graph features disabled)
-	StripeSecret   string // sk_live_… / sk_test_… ("" = card payments disabled)
-	StripeWebhook  string // whsec_… signing secret for /api/webhooks/stripe
+	Addr            string // :8080
+	DatabaseURL     string // postgres://...
+	KeycloakJWKS    string // https://keycloak/realms/idre/protocol/openid-connect/certs
+	KeycloakIssuer  string // https://keycloak/realms/idre
+	TemporalHost    string // temporal-frontend:7233
+	TemporalNS      string // idre
+	TBAddresses     string // tigerbeetle-0:3000,tigerbeetle-1:3000,...
+	TBClusterID     string // decimal cluster ID this TigerBeetle deployment was formatted with
+	DaprHTTP        string // http://localhost:3500
+	VaultURL        string // http://vault:8081 (mTLS via Dapr in k8s)
+	GraphIntelURL   string // http://graph-intel:8082 ("" = graph features disabled)
+	CopilotEndpoint string // local Ollama OpenAI-compatible /v1 base ("" = copilot disabled)
+	CopilotModel    string // e.g. qwen2.5:7b-instruct — LOCAL model only, no vendor APIs
+	StripeSecret    string // sk_live_… / sk_test_… ("" = card payments disabled)
+	StripeWebhook   string // whsec_… signing secret for /api/webhooks/stripe
 	MojaloopAdapter string // SDK scheme-adapter base URL ("" = mojaloop provider disabled)
 	MojaloopSecret  string // HMAC secret shared with the scheme adapter
-	PortalBaseURL  string // https://portal.example.gov — Stripe success/cancel return
-	ClamdAddr      string // clamd:3310 — ClamAV INSTREAM target (uploads fail-closed if down)
-	SMTPHost       string // outbound mail relay (state SMTP / SES / Mailgun); empty = delivery skipped
-	SMTPPort       int
-	SMTPUser       string
-	SMTPPass       string
-	SMTPFrom       string // e.g. flcdr@example.org
-	WorkerToken    string // shared secret the Temporal worker (idre-workflows) authenticates service-to-service calls with
+	PortalBaseURL   string // https://portal.example.gov — Stripe success/cancel return
+	ClamdAddr       string // clamd:3310 — ClamAV INSTREAM target (uploads fail-closed if down)
+	SMTPHost        string // outbound mail relay (state SMTP / SES / Mailgun); empty = delivery skipped
+	SMTPPort        int
+	SMTPUser        string
+	SMTPPass        string
+	SMTPFrom        string // e.g. flcdr@example.org
+	WorkerToken     string // shared secret the Temporal worker (idre-workflows) authenticates service-to-service calls with
 }
 
 func configFromEnv() Config {
@@ -99,21 +101,23 @@ func configFromEnv() Config {
 		// --cluster=N` created the replicas' on-disk state, and a wrong ID
 		// doesn't error -- the client just hangs forever with every connection
 		// silently rejected ("invalid header_cluster" on the replica side).
-		TBClusterID:    get("TIGERBEETLE_CLUSTER_ID", ""),
-		DaprHTTP:       get("DAPR_HTTP_ENDPOINT", "http://localhost:3500"),
-		VaultURL:       get("VAULT_URL", "http://localhost:8081"),
-		GraphIntelURL:  get("GRAPH_INTEL_URL", "http://localhost:8082"),
-		StripeSecret:   get("STRIPE_SECRET_KEY", ""),
-		StripeWebhook:  get("STRIPE_WEBHOOK_SECRET", ""),
+		TBClusterID:     get("TIGERBEETLE_CLUSTER_ID", ""),
+		DaprHTTP:        get("DAPR_HTTP_ENDPOINT", "http://localhost:3500"),
+		VaultURL:        get("VAULT_URL", "http://localhost:8081"),
+		GraphIntelURL:   get("GRAPH_INTEL_URL", "http://localhost:8082"),
+		CopilotEndpoint: get("COPILOT_ENDPOINT", get("VLM_ENDPOINT", "http://ollama.ollama.svc.cluster.local:11434/v1")),
+		CopilotModel:    get("COPILOT_MODEL", get("VLM_MODEL", "qwen2.5:7b-instruct")),
+		StripeSecret:    get("STRIPE_SECRET_KEY", ""),
+		StripeWebhook:   get("STRIPE_WEBHOOK_SECRET", ""),
 		MojaloopAdapter: get("MOJALOOP_ADAPTER_URL", ""),
 		MojaloopSecret:  get("MOJALOOP_WEBHOOK_SECRET", ""),
-		PortalBaseURL:  get("PORTAL_BASE_URL", "http://localhost:8080"),
-		ClamdAddr:      get("CLAMD_ADDR", "localhost:3310"),
-		SMTPHost:       get("SMTP_HOST", ""),
-		SMTPPort:       getInt("SMTP_PORT", 587),
-		SMTPUser:       get("SMTP_USER", ""),
-		SMTPPass:       get("SMTP_PASS", ""),
-		SMTPFrom:       get("SMTP_FROM", "idre@localhost"),
+		PortalBaseURL:   get("PORTAL_BASE_URL", "http://localhost:8080"),
+		ClamdAddr:       get("CLAMD_ADDR", "localhost:3310"),
+		SMTPHost:        get("SMTP_HOST", ""),
+		SMTPPort:        getInt("SMTP_PORT", 587),
+		SMTPUser:        get("SMTP_USER", ""),
+		SMTPPass:        get("SMTP_PASS", ""),
+		SMTPFrom:        get("SMTP_FROM", "idre@localhost"),
 		// No default: an empty WorkerToken disables the service-auth path
 		// entirely rather than accepting a guessable default as a credential.
 		WorkerToken: get("WORKER_TOKEN", ""),
@@ -142,15 +146,15 @@ type Case struct {
 }
 
 type InitiateRequest struct {
-	CaseNumber       string `json:"case_number"`           // optional when the tenant program defines a numbering pattern
-	ServiceLine      string `json:"service_line"`
-	PlanType         string `json:"plan_type"` // FULLY_INSURED | SELF_FUNDED
-	QPACents         int64  `json:"qpa_cents"`
-	ProviderID       string `json:"provider_id"`
-	PayerID          string `json:"payer_id"`
-	OpenNegotiationEnd string `json:"open_negotiation_end"` // YYYY-MM-DD
-	DisputedAmountCents int64 `json:"disputed_amount_cents"` // program disputes: drives thresholds + escalation
-	NumClaims        int    `json:"num_claims"`
+	CaseNumber          string `json:"case_number"` // optional when the tenant program defines a numbering pattern
+	ServiceLine         string `json:"service_line"`
+	PlanType            string `json:"plan_type"` // FULLY_INSURED | SELF_FUNDED
+	QPACents            int64  `json:"qpa_cents"`
+	ProviderID          string `json:"provider_id"`
+	PayerID             string `json:"payer_id"`
+	OpenNegotiationEnd  string `json:"open_negotiation_end"`  // YYYY-MM-DD
+	DisputedAmountCents int64  `json:"disputed_amount_cents"` // program disputes: drives thresholds + escalation
+	NumClaims           int    `json:"num_claims"`
 }
 
 type FeeTransfer struct {
@@ -427,8 +431,8 @@ func main() {
 		r.Post("/cases/initiate", s.initiateCase)
 		r.Get("/cases", s.listCases)
 		r.Get("/cases/{caseId}", s.getCase)
-		r.Post("/fees/transfer", s.postFeeTransfer)      // escrow/admin/IDRE fee double-entry
-		r.Post("/cases/{caseId}/signal", s.signalCase)   // e.g. response filed, fees paid
+		r.Post("/fees/transfer", s.postFeeTransfer)    // escrow/admin/IDRE fee double-entry
+		r.Post("/cases/{caseId}/signal", s.signalCase) // e.g. response filed, fees paid
 
 		// Documents: encrypted upload, authorized download, analysis status.
 		r.Post("/cases/{caseId}/documents", s.uploadDocument)
@@ -451,7 +455,7 @@ func main() {
 		// Voice console + compliance reports (JWT-authenticated reads).
 		r.Get("/voice/intake", s.listVoiceIntake)
 		r.Get("/voice/logs", s.listVoiceLogs)
-		r.Post("/voice/outbound", s.outboundCall)          // trigger outbound calls
+		r.Post("/voice/outbound", s.outboundCall)             // trigger outbound calls
 		r.Get("/cases/{caseId}/activities", s.listActivities) // CRM record timeline
 
 		// CRM core: accounts, contacts, leads, tasks, notes, search.
@@ -471,10 +475,10 @@ func main() {
 		// calendar, notifications, saved views, letters.
 		r.Post("/cases/{caseId}/assign", s.assignCase)
 		r.Post("/cases/{caseId}/escalate", s.escalateCase)
-		r.Get("/internal/ledger/balances", s.ledgerBalances) // worker-token: reconciliation job
-		r.Post("/checks", s.uploadCheck)                        // physical check photo/scan intake
-		r.Get("/checks", s.listChecks)                          // review queue
-		r.Post("/checks/{checkId}/clear", s.clearCheck)         // funds-cleared settlement
+		r.Get("/internal/ledger/balances", s.ledgerBalances)       // worker-token: reconciliation job
+		r.Post("/checks", s.uploadCheck)                           // physical check photo/scan intake
+		r.Get("/checks", s.listChecks)                             // review queue
+		r.Post("/checks/{checkId}/clear", s.clearCheck)            // funds-cleared settlement
 		r.Post("/internal/checks/{checkId}/result", s.checkResult) // worker-token: doc-intel OCR
 		r.Post("/cases/relate", s.relateCases)
 		r.Get("/cases/{caseId}/relationships", s.caseRelationships)
@@ -485,56 +489,58 @@ func main() {
 		r.Post("/notifications/{notifId}/read", s.readNotification)
 		r.Get("/views", s.listSavedViews)
 		r.Post("/views", s.saveView)
-		r.Get("/prefs", s.getPrefs)   // server-side user preferences (source of truth)
+		r.Get("/prefs", s.getPrefs) // server-side user preferences (source of truth)
 		r.Put("/prefs", s.putPref)
-		r.Get("/cases/clocks", s.casesClocks)          // batch statutory-clock projection (grids)
-		r.Get("/cases/{caseId}/clocks", s.caseClocks)  // per-case projection (workspace header)
-		r.Post("/cases/bulk", s.bulkCases)             // bulk assign / status with per-item results
-		r.Post("/queues/grab-next", s.grabNext)        // atomic queue claim (triage fast lane)
+		r.Get("/cases/clocks", s.casesClocks)         // batch statutory-clock projection (grids)
+		r.Get("/cases/{caseId}/clocks", s.caseClocks) // per-case projection (workspace header)
+		r.Post("/cases/bulk", s.bulkCases)            // bulk assign / status with per-item results
+		r.Post("/queues/grab-next", s.grabNext)       // atomic queue claim (triage fast lane)
 
 		// Graph intelligence (proxied to graph-intel: FalkorDB + GraphSAGE + EPR-KGQA).
-		r.Post("/graph/ask", s.graphAsk)                      // EPR-KGQA natural-language query
-		r.Post("/graph/feedback", s.graphFeedback)            // thumbs up/down -> ART-ready log
-		r.Post("/graph/sync", s.graphSyncNow)                 // Postgres -> FalkorDB -> lakehouse
-		r.Post("/graph/to-lakehouse", s.graphToLakehouse)     // FalkorDB -> gold-zone export
-		r.Post("/graph/train", s.graphTrain)                  // GraphSAGE training round
-		r.Get("/cases/{caseId}/related", s.caseRelated)       // GNN link predictions
+		r.Post("/graph/ask", s.graphAsk)                  // EPR-KGQA natural-language query
+		r.Post("/graph/feedback", s.graphFeedback)        // thumbs up/down -> ART-ready log
+		r.Post("/graph/sync", s.graphSyncNow)             // Postgres -> FalkorDB -> lakehouse
+		r.Post("/graph/to-lakehouse", s.graphToLakehouse) // FalkorDB -> gold-zone export
+		r.Post("/graph/train", s.graphTrain)              // GraphSAGE training round
+		r.Get("/cases/{caseId}/related", s.caseRelated)   // GNN link predictions
 		r.Get("/cases/{caseId}/graph-neighbors", s.caseGraphNeighbors)
 		r.Post("/cases/{caseId}/letters/{template}", s.generateLetter)
 		r.Get("/reports/sla", s.slaReport)
 		r.Get("/reports/summary", s.summaryReport)
 
 		// Operations dashboard: live presence heartbeat + manager KPI board.
-		r.Post("/presence/ping", s.presencePing)     // any authenticated user
-		r.Get("/ops/dashboard", s.opsDashboard)      // staff roles only
+		r.Post("/presence/ping", s.presencePing) // any authenticated user
+		r.Get("/ops/dashboard", s.opsDashboard)  // staff roles only
 
 		// Program rules (per-state customization; federal NSA is the no-config default).
 		r.Get("/program", s.getProgram)
 		r.Post("/cases/{caseId}/program-date", s.setProgramDate)      // record clock-basis events
 		r.Post("/cases/{caseId}/status", s.setDualStatus)             // dual internal/agency status (G5)
 		r.Post("/cases/{caseId}/eligibility", s.checkEligibility)     // threshold matrix + filing window (G2)
-		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)     // past reviews (G2)
+		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)    // past reviews (G2)
 		r.Post("/cases/{caseId}/eligibility/auto", s.autoEligibility) // Lever 1: auto-adjudicate when inputs complete
+		r.Post("/cases/{caseId}/copilot/brief", s.copilotBrief)       // Phase 1 copilot: grounded advisory brief
+		r.Get("/cases/{caseId}/copilot/brief", s.copilotBriefLatest)
 		r.Post("/cases/{caseId}/correspondence", s.draftCorrespondence) // template draft / send (G3)
 		r.Get("/cases/{caseId}/correspondence", s.listCorrespondence)
-		r.Post("/cases/{caseId}/share-links", s.createShareLink)      // tokenized upload/download (G9)
-		r.Get("/qa", s.qaQueue)                                       // QA gate queue (G4)
+		r.Post("/cases/{caseId}/share-links", s.createShareLink) // tokenized upload/download (G9)
+		r.Get("/qa", s.qaQueue)                                  // QA gate queue (G4)
 		r.Get("/qa/{qaId}", s.qaGet)
 		r.Post("/qa/{qaId}/decision", s.qaDecision)
-		r.Post("/cases/{caseId}/invoices", s.issueInvoice)            // dual-party receivables (G8)
+		r.Post("/cases/{caseId}/invoices", s.issueInvoice) // dual-party receivables (G8)
 		r.Get("/cases/{caseId}/invoices", s.listInvoices)
 		r.Get("/invoices", s.listInvoices)
-		r.Post("/invoices/{invId}/settle", s.settleInvoice)           // PAY|REFUND|VOID
+		r.Post("/invoices/{invId}/settle", s.settleInvoice) // PAY|REFUND|VOID
 		r.Get("/reports/receivables", s.receivablesReport)
 		r.Post("/invoices/{invId}/checkout", s.createCheckout) // Stripe Checkout session
 		r.Get("/payments", s.listPayments)                     // payment history (tenant)
 		r.Get("/cases/{caseId}/payments", s.listPayments)      // payment history (case)
 		r.Get("/reports/financial", s.financialReport)         // finance dashboard aggregate
-		r.Post("/cases/{caseId}/claims", s.importClaims)              // bulk claim lines (G10)
+		r.Post("/cases/{caseId}/claims", s.importClaims)       // bulk claim lines (G10)
 		r.Get("/cases/{caseId}/claims", s.listClaims)
-		r.Post("/intake", s.createIntake)                             // pre-case intake (G12)
+		r.Post("/intake", s.createIntake) // pre-case intake (G12)
 		r.Get("/intake", s.listIntake)
-		r.Post("/intake/{intakeId}/advance", s.advanceIntake)         // refund window enforced
+		r.Post("/intake/{intakeId}/advance", s.advanceIntake) // refund window enforced
 
 		// Rule engine administration (admin roles only; every write audited).
 		r.Get("/rules", s.listRules)
@@ -543,9 +549,9 @@ func main() {
 		r.Get("/cases/{caseId}/valuation", s.getValuation)
 		r.Put("/manifest", s.putManifest)
 		r.Get("/rules/audit", s.rulesAudit)
-		r.Get("/deliverables", s.listDeliverables)                    // contract schedule (G7)
+		r.Get("/deliverables", s.listDeliverables) // contract schedule (G7)
 		r.Post("/deliverables", s.submitDeliverable)
-		r.Post("/cases/{caseId}/opt-out", s.recordOptOut)             // plan opt-out adjudication (G14)
+		r.Post("/cases/{caseId}/opt-out", s.recordOptOut) // plan opt-out adjudication (G14)
 	})
 
 	// Voice-AI surface (API-key auth, not OIDC).
@@ -564,12 +570,12 @@ func main() {
 	r.Get("/api/share/{token}", s.shareLanding)
 	r.Head("/api/share/{token}", s.resolveShareLink)
 	r.Get("/api/share/{token}/meta", s.resolveShareLink)
-	r.Post("/api/share/{token}/upload", s.shareUpload)                        // one-shot, small files
-	r.Post("/api/share/{token}/uploads", s.shareCreateUpload)                 // resumable: create
-	r.Head("/api/share/{token}/uploads/{uploadId}", s.shareUploadOffset)      // resume probe
-	r.Patch("/api/share/{token}/uploads/{uploadId}", s.shareUploadChunk)      // next chunk
+	r.Post("/api/share/{token}/upload", s.shareUpload)                   // one-shot, small files
+	r.Post("/api/share/{token}/uploads", s.shareCreateUpload)            // resumable: create
+	r.Head("/api/share/{token}/uploads/{uploadId}", s.shareUploadOffset) // resume probe
+	r.Patch("/api/share/{token}/uploads/{uploadId}", s.shareUploadChunk) // next chunk
 	r.Post("/api/share/{token}/uploads/{uploadId}/complete", s.shareCompleteUpload)
-	r.Get("/api/share/{token}/download", s.shareDownload)                     // Range/resume supported
+	r.Get("/api/share/{token}/download", s.shareDownload) // Range/resume supported
 
 	// Stripe webhook (no OIDC; HMAC-SHA256 signature against STRIPE_WEBHOOK_SECRET is the auth).
 	r.Post("/api/webhooks/stripe", s.stripeWebhook)
@@ -796,18 +802,20 @@ func (s *server) initiateCase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"case_id": caseID, "workflow_id": wfID, "status": initialStatus,
 		"late_initiation_flagged": lateInitiation,
-		"possible_duplicates":    dups, // non-blocking warning, triage via /cases/relate
+		"possible_duplicates":     dups, // non-blocking warning, triage via /cases/relate
 	})
 }
 
 // listCases: keyset-paginated dispute list. Enterprise tenants hold thousands
 // of disputes (FL alone projects ~3k/yr), so a hard LIMIT 200 silently hid
 // cases once a tenant outgrew it. Params:
-//   ?limit=N      page size, default 50, max 200
-//   ?cursor=ts|id keyset position from a previous page's next_cursor
-//   ?status=S     exact status filter (saved views push filtering server-side
-//                 so a filter never applies to a partial page)
-//   ?q=text       case_number ILIKE search
+//
+//	?limit=N      page size, default 50, max 200
+//	?cursor=ts|id keyset position from a previous page's next_cursor
+//	?status=S     exact status filter (saved views push filtering server-side
+//	              so a filter never applies to a partial page)
+//	?q=text       case_number ILIKE search
+//
 // Response: {"cases": [...], "next_cursor": "...", "total": N}
 func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)

@@ -18,7 +18,7 @@ const Api = (() => {
     const data = resp.headers.get("content-type")?.includes("json") ? await resp.json() : await resp.text();
     if (!resp.ok) {
       const msg = typeof data === "object" && data.error ? data.error : `HTTP ${resp.status}`;
-      const err = new Error(msg); err.status = resp.status; throw err;
+      const err = new Error(msg); err.status = resp.status; err.data = data; throw err;
     }
     return data;
   }
@@ -142,6 +142,8 @@ const Api = (() => {
       setStatus: (caseId, p) => req("POST", `${t()}/cases/${caseId}/status`, p),
       eligibility: (caseId, p) => req("POST", `${t()}/cases/${caseId}/eligibility`, p),
       eligibilityAuto: (caseId) => req("POST", `${t()}/cases/${caseId}/eligibility/auto`),
+      copilotBrief: (caseId) => req("POST", `${t()}/cases/${caseId}/copilot/brief`),
+      copilotBriefLatest: (caseId) => req("GET", `${t()}/cases/${caseId}/copilot/brief`),
       eligibilityHistory: (caseId) => req("GET", `${t()}/cases/${caseId}/eligibility`),
       optOut: (caseId, eligible, rationale) => req("POST", `${t()}/cases/${caseId}/opt-out`, { eligible, rationale }),
       send: (caseId, p) => req("POST", `${t()}/cases/${caseId}/correspondence`, p),
