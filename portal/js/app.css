@@ -371,3 +371,8 @@ th.sorted{color:var(--accent-fg);font-weight:700}
 tr.batch-head td{background:var(--surface-sunken);font-weight:600;border-top:2px solid var(--border-default);padding:8px 10px}
 tr.batched td:first-child{border-left:3px solid var(--attention-fg)}
 .warn-box{padding:8px 12px;border:1px solid var(--warning-fg);border-radius:8px;background:color-mix(in srgb,var(--warning-fg) 10%,transparent)}
+/* Conversational intake → form handoff: chat-prefilled fields are visibly
+   tagged; the form flashes once when the thread hands off to it. */
+.from-chat{border-color:var(--attention-fg)!important;background:color-mix(in srgb,var(--attention-fg) 8%,transparent)!important}
+.chat-handoff{animation:handoff-flash 1.6s ease-out}
+@keyframes handoff-flash{0%{outline:3px solid var(--attention-fg);outline-offset:3px}100%{outline:3px solid transparent;outline-offset:3px}}
