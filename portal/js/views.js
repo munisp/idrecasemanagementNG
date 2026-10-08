@@ -1647,6 +1647,11 @@ const Views = (() => {
           const msg = ev.target.message.value.trim();
           if (msg) { ev.target.message.value = ""; intakeChatTurn(msg); }
         });
+        // Bulk intake (CSV): parse on file pick, submit posts the idempotent
+        // batch and renders the per-row receipt.
+        window._intakeBulk = { items: [] };
+        document.getElementById("intake-bulk-file")?.addEventListener("change", (ev) => bulkIntakeFile(ev.target));
+        document.getElementById("intake-bulk-btn")?.addEventListener("click", (ev) => { ev.preventDefault(); bulkIntakeSubmit(ev.target); });
       });
       return `<div class="view-head"><h1>Pre-case intake</h1>
         <span class="muted">instruction requests awaiting documents and fees — the 10-day initial review starts at PACKET_COMPLETE</span></div>
@@ -1659,6 +1664,16 @@ const Views = (() => {
             <input name="message" autocomplete="off" placeholder="Describe the intake in one or two sentences…" aria-label="Describe the intake" />
             <button>Send</button></form>
           <p class="muted" id="intake-chat-missing" style="margin:6px 0 0"></p></details>
+        <details class="card" style="margin-bottom:12px"><summary><b>Bulk intake (CSV)</b> — third-party batch filing; idempotent by batch reference, up to 500 rows</summary>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0">
+            <input type="file" id="intake-bulk-file" accept=".csv,text/csv" />
+            <input id="intake-bulk-ref" placeholder="batch reference — the idempotency key" style="flex:1;min-width:220px" />
+            <button class="mini" id="intake-bulk-btn" disabled>Submit batch</button></div>
+          <p class="muted">Header row required: <code>email, contact_name, org, filing_party_type, external_ref, notes</code>
+            plus one column per manifest intake field (matched by field name, e.g. <code>disputed_amount, claim_ref</code>).
+            Resubmitting the same batch reference replays the receipt — nothing files twice.</p>
+          <div id="intake-bulk-preview"></div>
+          <div id="intake-bulk-result"></div></details>
         <form id="intake-form" class="inline-form" onsubmit="return Views.newIntake(this)">
           <input name="email" type="email" placeholder="requester email" required />
           <input name="contact_name" placeholder="contact" /><input name="org" placeholder="organization" />
@@ -1742,6 +1757,86 @@ const Views = (() => {
       add("assistant", `⚠ ${e.message}`);
     }
     thread && (thread.scrollTop = thread.scrollHeight);
+  }
+
+  // Minimal CSV parser: quotes, escaped quotes, CRLF — Excel's default
+  // export is exactly this shape.
+  function bulkCsvRows(text) {
+    const rows = []; let row = [], cur = "", inQ = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQ) {
+        if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+        else if (c === '"') inQ = false;
+        else cur += c;
+      } else if (c === '"') inQ = true;
+      else if (c === ",") { row.push(cur); cur = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(cur); cur = "";
+        if (row.some((v) => v.trim() !== "")) rows.push(row);
+        row = [];
+      } else cur += c;
+    }
+    row.push(cur);
+    if (row.some((v) => v.trim() !== "")) rows.push(row);
+    return rows;
+  }
+
+  // Base columns are the createIntake payload keys; every OTHER column is a
+  // manifest intake field value, matched by field name (the server drops
+  // anything the manifest doesn't declare — same trust boundary as the form).
+  function bulkIntakeFile(input) {
+    const BASE = ["email", "contact_name", "org", "filing_party_type", "external_ref", "notes"];
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rows = bulkCsvRows(String(reader.result || ""));
+      const head = (rows.shift() || []).map((h) => h.trim().toLowerCase().replace(/^\uFEFF/, ""));
+      if (!head.includes("email")) {
+        document.getElementById("intake-bulk-preview").innerHTML = `<p class="badge warn">header row must include at least: email</p>`;
+        return;
+      }
+      const items = rows.map((r) => {
+        const cell = (name) => { const i = head.indexOf(name); return i >= 0 ? (r[i] || "").trim() : ""; };
+        const fields = {};
+        head.forEach((h, i) => { if (h && !BASE.includes(h) && (r[i] || "").trim() !== "") fields[h] = r[i].trim(); });
+        return {
+          external_ref: cell("external_ref"), email: cell("email"),
+          contact_name: cell("contact_name"), org: cell("org"), notes: cell("notes"),
+          filing_party_type: cell("filing_party_type").toUpperCase(), fields,
+        };
+      }).filter((it) => it.email);
+      window._intakeBulk = { items };
+      const bad = rows.length - items.length;
+      document.getElementById("intake-bulk-preview").innerHTML =
+        `<p class="muted">${items.length} row(s) ready${bad ? ` — ${bad} row(s) skipped (no email)` : ""}${items.length > 500 ? " — <b>over the 500-row limit, split the file</b>" : ""}.</p>`;
+      document.getElementById("intake-bulk-btn").disabled = !items.length || items.length > 500;
+    };
+    reader.readAsText(file);
+  }
+
+  async function bulkIntakeSubmit(btn) {
+    const ref = (document.getElementById("intake-bulk-ref")?.value || "").trim();
+    if (!ref) { UI.toast("batch reference required — it is the idempotency key", { kind: "warn" }); return; }
+    const { items } = window._intakeBulk || { items: [] };
+    if (!items.length) return;
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.intakeBulk({ batch_ref: ref, items });
+        const rows = (r.results || []).map((x) => `<tr>
+          <td class="muted">${esc(x.external_ref || "")}</td>
+          <td>${x.status === "CREATED" ? badge("CREATED") : `<span class="badge warn">ERROR</span>`}</td>
+          <td class="muted">${esc(x.intake_id || "")}</td>
+          <td class="muted">${esc(x.error || "")}</td></tr>`).join("");
+        document.getElementById("intake-bulk-result").innerHTML = `<div class="card" style="margin-top:10px">
+          <b>Batch ${esc(r.batch_ref || ref)}</b> — ${r.created} filed, ${r.errors} error(s)${r.idempotent_replay ? " — <b>idempotent replay</b>: this reference was already submitted; showing the recorded receipt, nothing re-filed" : ""}
+          <table style="margin-top:8px"><thead><tr><th>Row</th><th>Outcome</th><th>Intake</th><th>Error</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        UI.toast(r.idempotent_replay ? "Batch already filed — receipt replayed" : `Batch filed: ${r.created} created, ${r.errors} errors`,
+          { kind: r.errors ? "warn" : "ok" });
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Filing batch…");
   }
 
   async function newIntake(form) {
@@ -2218,5 +2313,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

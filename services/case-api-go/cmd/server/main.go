@@ -552,8 +552,10 @@ func main() {
 		r.Get("/reports/financial", s.financialReport)         // finance dashboard aggregate
 		r.Post("/cases/{caseId}/claims", s.importClaims)       // bulk claim lines (G10)
 		r.Get("/cases/{caseId}/claims", s.listClaims)
-		r.Post("/intake/converse", s.intakeConverse) // conversational intake (step 5): extraction only — filing stays on /intake
-		r.Post("/intake", s.createIntake)            // pre-case intake (G12)
+		r.Post("/intake/converse", s.intakeConverse)      // conversational intake (step 5): extraction only — filing stays on /intake
+		r.Post("/intake", s.createIntake)                 // pre-case intake (G12)
+		r.Post("/intake/bulk", s.bulkIntake)              // third-party batch filing (idempotent by batch_ref)
+		r.Get("/intake/bulk/{batchId}", s.getIntakeBatch) // batch receipt / reconciliation
 		r.Get("/intake", s.listIntake)
 		r.Post("/intake/{intakeId}/advance", s.advanceIntake) // refund window enforced
 

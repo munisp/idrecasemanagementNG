@@ -168,3 +168,20 @@ CREATE TABLE IF NOT EXISTS public.party_threads (
 );
 CREATE INDEX IF NOT EXISTS party_threads_token ON public.party_threads (token_fp, created_at);
 CREATE INDEX IF NOT EXISTS party_threads_case ON public.party_threads (tenant, case_id, created_at);
+
+-- Bulk dispute intake (third-party filers: RCM vendors, legal reps, plan
+-- delegates). One row per submitted batch; results jsonb holds the per-row
+-- outcomes so a retried submission replays instead of double-filing.
+CREATE TABLE IF NOT EXISTS public.intake_batches (
+    id            bigserial PRIMARY KEY,
+    tenant        text        NOT NULL,
+    submitter     text        NOT NULL,
+    batch_ref     text        NOT NULL,
+    item_count    int         NOT NULL,
+    created_count int         NOT NULL DEFAULT 0,
+    error_count   int         NOT NULL DEFAULT 0,
+    results       jsonb       NOT NULL DEFAULT '[]',
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (tenant, submitter, batch_ref)
+);
+CREATE INDEX IF NOT EXISTS intake_batches_tenant_created ON public.intake_batches (tenant, created_at DESC);
