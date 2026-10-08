@@ -88,6 +88,64 @@ func ollamaChat(ctx context.Context, endpoint, model, system, user string, maxTo
 	}, maxTokens)
 }
 
+// Latency contract: the platform budget for one bounded call is under 60
+// seconds end to end (see deploy/ollama/README.md "Response-time budget").
+// Two server-side levers live here; the rest live on the Ollama host.
+//
+//	copilotMaxPromptBytes caps the prompt we will pay prefill for. Prompt
+//	evaluation is the dominant latency term on modest hardware — an
+//	unbounded fact sheet or a long thread can cost minutes of prefill
+//	before a single token is generated. ~12 KB ≈ 3k tokens, comfortably
+//	inside num_ctx 4096 with room for the response.
+//
+//	copilotHTTPTimeout fails the call past 90 s so a degraded model host
+//	degrades the feature (briefing falls back to its structured narration,
+//	party chat to its grounded template) instead of hanging the worker.
+const (
+	copilotMaxPromptBytes = 12000
+	copilotHTTPTimeout    = 90 * time.Second
+)
+
+// budgetMessages enforces copilotMaxPromptBytes on the total prompt. System
+// prompts are short and load-bearing, so truncation lands on the largest
+// non-system message, keeping its head and tail (the head carries the
+// question, the tail the most recent facts) and marking the cut.
+func budgetMessages(messages []map[string]string) []map[string]string {
+	total := 0
+	for _, m := range messages {
+		total += len(m["content"])
+	}
+	if total <= copilotMaxPromptBytes {
+		return messages
+	}
+	big, bigLen := -1, 0
+	for i, m := range messages {
+		if m["role"] == "system" {
+			continue
+		}
+		if len(m["content"]) > bigLen {
+			big, bigLen = i, len(m["content"])
+		}
+	}
+	if big < 0 {
+		return messages
+	}
+	keep := bigLen - (total - copilotMaxPromptBytes)
+	if keep < 2000 {
+		keep = 2000 // never gut a message below a usable fragment
+	}
+	head := keep * 2 / 3
+	tail := keep - head
+	c := messages[big]["content"]
+	out := make([]map[string]string, len(messages))
+	copy(out, messages)
+	out[big] = map[string]string{
+		"role":    messages[big]["role"],
+		"content": c[:head] + "\n[...middle truncated to meet the latency budget...]\n" + c[len(c)-tail:],
+	}
+	return out
+}
+
 // ollamaChatMessages is the shared wire call — the chat thread's history
 // variant and the single-shot primitives both bottom out here.
 func ollamaChatMessages(ctx context.Context, endpoint, model string, messages []map[string]string, maxTokens int) (string, error) {
@@ -98,7 +156,7 @@ func ollamaChatMessages(ctx context.Context, endpoint, model string, messages []
 	// kernels are not bit-identical across load shapes, on any stack.
 	body, _ := json.Marshal(map[string]any{
 		"model":       model,
-		"messages":    messages,
+		"messages":    budgetMessages(messages),
 		"temperature": 0,
 		"seed":        42,
 		"max_tokens":  maxTokens,
@@ -110,7 +168,7 @@ func ollamaChatMessages(ctx context.Context, endpoint, model string, messages []
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 180 * time.Second}
+	client := &http.Client{Timeout: copilotHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

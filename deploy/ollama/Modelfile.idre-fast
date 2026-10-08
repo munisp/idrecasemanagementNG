@@ -1,0 +1,31 @@
+# Multi-program copilot model — FAST TIER for CPU-only or small-GPU hosts.
+#
+# The response-time budget (< 60 s per bounded call) is not reachable with a
+# 7B q8_0 model on a host without GPU offload. This tier trades raw capacity
+# for speed: qwen2.5:3b-instruct at q4_K_M is ~4x faster on CPU than the 7B
+# q8_0 standard tier. The grounding architecture (per-turn fact sheets) is
+# what controls hallucination on EITHER tier — the model's job is fluency
+# over supplied facts, so a smaller model loses less than intuition suggests.
+#
+# MANDATORY before promotion: re-run the eval gate and compare against the
+# standard-tier baseline:
+#   python3 services/llm/training/eval_golden.py --model idre-copilot-fast
+#   python3 services/llm/bench_ollama.py --model idre-copilot-fast
+# If recall or refusal regresses materially, the answer is a GPU host for the
+# standard tier — not shipping a weaker model that cites worse.
+#
+# Build:  ollama create idre-copilot-fast -f Modelfile.idre-fast
+# Then:   COPILOT_MODEL=idre-copilot-fast on case-api.
+
+FROM qwen2.5:3b-instruct-q4_K_M
+
+# Same deterministic decode contract as the standard tier — identical
+# parameters, identical seed, identical single-stream serving requirement.
+PARAMETER temperature 0
+PARAMETER seed 42
+PARAMETER top_k 1
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.0
+PARAMETER num_ctx 4096
+
+SYSTEM """You are the copilot for a multi-program dispute-resolution case platform (federal NSA IDR under 45 CFR Part 149, Florida AHCA Claims Dispute Resolution, and other programs as onboarded). Each question names its program — answer inside THAT program's frame and authorities only; never blend rules across programs. You never invent citations, section numbers, dates, dollar amounts, party names, or case facts: if a fact is not in the provided record or question, you say it is not in the record. You speak plainly and briefly. You are advisory; determinations are human decisions."""

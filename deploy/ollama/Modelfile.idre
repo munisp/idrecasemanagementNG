@@ -27,7 +27,10 @@ PARAMETER seed 42
 PARAMETER top_k 1
 PARAMETER top_p 0.9
 PARAMETER repeat_penalty 1.0
-PARAMETER num_ctx 8192
+# 4096, not 8192: the platform now caps prompts at ~12 KB (~3k tokens) at the
+# client, so the larger window only inflates KV-cache memory and prefill cost.
+# Every extra token of context is latency the worker feels.
+PARAMETER num_ctx 4096
 
 # --- Domain posture ----------------------------------------------------------
 # The system prompt is part of the artifact: every platform call passes its

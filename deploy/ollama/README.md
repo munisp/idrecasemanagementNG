@@ -105,3 +105,68 @@ python3 eval_golden.py            # runs every golden_sets/*.jsonl
 Extend `golden_set.jsonl` whenever the model is caught being wrong in
 production — every miss becomes a permanent regression test. The gate checks
 recall + refusal + byte-identical replay; exit code is CI-friendly.
+
+## Response-time budget: under 60 seconds
+
+Every conversational surface (briefing, thread chat, party chat, intake) must
+answer in under 60 seconds end to end. Observed ~10-minute responses mean
+something is structurally wrong — that is ~1 token/second, three orders below
+a healthy host. Work the ladder top to bottom; measure after each rung.
+
+### The latency math
+
+```
+total = prompt_eval_time + generation_time
+      = (prompt_tokens / prefill_rate) + (completion_tokens / decode_rate)
+```
+
+A healthy 7B host: prefill 500–5000 tok/s (GPU) or 20–60 tok/s (CPU);
+decode 40–120 tok/s (GPU) or 3–10 tok/s (CPU). A 3k-token prompt on CPU is
+1–2.5 minutes of prefill alone — before the first word appears. Prompt size
+and hardware offload are the whole game.
+
+### Rung 1 — verify GPU offload (the usual culprit)
+
+```bash
+ollama ps            # PROCESSOR column must read "100% GPU"
+nvidia-smi           # or rocm-smi: ollama should hold VRAM
+```
+
+`100% CPU` or a `50%/50%` split on a host with a GPU = misconfigured
+drivers/runtime. Fix that first; no software tuning recovers 50x.
+
+### Rung 2 — step the quantization down
+
+q8_0 is the citation-precision recommendation, but it is ~2x slower than
+q4_K_M. On a marginal host, run the eval gate on `q4_K_M`; if recall/refusal
+holds, take the speed. Quantization is a measured trade, never a guess.
+
+### Rung 3 — CPU-only host: use the fast tier
+
+No GPU = no 7B model inside the budget. Build `Modelfile.idre-fast`
+(qwen2.5:3b-instruct-q4_K_M, ~4x faster on CPU), re-run BOTH gates
+(eval_golden.py and bench_ollama.py), and only then flip COPILOT_MODEL.
+The fact-sheet grounding carries the accuracy load; the eval gate proves it.
+
+### Rung 4 — the levers already in the platform
+
+- Prompt cap: case-api truncates prompts above ~12 KB (~3k tokens) before
+  paying prefill for them (copilotMaxPromptBytes, head+tail kept).
+- num_ctx 4096 in the Modelfile: smaller KV cache, faster prefill.
+- max_tokens 300–400 per call: generation time is bounded by design.
+- KEEP_ALIVE=-1: cold model load (~10 s) never lands on a worker.
+- NUM_PARALLEL=1: concurrency HELPS throughput but HURTS single-request
+  latency (and determinism) — bursts queue instead of contending.
+- 90 s client timeout: a degraded host degrades the feature (briefing and
+  party chat fall back to their grounded templates) instead of hanging.
+
+### Rung 5 — prove it
+
+```bash
+python3 services/llm/bench_ollama.py --model idre-copilot
+# replays the three production prompt shapes, prints tok/s, exits non-zero
+# if any shape beats 60 s. First run may be cold — read the warm runs.
+```
+
+Run the bench after every rung, and re-run it after any model, quantization,
+or host change — latency is a regression-testable property, same as recall.
