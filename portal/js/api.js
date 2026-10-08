@@ -156,6 +156,8 @@ const Api = (() => {
       send: (caseId, p) => req("POST", `${t()}/cases/${caseId}/correspondence`, p),
       correspondence: (caseId) => req("GET", `${t()}/cases/${caseId}/correspondence`),
       shareLink: (caseId, kind, days) => req("POST", `${t()}/cases/${caseId}/share-links`, { kind, days_ttl: days }),
+      checks: (status, opts) => req("GET", `${t()}/checks${qs({ status: status || "", ...(opts || {}) })}`),
+      clearCheck: (checkId, remittanceRef) => req("POST", `${t()}/checks/${checkId}/clear`, { remittance_ref: remittanceRef }),
       invoices: (caseId) => req("GET", `${t()}/cases/${caseId}/invoices`),
       issueInvoice: (caseId, p) => req("POST", `${t()}/cases/${caseId}/invoices`, p),
       settleInvoice: (invId, action, ref) => req("POST", `${t()}/invoices/${invId}/settle`, { action, remittance_ref: ref }),

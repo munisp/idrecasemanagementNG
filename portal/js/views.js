@@ -433,7 +433,7 @@ const Views = (() => {
             <div class="asst-body">${esc(r.narration || "")}</div></div>
             <div class="asst-chips" style="margin:8px 0 0 0">
               ${stat(d.my_open_cases, "open assigned")}${stat((d.at_risk_sla || []).length, "SLA risk")}
-              ${stat(d.pending_qa, "at QA gate")}${stat(d.checks_in_review, "checks in review")}
+              ${stat(d.pending_qa, "at QA gate")}${d.checks_in_review ? `<a href="#/finance"><span class="chip-stat"><b>${d.checks_in_review}</b> checks in review ↗</span></a>` : ""}
               ${stat(d.new_docs_24h, "docs analyzed 24h")}${stat((d.tasks_due || []).length, "tasks due")}
             </div>
             ${risk ? `<h3 style="margin:10px 0 4px">SLA risk — open a thread to act</h3>
@@ -483,6 +483,13 @@ const Views = (() => {
       <div id="asst-thread" class="asst-thread"></div>
       <div id="asst-qa"></div>
       <div id="asst-batches"></div>
+      <div id="asst-tools"></div>
+      <div class="asst-chips">
+        <button class="mini" onclick="Views.assistantTool('${caseId}','docs')">📄 Documents</button>
+        <button class="mini" onclick="Views.assistantTool('${caseId}','checklist')">☑ Stage checklist</button>
+        <button class="mini" onclick="Views.assistantTool('${caseId}','mail')">✉ Send mail</button>
+        <button class="mini" onclick="Views.assistantTool('${caseId}','checks')">🧾 Manual checks</button>
+      </div>
       <div class="asst-chips">
         <button class="mini" onclick="Views.assistantChip('${caseId}','brief',this)">▤ Brief me</button>
         <button class="mini" onclick="Views.assistantChip('${caseId}','determination_rationale',this)">✍ Draft rationale</button>
@@ -611,6 +618,151 @@ const Views = (() => {
         if (box && !box.querySelector(".asst-qa-card")) box.innerHTML = "";
       } catch (e) { UI.toast(e.message, { kind: "warn" }); }
     }, decision === "APPROVE" ? "Approving…" : "Rejecting…");
+  }
+
+  // ---- Thread tools: the conversation reaches the case screens ------------
+  // Documents, stage checklist, mail, and manual checks render inline in the
+  // thread and call the SAME endpoints the screens use — same roles, same
+  // audit, same timeline. The conversation is a second surface over the case
+  // record, never a parallel state store.
+  async function assistantTool(caseId, tool) {
+    const box = document.getElementById("asst-tools");
+    if (!box) return;
+    if (box.dataset.open === tool) { box.innerHTML = ""; box.dataset.open = ""; return; }
+    box.dataset.open = tool;
+    box.innerHTML = `<p class="muted">Loading…</p>`;
+    try {
+      if (tool === "docs") box.innerHTML = await asstDocsHtml(caseId);
+      else if (tool === "checklist") box.innerHTML = await asstChecklistHtml(caseId);
+      else if (tool === "mail") box.innerHTML = await asstMailHtml(caseId);
+      else if (tool === "checks") box.innerHTML = await asstChecksHtml();
+    } catch (e) { box.innerHTML = `<p class="muted">⚠ ${esc(e.message)}</p>`; }
+  }
+
+  async function asstDocsHtml(caseId) {
+    const docs = await Api.cases.documents(caseId);
+    const byFolder = {};
+    (docs || []).forEach((d) => { byFolder[d.folder || "GENERAL"] = (byFolder[d.folder || "GENERAL"] || 0) + 1; });
+    const pending = (docs || []).filter((d) => d.analysis_status && !["COMPLETE", "FAILED", "SKIPPED", ""].includes(d.analysis_status));
+    const rows = (docs || []).map((d) => `<tr>
+      <td class="mono">${esc(d.filename || d.doc_id.slice(0, 8) + "…")}</td>
+      <td>${esc(d.folder || "GENERAL")}</td>
+      <td>${d.sealed ? '<span class="badge s-sealed">🔒 sealed</span>' : badge(d.analysis_status || "—")}</td>
+      <td><a href="${Api.cases.downloadUrl(caseId, d.doc_id)}" target="_blank">download</a></td></tr>`).join("");
+    return `<div class="card"><h3>📄 Documents — ${(docs || []).length} on the docket</h3>
+      <p class="muted">${Object.entries(byFolder).map(([f, n]) => `${esc(f)} ${n}`).join(" · ") || "none yet"}${pending.length ? ` · ⚠ ${pending.length} awaiting analysis` : ""}</p>
+      ${rows ? `<table><thead><tr><th>File</th><th>Folder</th><th>Analysis</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : ""}
+      <div class="actions">
+        <button class="mini" onclick="Views.asstRequestUpload('${caseId}',this)">🔗 Request party upload link</button>
+        <a class="button mini" href="#/cases/${caseId}">Open full docket ↗</a>
+      </div></div>`;
+  }
+
+  async function asstRequestUpload(caseId, btn) {
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.shareLink(caseId, "upload", 7);
+        const full = location.origin + r.url;
+        asstAppend(caseId, "user", "Request a party upload link.");
+        asstAppend(caseId, "assistant", `Secure upload link minted (expires in 7 days):\n${full}\n\nSend it via Send mail — the {share_link} placeholder mints one automatically on send.`, "");
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Minting link…");
+  }
+
+  async function asstChecklistHtml(caseId) {
+    const items = await Api.cm.checklist(caseId);
+    const stages = {};
+    (items || []).forEach((i) => { (stages[i.stage] = stages[i.stage] || []).push(i); });
+    const total = (items || []).length, done = (items || []).filter((i) => i.done).length;
+    const canCheck = can("CASE_MANAGER", "ARBITRATOR", "FEDERAL_ADMIN");
+    return `<div class="card"><h3>☑ Stage checklists — ${done} of ${total} complete</h3>` +
+      Object.entries(stages).map(([stage, its]) =>
+        `<h4 style="margin:10px 0 4px">${esc(stage)}</h4><ul class="checklist">` + its.map((i) =>
+          `<li>${i.done ? "✅" : canCheck
+            ? `<button class="mini" onclick="Views.asstCheck('${caseId}','${i.id}',this)">check</button>` : "⬜"}
+            ${esc(i.item)}${i.required ? " *" : ""}${i.done_by ? ` <span class="muted">(${esc(i.done_by)})</span>` : ""}</li>`).join("") +
+        `</ul>`).join("") + `</div>`;
+  }
+
+  async function asstCheck(caseId, itemId, btn) {
+    await UI.run(btn, async () => {
+      try {
+        await Api.cm.checkItem(itemId);
+        const box = document.getElementById("asst-tools");
+        if (box) box.innerHTML = await asstChecklistHtml(caseId);
+        UI.toast("Checklist item completed — recorded on the case");
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Recording…");
+  }
+
+  async function asstMailHtml(caseId) {
+    const prog = await Api.program.get().catch(() => null);
+    const tpls = prog?.config?.correspondence?.templates || [];
+    if (!tpls.length)
+      return `<div class="card"><h3>✉ Send mail</h3><p class="muted">This program defines no correspondence templates — use the case screen's correspondence tools.</p></div>`;
+    return `<div class="card"><h3>✉ Send mail</h3>
+      <form class="inline-form" onsubmit="event.preventDefault(); Views.asstSendMail('${caseId}', this)">
+        <select name="template">${tpls.map((tp) =>
+          `<option value="${esc(tp.key)}">${esc(tp.key)}${tp.qa_role ? " (QA: " + esc(tp.qa_role) + ")" : ""}</option>`).join("")}</select>
+        <select name="rfi_to" title="only used for the rfi template"><option value="provider">RFI to: provider</option><option value="plan">RFI to: health plan</option></select>
+        <input name="to" placeholder="to emails (comma-separated)" required />
+        <input name="cc" placeholder="cc emails" />
+        <textarea name="body" rows="3" placeholder="message body — {share_link} mints a secure upload link on send, {download_link} a link to the latest generated document" required></textarea>
+        <label><input type="checkbox" name="auto_share" checked /> Attach secure upload link</label>
+        <label><input type="checkbox" name="auto_download" /> Attach latest-document link</label>
+        <button>Send / submit for QA</button></form>
+      <p class="muted">Same endpoint as the case screen — QA-flagged templates wait in the gate above until a human approves.</p></div>`;
+  }
+
+  async function asstSendMail(caseId, form) {
+    const split = (s) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
+    const btn = form.querySelector("button");
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.send(caseId, {
+          template: form.template.value, body: form.body.value,
+          to: split(form.to.value), cc: split(form.cc.value),
+          rfi_to: form.rfi_to.value, auto_share: form.auto_share.checked, auto_download: form.auto_download.checked,
+        });
+        asstAppend(caseId, "user", `Send mail: ${form.template.value} to ${form.to.value}.`);
+        asstAppend(caseId, "assistant",
+          r.queued_for_qa ? `Submitted — the draft is waiting in the QA gate above. Approve it there and it sends; nothing goes out automatically.`
+            : `Sent and logged to correspondence.`, "");
+        form.body.value = "";
+        asstQaLoad(caseId); // a QA-gated template appears inline immediately
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Sending…");
+  }
+
+  async function asstChecksHtml() {
+    const r = await Api.program.checks("REVIEW", { limit: 50 });
+    const ck = r.checks || [];
+    if (!ck.length)
+      return `<div class="card"><h3>🧾 Manual checks</h3><p class="muted">No checks awaiting review — the OCR queue is clear.</p></div>`;
+    const rows = ck.map((c) => `<tr>
+      <td class="mono">${esc((c.check_id || c.id || "").slice(0, 8))}…</td>
+      <td>${esc(c.payee || "—")}</td>
+      <td>${c.courtesy_amount_cents != null ? "$" + (c.courtesy_amount_cents / 100).toLocaleString() : "—"}</td>
+      <td>${esc(c.memo || "")}</td>
+      <td><input id="asst-ck-ref-${c.check_id || c.id}" placeholder="remittance ref" style="width:130px" />
+          <button class="mini" onclick="Views.asstClearCheck('${c.check_id || c.id}',this)">clear</button></td></tr>`).join("");
+    return `<div class="card"><h3>🧾 Manual checks — ${ck.length} awaiting review</h3>
+      <p class="muted">OCR could not match these to an open invoice. Match each to its remittance and clear — or <a href="#/finance">open finance ↗</a> for the full queue.</p>
+      <table><thead><tr><th>Check</th><th>Payee</th><th>Courtesy</th><th>Memo</th><th>Clear</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  async function asstClearCheck(checkId, btn) {
+    const ref = document.getElementById(`asst-ck-ref-${checkId}`)?.value.trim() || "";
+    if (!ref) { UI.toast("Enter the remittance reference first", { kind: "warn" }); return; }
+    if (!(await UI.confirm("Clear this check?", `Matched to remittance ${ref} — funds settle against the open invoice.`, "Clear check"))) return;
+    await UI.run(btn, async () => {
+      try {
+        await Api.program.clearCheck(checkId, ref);
+        UI.toast("Check cleared");
+        const box = document.getElementById("asst-tools");
+        if (box) box.innerHTML = await asstChecksHtml();
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Clearing…");
   }
 
   async function escalate(caseId) {
@@ -2333,5 +2485,5 @@ const Views = (() => {
     document.getElementById("rules-save")?.addEventListener("click", () => UI.run(document.getElementById("rules-save"), rulesSave, "Saving…"));
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();
