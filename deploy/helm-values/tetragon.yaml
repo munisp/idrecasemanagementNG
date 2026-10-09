@@ -1,0 +1,16 @@
+# Tetragon — eBPF runtime security (part of the Cilium project).
+# NetworkPolicy controls where packets go; Tetragon controls what processes
+# do: unexpected execs, privilege escalation attempts, and file access inside
+# the vault and case-api pods. See kubernetes/02-tetragon-tracing-policies.yaml.
+tetragon:
+  grpc:
+    enabled: true
+  # Export process events to the observability namespace for SIEM correlation
+  # (Wazuh ingests these alongside Hubble flow logs).
+  export:
+    mode: grpc
+    filename: ""        # set to /var/run/cilium/tetragon/tetragon.log for file export
+
+export:
+  file:
+    enabled: false      # enable for air-gapped clusters without a gRPC collector

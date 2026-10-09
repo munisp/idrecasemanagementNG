@@ -1,0 +1,64 @@
+# Tetragon tracing policies — eBPF runtime enforcement inside the pods.
+# NetworkPolicy says where packets go; these say what processes may do.
+# Any hit is exported as a gRPC event for SIEM correlation (Wazuh).
+
+# 1. The vault and case-api run fixed binaries. An interactive shell or an
+#    unexpected binary inside either pod is an incident, by definition —
+#    kill it in the kernel and log it.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: idre-block-shells
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/part-of: idre }
+  kprobes:
+    - call: security_bprm_check
+      syscall: false
+      return: false
+      args:
+        - index: 0
+          type: linux_binprm
+      selectors:
+        - matchBinaries:
+            - operator: In
+              values:
+                - /bin/sh
+                - /bin/bash
+                - /usr/bin/sh
+                - /usr/bin/bash
+                - /bin/dash
+                - /usr/bin/nc
+                - /usr/bin/ncat
+                - /usr/bin/curl     # no pod should shell out to curl
+                - /usr/bin/wget
+          matchActions:
+            - action: Sigkill
+
+---
+# 2. The vault's key material lives in one directory. Any process other than
+#    the vault server touching it triggers an alert (not killed — forensic
+#    value of the event stream outweighs instant mitigation here).
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: idre-vault-key-watch
+spec:
+  podSelector:
+    matchLabels: { app: vault }
+  kprobes:
+    - call: security_file_open
+      syscall: false
+      return: false
+      args:
+        - index: 0
+          type: file
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Prefix
+              values:
+                - /run/secrets
+                - /etc/vault/keys
+          matchActions:
+            - action: Post

@@ -33,8 +33,21 @@ repositories:
     url: https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.9.0/
   - name: kedacore
     url: https://kedacore.github.io/charts
+  - name: cilium
+    url: https://helm.cilium.io/
 
 releases:
+  # ---- dataplane (FIRST — Cilium is the CNI; nothing schedules without it) --
+  - name: cilium
+    namespace: kube-system
+    chart: cilium/cilium
+    values: [helm-values/cilium.yaml]
+  - name: tetragon
+    namespace: kube-system
+    chart: cilium/tetragon
+    values: [helm-values/tetragon.yaml]
+    needs: [kube-system/cilium]
+
   # ---- core -----------------------------------------------------------------
   - name: postgres
     namespace: idre-core

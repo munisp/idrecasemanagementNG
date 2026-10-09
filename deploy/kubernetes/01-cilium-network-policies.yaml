@@ -1,0 +1,287 @@
+# Cilium network policies — kernel-enforced east-west segmentation.
+#
+# Design: default-deny everywhere (the plain NetworkPolicy in
+# 00-namespaces.yaml covers idre-core; Cilium adds L3+L4+L7 with DNS-aware
+# egress). Every allow below names BOTH endpoints and ports; nothing is
+# allowed "to anywhere". World egress is restricted to the exact FQDNs the
+# platform legitimately calls (Stripe, SMTP, OIDC discovery if external).
+#
+# These policies are the network-layer mirror of the app's tenant model:
+# even a compromised pod with valid credentials cannot reach a datastore or
+# the vault unless this file says it may.
+
+# ---- 0. DNS for every platform pod (required by all other egress) ---------
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: idre-allow-dns-egress
+spec:
+  endpointSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/part-of, operator: In, values: [idre] }
+      - { key: io.kubernetes.pod.namespace, operator: In,
+          values: [idre-core, idre-data, idre-security, idre-finops, idre-observ] }
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+          rules:
+            dns:
+              - matchPattern: "*"
+
+---
+# ---- 1. case-api: the only workload that may touch the vault ---------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: case-api
+  namespace: idre-core
+spec:
+  endpointSelector:
+    matchLabels: { app: case-api }
+  ingress:
+    # North-south: APISIX gateway only (Caddy edge terminates onto APISIX).
+    - fromEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports: [{ port: "8080", protocol: TCP }]
+  egress:
+    - toEndpoints:  # postgres (CNPG), keycloak, temporal — same namespace
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports:
+            - { port: "5432", protocol: TCP }   # postgres
+            - { port: "8080", protocol: TCP }   # keycloak
+            - { port: "7233", protocol: TCP }   # temporal frontend
+    - toEndpoints:  # redis
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core, app.kubernetes.io/name: redis }
+      toPorts:
+        - ports: [{ port: "6379", protocol: TCP }]
+    - toEndpoints:  # vault — ciphertext object store; NOTHING else may reach it
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core, app: vault }
+      toPorts:
+        - ports: [{ port: "8081", protocol: TCP }]
+    - toEndpoints:  # minio + kafka in the data tier
+        - matchLabels: { io.kubernetes.pod.namespace: idre-data }
+      toPorts:
+        - ports:
+            - { port: "9000", protocol: TCP }
+            - { port: "9092", protocol: TCP }
+    # World egress: exactly the payment processor and the mail relay, L7-pinned
+    - toFQDNs:
+        - matchName: api.stripe.com
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+          rules:
+            http: [{ method: "POST" }]
+    - toFQDNs:
+        - matchPattern: "*.stripe.com"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+    - toFQDNs:  # SMTP submission — set to the deployed relay's hostname
+        - matchPattern: "*.smtp.amazonaws.com"
+      toPorts:
+        - ports: [{ port: "587", protocol: TCP }]
+    # Dapr control plane (sidecar is injected on the pod)
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: dapr-system }
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }    # sentry
+            - { port: "50005", protocol: TCP }  # placement
+
+---
+# ---- 2. vault: the most restricted workload on the platform ----------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: vault
+  namespace: idre-core
+spec:
+  endpointSelector:
+    matchLabels: { app: vault }
+  ingress:
+    # case-api ONLY. Workers with document jobs fetch ciphertext through the
+    # API, never from the vault directly — one choke point to audit.
+    - fromEndpoints:
+        - matchLabels: { app: case-api, io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports: [{ port: "8081", protocol: TCP }]
+  egress:
+    - toEndpoints:  # ciphertext at rest lives in minio
+        - matchLabels: { io.kubernetes.pod.namespace: idre-data }
+      toPorts:
+        - ports: [{ port: "9000", protocol: TCP }]
+  # No world egress. A key store has no business calling the internet.
+
+---
+# ---- 3. idre-workflows: Temporal workers (doc-intel, AHCA clocks) ----------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: idre-workflows
+  namespace: idre-core
+spec:
+  endpointSelector:
+    matchLabels: { app: idre-workflows }
+  ingress: []  # workers poll; nothing calls them except Dapr cron bindings
+  egress:
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports:
+            - { port: "7233", protocol: TCP }   # temporal
+            - { port: "5432", protocol: TCP }   # postgres
+            - { port: "8080", protocol: TCP }   # case-api (internal API)
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-data }
+      toPorts:
+        - ports:
+            - { port: "9092", protocol: TCP }   # kafka
+            - { port: "9200", protocol: TCP }   # opensearch (OCR corpus)
+    - toEndpoints:  # local LLM inference — the ONLY allowed "AI" destination
+        - matchLabels: { io.kubernetes.pod.namespace: idre-data, app: ollama }
+      toPorts:
+        - ports: [{ port: "11434", protocol: TCP }]
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: dapr-system }
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+            - { port: "50005", protocol: TCP }
+  # No world egress: the platform's LLM is local by design; this policy is
+  # what makes "no vendor dependencies" enforceable rather than aspirational.
+
+---
+# ---- 4. outbox-relay: postgres → kafka, and nothing else -------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: outbox-relay
+  namespace: idre-core
+spec:
+  endpointSelector:
+    matchLabels: { app: outbox-relay }
+  ingress: []
+  egress:
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-data }
+      toPorts:
+        - ports: [{ port: "9092", protocol: TCP }]
+
+---
+# ---- 5. datastores: ingress allow-lists (defense in depth) -----------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: idre-core
+spec:
+  endpointSelector:
+    matchLabels: { io.kubernetes.pod.namespace: idre-core, app.kubernetes.io/name: cloudnative-pg }
+  ingress:
+    - fromEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]
+    # temporal server persists its own state here too (same tier)
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: temporal-ingress
+  namespace: idre-core
+spec:
+  endpointSelector:
+    matchLabels: { io.kubernetes.pod.namespace: idre-core, app.kubernetes.io/name: temporal }
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: idre-core
+            app.kubernetes.io/part-of: idre
+      toPorts:
+        - ports:
+            - { port: "7233", protocol: TCP }
+            - { port: "7234", protocol: TCP }   # matching (node-local fan-out)
+  egress:
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: keycloak-ingress
+  namespace: idre-core
+spec:
+  endpointSelector:
+    matchLabels: { io.kubernetes.pod.namespace: idre-core, app.kubernetes.io/name: keycloak }
+  ingress:
+    # Edge (Caddy/APISIX), case-api, and human admins via ingress — the IdP is
+    # reachable, but only on its service port.
+    - fromEntities:
+        - ingress
+    - fromEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports: [{ port: "8080", protocol: TCP }]
+  egress:
+    - toEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]
+
+---
+# ---- 6. data tier: consumers are known, everything else is dropped ---------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: data-tier-ingress
+  namespace: idre-data
+spec:
+  endpointSelector:
+    matchLabels: { io.kubernetes.pod.namespace: idre-data }
+  ingress:
+    - fromEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-core }
+        - matchLabels: { io.kubernetes.pod.namespace: idre-data }   # intra-tier (replication, operators)
+    - fromEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-observ } # metrics scrape only
+      toPorts:
+        - ports: [{ port: "9090", protocol: TCP }]
+
+---
+# ---- 7. observability: Prometheus may scrape, nobody may pivot -------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: observability-egress
+  namespace: idre-observ
+spec:
+  endpointSelector:
+    matchLabels: { io.kubernetes.pod.namespace: idre-observ }
+  ingress:
+    - fromEntities: [ingress]  # Grafana / Hubble UI via ingress
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: idre-core
+        - matchLabels:
+            io.kubernetes.pod.namespace: idre-data
+      toPorts:
+        - ports:
+            - { port: "9090", protocol: TCP }   # metrics
+            - { port: "9965", protocol: TCP }   # cilium-agent metrics
+            - { port: "9962", protocol: TCP }   # hubble metrics

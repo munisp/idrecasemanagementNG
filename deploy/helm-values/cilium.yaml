@@ -1,0 +1,79 @@
+# Cilium — eBPF dataplane for the IDRE platform.
+#
+# Why eBPF here: 50 state tenants share one cluster. Tenant isolation must
+# hold even if an application-level check (JWT claim, schema routing, ReBAC)
+# ever fails — Cilium enforces who may talk to whom in the kernel, per pod,
+# with no sidecars and no iptables chains to rot.
+#
+# Apply BEFORE the rest of the fleet (helmfile orders it first) — Cilium is
+# the CNI; nothing schedules without it.
+
+# kube-proxy replacement: service handling in eBPF (socket LB), one less
+# userspace hop per connection and no iptables at scale.
+kubeProxyReplacement: "true"
+# REQUIRED at install time — point at the cluster API server:
+#   helmfile --set-file ... or: cilium install --set k8sServiceHost=... --set k8sServicePort=6443
+k8sServiceHost: ""      # e.g. 10.96.0.1 or the API LB address
+k8sServicePort: 6443
+
+operator:
+  replicas: 2           # HA — policy distribution survives a node loss
+
+# Transparent east-west encryption: every pod-to-pod flow across nodes is
+# WireGuard-encrypted in the kernel with zero app changes and no sidecars.
+# This is the network-layer complement to vault's at-rest encryption —
+# interstate tenant traffic never crosses a node boundary in plaintext.
+encryption:
+  enabled: true
+  type: wireguard
+  nodeEncryption: true
+
+# L7 proxy required for the FQDN egress policies (Stripe, SMTP, OIDC) and
+# DNS-aware rules in kubernetes/01-cilium-network-policies.yaml.
+l7Proxy: true
+
+bpf:
+  masquerade: true      # pod egress SNAT in eBPF
+
+# Policy rollout: "default" enforces policies where they exist (we ship
+# default-deny + explicit allows). After a soak period, flip to "always" so
+# any pod NOT covered by a policy is fully isolated by construction.
+policyEnforcementMode: default
+
+# Hubble — eBPF flow observability: every connection, DNS query, and dropped
+# packet, labeled by pod/namespace. This is the audit trail for network
+# behavior the same way public.audit_log is the trail for case behavior.
+hubble:
+  enabled: true
+  metrics:
+    enabled:
+      - dns
+      - drop            # every policy denial, with the verdict reason
+      - tcp
+      - flow
+      - port-distribution
+      - httpV2          # L7 visibility on proxied routes
+    serviceMonitor:
+      enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+
+# Bandwidth manager: eBPF EDT rate-limiting per pod (a runaway worker can't
+# starve the case API of NIC time).
+bandwidthManager:
+  enabled: true
+
+socketLB:
+  hostNamespaceOnly: true
+
+# Egress gateway: leave disabled until a state requires pinned source IPs
+# for its lockbox/bank SFTP feeds — then enable and assign per-tenant IPs.
+egressGateway:
+  enabled: false
