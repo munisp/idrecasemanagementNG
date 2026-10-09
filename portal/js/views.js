@@ -489,6 +489,7 @@ const Views = (() => {
         <button class="mini" onclick="Views.assistantTool('${caseId}','checklist')">☑ Stage checklist</button>
         <button class="mini" onclick="Views.assistantTool('${caseId}','mail')">✉ Send mail</button>
         <button class="mini" onclick="Views.assistantTool('${caseId}','checks')">🧾 Manual checks</button>
+        <button class="mini" onclick="Views.assistantTool('${caseId}','time')">⏱ Log time</button>
       </div>
       <div class="asst-chips">
         <button class="mini" onclick="Views.assistantChip('${caseId}','brief',this)">▤ Brief me</button>
@@ -636,6 +637,7 @@ const Views = (() => {
       else if (tool === "checklist") box.innerHTML = await asstChecklistHtml(caseId);
       else if (tool === "mail") box.innerHTML = await asstMailHtml(caseId);
       else if (tool === "checks") box.innerHTML = await asstChecksHtml();
+      else if (tool === "time") box.innerHTML = await asstTimeHtml(caseId);
     } catch (e) { box.innerHTML = `<p class="muted">⚠ ${esc(e.message)}</p>`; }
   }
 
@@ -2501,6 +2503,42 @@ const Views = (() => {
   }
 
 
+  // Log time from the thread — same POST /cases/{id}/time endpoint the case
+  // screen's Time section uses; role stamping is server-side either way.
+  async function asstTimeHtml(caseId) {
+    const r = await Api.cases.timeList(caseId);
+    const recent = (r.entries || []).slice(0, 10).map((e) => `<tr>
+      <td>${esc(e.entry_date)}</td><td>${esc(e.subject)}</td><td>${badge(e.role)}</td>
+      <td>${fmtMins(e.minutes)}</td><td class="muted">${esc(e.note || "")}</td></tr>`).join("");
+    return `<div class="card"><h3>⏱ Time on this dispute — ${fmtMins(r.total_minutes)} logged</h3>
+      <form class="inline-form" onsubmit="event.preventDefault(); Views.asstTimeAdd('${caseId}', this)">
+        <input name="hours" type="number" step="0.25" min="0.25" max="24" placeholder="hours" required />
+        <input name="entry_date" type="date" />
+        <input name="note" placeholder="what was done" maxlength="500" />
+        <label><input type="checkbox" name="billable" checked /> billable</label>
+        <button class="mini">Log</button></form>
+      ${recent ? `<table><thead><tr><th>Date</th><th>Who</th><th>Role</th><th>Time</th><th>Note</th></tr></thead><tbody>${recent}</tbody></table>` : `<p class="muted">No entries yet.</p>`}
+      <p class="muted">Append-only, recorded under your name and role — <a href="#/time">team weekly/monthly rollups ↗</a></p></div>`;
+  }
+
+  async function asstTimeAdd(caseId, form) {
+    const btn = form.querySelector("button");
+    await UI.run(btn, async () => {
+      try {
+        await Api.cases.timeAdd(caseId, {
+          hours: parseFloat(form.hours.value),
+          entry_date: form.entry_date.value || "",
+          note: form.note.value.trim(),
+          billable: form.billable.checked,
+        });
+        asstAppend(caseId, "user", `Log ${form.hours.value}h${form.note.value.trim() ? " — " + form.note.value.trim() : ""}.`);
+        asstAppend(caseId, "assistant", "Time logged against this dispute under your name and role. The entry is append-only — a correction is a compensating entry, never an edit.", "");
+        const box = document.getElementById("asst-tools");
+        if (box) box.innerHTML = await asstTimeHtml(caseId);
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Logging…");
+  }
+
   // ---- Time entries (per-role effort, per dispute) ------------------------
   const fmtMins = (m) => `${(m / 60).toFixed(m % 60 ? 2 : 0)}h`;
 
@@ -2573,5 +2611,5 @@ const Views = (() => {
     }, "Computing…");
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();
