@@ -163,7 +163,26 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 	}
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	var from, to, label string
-	if m := r.URL.Query().Get("month"); m != "" {
+	if sd, ed := r.URL.Query().Get("start"), r.URL.Query().Get("end"); sd != "" || ed != "" {
+		// Parameterized range: ?start=YYYY-MM-DD&end=YYYY-MM-DD (end exclusive).
+		// Weekly/monthly are presets over this same query path.
+		t0, err0 := time.Parse("2006-01-02", sd)
+		t1, err1 := time.Parse("2006-01-02", ed)
+		if err0 != nil || err1 != nil {
+			http.Error(w, `{"error":"start and end must both be YYYY-MM-DD"}`, http.StatusBadRequest)
+			return
+		}
+		if !t1.After(t0) {
+			http.Error(w, `{"error":"end must be after start"}`, http.StatusBadRequest)
+			return
+		}
+		if t1.Sub(t0) > 366*24*time.Hour {
+			http.Error(w, `{"error":"range too large (max 366 days)"}`, http.StatusBadRequest)
+			return
+		}
+		from, to = sd, ed
+		label = sd + " .. " + ed
+	} else if m := r.URL.Query().Get("month"); m != "" {
 		t0, err := time.Parse("2006-01", m)
 		if err != nil {
 			http.Error(w, `{"error":"month must be YYYY-MM"}`, http.StatusBadRequest)

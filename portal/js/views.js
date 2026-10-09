@@ -2586,6 +2586,7 @@ const Views = (() => {
       <form class="inline-form" onsubmit="event.preventDefault(); Views.timeReportRun(this)">
         <label>Week containing <input name="week" type="date" /></label>
         <label>or month <input name="month" type="month" value="${defMonth}" /></label>
+        <label>or range <input name="start" type="date" /> → <input name="end" type="date" /></label>
         <button>Run report</button></form>
       <div id="time-rpt"></div>
       <div id="time-rates"></div>`;
@@ -2632,7 +2633,9 @@ const Views = (() => {
     box.innerHTML = `<p class="muted">Computing…</p>`;
     await UI.run(btn, async () => {
       try {
-        const opts = form.week.value ? { week: form.week.value } : { month: form.month.value };
+        const opts = form.start.value && form.end.value
+          ? { start: form.start.value, end: form.end.value }
+          : form.week.value ? { week: form.week.value } : { month: form.month.value };
         const r = await Api.program.timeReport(opts);
         const usd2 = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
         const money = r.total_amount_cents !== undefined;
