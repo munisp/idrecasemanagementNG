@@ -1,0 +1,86 @@
+# IDRE platform edge — Caddy reverse proxy + static portal host.
+#
+# Position in the topology:
+#
+#   internet ──▶ CADDY (this file)        TLS, security headers, WAF hook
+#                  ├─ /auth/*   ─▶ keycloak:8080    (identity, canonical issuer)
+#                  ├─ /v1/*     ─▶ apisix:9080      (policy gateway: OIDC, rate
+#                  ├─ /api/*    ─▶ apisix:9080       limits, routing, prometheus)
+#                  ├─ /ml/*     ─▶ apisix:9080
+#                  └─ /*        ─▶ portal static PWA (replaces the nginx tier)
+#
+# APISIX stays the API policy gateway (it owns OIDC bearer validation,
+# per-route rate ceilings and upstream routing). Caddy owns everything APISIX
+# does not: certificate lifecycle, HTTP hardening, static hosting, and the
+# open-appsec WAF attachment point. Nothing else publishes a public port.
+
+(security_headers) {
+	header {
+		# clickjacking / MIME / referrer hygiene for a government-workflow PWA
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(self), geolocation=()"
+		# PWA needs inline handlers today; tighten nonces when the portal is refactored
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https: http:; worker-src 'self'; manifest-src 'self'"
+		-Server
+	}
+}
+
+# ---- Development edge (plain HTTP on localhost) ----------------------------
+:80 {
+	import security_headers
+
+	# Identity — canonical public issuer path. Keycloak is started with
+	# KC_HTTP_RELATIVE_PATH=/auth so every realm URL (discovery, JWKS, token)
+	# is /auth/realms/... both through this proxy and inside the network.
+	handle_path /auth/* {
+		reverse_proxy keycloak:8080
+	}
+
+	# API traffic — APISIX keeps its policy plugins; Caddy adds nothing but
+	# transport. /internal/* (vault east-west) is never forwarded.
+	handle /internal/* {
+		respond "not found" 404
+	}
+	handle /v1/* {
+		reverse_proxy apisix:9080
+	}
+	handle /api/* {
+		reverse_proxy apisix:9080
+	}
+	handle /ml/* {
+		reverse_proxy apisix:9080
+	}
+
+	# Portal PWA — static files with SPA fallback; the service worker must
+	# always revalidate or stale app shells survive deploys.
+	handle {
+		root * /srv/portal
+		@sw path /sw.js
+		header @sw Cache-Control "no-cache"
+		@immutable path /assets/* /icons/*
+		header @immutable Cache-Control "public, max-age=604800, immutable"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# ---- Production edge --------------------------------------------------------
+# Set DOMAIN (and ACME_EMAIL) in the environment; Caddy obtains and renews the
+# certificate automatically (this is the feature APISIX does not have).
+#
+# {$DOMAIN:443} {
+# 	tls {$ACME_EMAIL}
+# 	import security_headers
+# 	header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+# 	# ... same handle blocks as above ...
+# }
+#
+# Internal TLS: Caddy's local CA can also issue east-west certificates
+# (tls internal) if the platform moves vault/worker traffic to HTTPS.

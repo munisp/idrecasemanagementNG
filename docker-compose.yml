@@ -76,16 +76,40 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
       KC_HTTP_PORT: 8080
-    ports: ["8085:8080"]
+      # Canonical issuer lives behind the Caddy edge at /auth so browser,
+      # proxy, and in-network URLs all agree (see deploy/caddy/README.md).
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HOSTNAME_URL: http://localhost/auth
+    ports: ["127.0.0.1:8085:8080"]  # direct access for debugging only; public path is via Caddy
     volumes:
       - "./deploy/keycloak/realm-idre.json:/opt/keycloak/data/import/realm-idre.json"
       - "./deploy/keycloak/themes/idre:/opt/keycloak/themes/idre:ro"
 
   apisix:
     image: apache/apisix:3.11.0-debian
-    ports: ["9080:9080", "9180:9180"]
+    environment:
+      # Fetched in-network; the discovery document still advertises the
+      # public issuer (KC_HOSTNAME_URL), so iss validation matches tokens.
+      KEYCLOAK_ISSUER: http://keycloak:8080/auth/realms/idre
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+    # Not published publicly: the Caddy edge proxies API traffic here.
+    ports: ["127.0.0.1:9080:9080", "127.0.0.1:9180:9180"]
     volumes: ["./deploy/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml",
               "./deploy/apisix/config.yaml:/usr/local/apisix/conf/config.yaml"]
+
+  caddy:  # the single public edge: TLS, security headers, WAF hook, portal host
+    image: caddy:2.8-alpine
+    # WAF variant: docker build --target appsec ./deploy/caddy (see README)
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - "./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "./portal:/srv/portal:ro"
+      - "caddydata:/data"
+      - "caddyconf:/config"
+    depends_on: [apisix, keycloak]
 
   minio:  # S3-compatible object store: documents (ciphertext) + Delta tables
     image: minio/minio:latest
@@ -131,9 +155,10 @@ services:
     shm_size: "2gb"
 
   # ---- platform services (build locally) -------------------------------------
-  portal:  # PWA + native shell source; nginx serves the app shell
+  portal:  # fallback static host — the Caddy edge serves the PWA publicly;
+    # this nginx tier is kept only for direct debugging on localhost
     image: nginx:1.27-alpine
-    ports: ["3001:80"]
+    ports: ["127.0.0.1:3001:80"]
     volumes:
       - ./portal:/usr/share/nginx/html:ro
       - ./portal/nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -143,8 +168,8 @@ services:
     build: ./services/case-api-go
     environment:
       DATABASE_URL: postgres://idre:idre@postgres:5432/idre
-      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/idre/protocol/openid-connect/certs
-      KEYCLOAK_ISSUER: http://localhost:8085/realms/idre
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/auth/realms/idre/protocol/openid-connect/certs
+      KEYCLOAK_ISSUER: http://localhost/auth/realms/idre
       TEMPORAL_HOST: temporal:7233
       TIGERBEETLE_ADDRESSES: tigerbeetle:3000
       VAULT_URL: http://vault:8081
@@ -281,3 +306,5 @@ volumes:
   ollamadata:
   lakehouse:
   clamdb:
+  caddydata:
+  caddyconf:
