@@ -221,6 +221,16 @@ async def reconcile_ledger(tenant: str) -> dict:
         ).fetchone()
         ap_expected = ap[0] if ap else 0
 
+        # 5. zero_fee_check: a programmed tenant with initial_fee_cents = 0
+        #    has no payment-first gate. That must be a visible, reviewed
+        #    decision — never a silent state — so a zero fee drifts here.
+        zf = c.execute(
+            "SELECT COUNT(*) FROM public.program_rules"
+            " WHERE tenant=%s AND COALESCE((config->'fees'->>'initial_fee_cents')::bigint,0)=0",
+            (tenant,),
+        ).fetchone()
+        zero_fee_rows = zf[0] if zf else 0
+
         checks = [
             ("clearing_check", payments_net, net[ACCT_CLEARING]),
             ("ledger_invariant",
@@ -228,6 +238,7 @@ async def reconcile_ledger(tenant: str) -> dict:
              net[ACCT_CLEARING]),
             ("service_ar_check", svc_ar_expected, -svc_ar_actual),
             ("ap_check", ap_expected, net[ACCT_AP]),
+            ("zero_fee_check", 0, zero_fee_rows),
         ]
         drift_found = False
         for name, expected, actual in checks:

@@ -374,11 +374,20 @@ func (s *server) advanceIntake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"status must be one of: %s"}`, machine.list), http.StatusBadRequest)
 		return
 	}
-	var current string
+	var current, filingPartyType string
 	if err := s.db.QueryRow(r.Context(),
-		`SELECT status FROM public.intake_requests WHERE tenant=$1 AND id=$2`, tenant, id).Scan(&current); err != nil {
+		`SELECT status, coalesce(filing_party_type,'') FROM public.intake_requests WHERE tenant=$1 AND id=$2`, tenant, id).Scan(&current, &filingPartyType); err != nil {
 		http.Error(w, `{"error":"intake not found"}`, http.StatusNotFound)
 		return
+	}
+	// Payment policy (config.payment): payment-first tenants require the fee
+	// settled (status PAID) before documents are accepted and/or before the
+	// intake converts. Exempt filing-party types bypass the gates.
+	if cfg := s.loadProgram(r, tenant); cfg != nil {
+		if msg := enforcePaymentGate(cfg.Payment, in.Status, current, filingPartyType); msg != "" {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusConflict)
+			return
+		}
 	}
 	if machine.terminal[current] {
 		http.Error(w, fmt.Sprintf(`{"error":"intake is %s — terminal; open a new intake request to resubmit"}`, current), http.StatusConflict)

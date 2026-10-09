@@ -600,6 +600,7 @@ func main() {
 		// Rule engine administration (admin roles only; every write audited).
 		r.Get("/rules", s.listRules)
 		r.Put("/rules", s.putRules)
+		r.Put("/program/payment-policy", s.putPaymentPolicy) // NG flexible payment policy (config.payment)
 		r.Get("/manifest", s.getManifest)
 		r.Get("/cases/{caseId}/valuation", s.getValuation)
 		r.Put("/manifest", s.putManifest)

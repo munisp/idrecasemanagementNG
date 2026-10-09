@@ -227,6 +227,12 @@ INSERT INTO public.program_rules (tenant, program, config) VALUES ('fl', 'FL AHC
     "ineligibility_reasons": ["late_payment_only","interest_only","medicare_grievance","plan_not_fl_regulated","provider_not_fl_licensed","medicaid_fair_hearing","pending_court_action","over_12_months","pre_2000_binding_process","below_threshold","internal_process_not_exhausted"]
   },
   "fees": {"initial_fee_cents": 12359, "refund_window_days": 7, "invoice_due_days": null, "invoice_number_equals_case_number": true},
+  -- Flexible payment policy (NG): "open" (no gates) | "payment_first" (fee
+  -- settles before documents AND before conversion) | "custom" (explicit
+  -- require_paid_before_docs / require_paid_before_convert). Optional
+  -- exempt_filing_party_types bypass the gates. Runtime-editable via
+  -- PUT /v1/tenants/{tenant}/program/payment-policy (platform admins).
+  "payment": {"mode": "payment_first", "exempt_filing_party_types": []},
   "escalation": {"amount_trigger_cents": 100000000, "route_role": "PM", "reasons": ["fraud_waste_abuse","over_1m"]},
   "notes_streams": ["internal","coder","clinical","legal","external_agency"],
   "correspondence": {
@@ -361,3 +367,42 @@ INSERT INTO public.program_rules (tenant, program, config) VALUES ('fl', 'FL AHC
 }
 $$::jsonb)
 ON CONFLICT (tenant) DO UPDATE SET config=EXCLUDED.config, program=EXCLUDED.program, updated_at=now();
+
+-- ─────────────────────────────────────────────────────────────────────
+-- Program-config protection (2026): fees, billing, and reconciliation
+-- subtrees are MIGRATION-ONLY. The API's DB role can update {rules} and
+-- {manifest} at runtime, but any change to config->'fees', ->'billing', or
+-- ->'reconciliation' is rejected unless the session explicitly opts in:
+--     SET LOCAL app.config_migration = 'on';   -- migrations only
+-- Every config change (guarded or not) is written to
+-- program_config_history — the tamper-evident trail for direct-SQL edits
+-- that bypass the application's own audit path.
+-- ─────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.program_config_history (
+  id         bigserial PRIMARY KEY,
+  tenant     text NOT NULL,
+  changed_by text NOT NULL DEFAULT current_user,
+  changed_at timestamptz NOT NULL DEFAULT now(),
+  old_config jsonb,
+  new_config jsonb
+);
+
+CREATE OR REPLACE FUNCTION public.guard_program_config() RETURNS trigger AS $$
+BEGIN
+  IF current_setting('app.config_migration', true) IS DISTINCT FROM 'on' AND (
+       NEW.config->'fees'           IS DISTINCT FROM OLD.config->'fees'
+    OR NEW.config->'billing'        IS DISTINCT FROM OLD.config->'billing'
+    OR NEW.config->'reconciliation' IS DISTINCT FROM OLD.config->'reconciliation') THEN
+    RAISE EXCEPTION 'program fees/billing/reconciliation are migration-only: SET LOCAL app.config_migration = ''on'' inside a migration transaction';
+  END IF;
+  IF NEW.config IS DISTINCT FROM OLD.config THEN
+    INSERT INTO public.program_config_history (tenant, old_config, new_config)
+    VALUES (OLD.tenant, OLD.config, NEW.config);
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS program_config_guard ON public.program_rules;
+CREATE TRIGGER program_config_guard BEFORE UPDATE ON public.program_rules
+  FOR EACH ROW EXECUTE FUNCTION public.guard_program_config();
