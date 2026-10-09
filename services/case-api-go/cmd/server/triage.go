@@ -151,15 +151,24 @@ func (s *server) deriveEligibilityInput(r *http.Request, tenant, caseID string) 
 			}
 		}
 	}
-	// Document-derived fallbacks: the most recent analyzed EOB/determination
-	// carries the dates the filing window needs.
+	// Document-derived fallbacks: with MULTIPLE EOBs/determinations on one
+	// dispute (the common case — a claim bundle), the filing window runs from
+	// the LAST EOB/determination date, not from whichever document happened
+	// to be analyzed most recently. Take the max date across every analyzed
+	// EOB and determination letter; ISO dates order lexicographically.
 	if in.FinalDeterminationAt == "" {
 		_ = s.db.QueryRow(r.Context(), `
-			SELECT coalesce(result->'normalized'->>'determination_date',
-			                result->'normalized'->>'service_date', '')
-			FROM public.doc_analysis
-			WHERE tenant=$1 AND case_id=$2 AND status LIKE 'ANALYZED%'
-			ORDER BY created_at DESC LIMIT 1`, tenant, caseID).Scan(&in.FinalDeterminationAt)
+			SELECT coalesce(MAX(v), '') FROM (
+				SELECT NULLIF(result->'normalized'->>'determination_date','') AS v
+				FROM public.doc_analysis
+				WHERE tenant=$1 AND case_id=$2 AND status LIKE 'ANALYZED%'
+				  AND doc_type IN ('eob','determination_letter')
+				UNION ALL
+				SELECT NULLIF(result->'normalized'->>'service_date','')
+				FROM public.doc_analysis
+				WHERE tenant=$1 AND case_id=$2 AND status LIKE 'ANALYZED%'
+				  AND doc_type IN ('eob','determination_letter')
+			) dates WHERE v IS NOT NULL`, tenant, caseID).Scan(&in.FinalDeterminationAt)
 	}
 	return in, nil
 }

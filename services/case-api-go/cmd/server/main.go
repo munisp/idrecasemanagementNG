@@ -523,6 +523,9 @@ func main() {
 		r.Get("/program", s.getProgram)
 		r.Post("/cases/{caseId}/program-date", s.setProgramDate)      // record clock-basis events
 		r.Post("/cases/{caseId}/status", s.setDualStatus)             // dual internal/agency status (G5)
+		r.Post("/cases/{caseId}/time", s.addTimeEntry)               // per-role effort on the dispute
+		r.Get("/cases/{caseId}/time", s.listTimeEntries)
+		r.Get("/reports/time", s.timeReport)                          // weekly per-dispute + monthly team rollup
 		r.Post("/cases/{caseId}/eligibility", s.checkEligibility)     // threshold matrix + filing window (G2)
 		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)    // past reviews (G2)
 		r.Post("/cases/{caseId}/eligibility/auto", s.autoEligibility) // Lever 1: auto-adjudicate when inputs complete

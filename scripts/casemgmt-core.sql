@@ -185,3 +185,23 @@ CREATE TABLE IF NOT EXISTS public.intake_batches (
     UNIQUE (tenant, submitter, batch_ref)
 );
 CREATE INDEX IF NOT EXISTS intake_batches_tenant_created ON public.intake_batches (tenant, created_at DESC);
+
+-- Time entries (per-role effort on each dispute): append-only through the
+-- API; the record itself is the audit trail. Role is the principal's real
+-- role at entry time. Weekly per-dispute and monthly team rollups are
+-- computed by /reports/time. Billable links back to eligibility: only
+-- eligible cases' time should be billed.
+CREATE TABLE IF NOT EXISTS public.time_entries (
+    id          bigserial PRIMARY KEY,
+    tenant      text NOT NULL,
+    case_id     uuid NOT NULL,
+    subject     text NOT NULL,
+    role        text NOT NULL,
+    entry_date  date NOT NULL,
+    minutes     int  NOT NULL CHECK (minutes > 0 AND minutes <= 1440),
+    note        text NOT NULL DEFAULT '',
+    billable    boolean NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS time_entries_tenant_case ON public.time_entries (tenant, case_id);
+CREATE INDEX IF NOT EXISTS time_entries_tenant_date ON public.time_entries (tenant, entry_date);
