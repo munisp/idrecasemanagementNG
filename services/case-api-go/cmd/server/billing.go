@@ -461,10 +461,10 @@ func (s *server) getBillingInvoice(w http.ResponseWriter, r *http.Request) {
 		FROM public.billing_invoice_lines WHERE invoice_id=$1 ORDER BY case_number, role`, id)
 	payments, _ := s.queryRows(r, `
 		SELECT amount_cents, method, ref, received_at, recorded_by FROM public.billing_invoice_payments
-		WHERE invoice_id=$1 ORDER BY received_at`, id)
+		WHERE invoice_id=$1 ORDER BY received_at DESC`, id)
 	events, _ := s.queryRows(r, `
 		SELECT event, actor, detail, created_at FROM public.billing_invoice_events
-		WHERE invoice_id=$1 ORDER BY id`, id)
+		WHERE invoice_id=$1 ORDER BY id DESC`, id)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"invoice": inv[0], "lines": lines, "payments": payments, "events": events})
 }

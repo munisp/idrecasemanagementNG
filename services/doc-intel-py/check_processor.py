@@ -421,6 +421,53 @@ def parse_micr(band_text: str) -> tuple[str | None, str | None, str | None]:
     return routing, account, check
 
 
+def _micr_bands(img: np.ndarray) -> list[np.ndarray]:
+    """Locate candidate MICR bands instead of trusting one fixed strip.
+    The E-13B band is the densest ink row-range in the lower third of the
+    check; a horizontal projection finds it even when the template places
+    it higher/lower than the classic 0.85-0.99 window. Returns up to two
+    candidate bands (fixed strip first, projection band second, deduped)."""
+    h, w = img.shape[:2]
+    bands = [img[int(h*0.85):int(h*0.99), int(w*0.02):int(w*0.98)]]
+    try:
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        lower = g[int(h*0.70):, :]
+        bw = cv2.adaptiveThreshold(lower, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 41, 13)
+        proj = bw.mean(axis=1)
+        if proj.max() > 0:
+            peak = int(proj.argmax())
+            y0 = max(0, peak - int(h*0.03))
+            y1 = min(lower.shape[0], peak + int(h*0.06))
+            cand = img[int(h*0.70)+y0:int(h*0.70)+y1, int(w*0.02):int(w*0.98)]
+            if cand.size and abs((int(h*0.70)+peak) - int(h*0.92)) > int(h*0.04):
+                bands.append(cand)
+    except Exception:
+        pass
+    return bands
+
+
+def _repair_routing(text: str) -> str | None:
+    """One-unknown-digit ABA repair: a 9-character run with exactly one
+    non-digit yields at most one checksum-valid completion. Two valid
+    completions = ambiguous = no repair (miss, don't guess)."""
+    out = None
+    t = " " + text + " "
+    for m in re.finditer(r"\S{9,}", t):
+        tok = m.group(0)
+        for i in range(0, max(1, len(tok)-8)):
+            win = tok[i:i+9]
+            if len(win) == 9 and sum(c.isdigit() for c in win) == 8:
+                sols = [d for d in "0123456789"
+                        if routing_checksum_valid("".join(d if not c.isdigit() else c for c in win))]
+                if len(sols) == 1:
+                    fixed = "".join(sols[0] if not c.isdigit() else c for c in win)
+                    if out is not None and out != fixed:
+                        return None  # conflicting repairs — ambiguous
+                    out = fixed
+    return out
+
+
 def routing_checksum_valid(routing: str) -> bool:
     """ABA routing checksum: 3(d1+d4+d7)+7(d2+d5+d8)+(d3+d6+d9) ≡ 0 mod 10."""
     d = [int(c) for c in routing]
@@ -637,7 +684,9 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
         # 1) MICR band: three preps, checksum-validated parse on each; first
         #    prep yielding a valid routing wins. A band that never yields one
         #    is a miss -> REVIEW (miss, don't guess).
-        band = img[int(h*0.85):int(h*0.99), int(w*0.02):int(w*0.98)]
+        # Band candidates: fixed strip + projection-located band (templates vary).
+        bands = _micr_bands(img)
+        band = bands[0]
         bg = cv2.resize(gray_up(band, 1), None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
         # skew is the most common scan defect — deskew BEFORE binarizing so the
         # E-13B glyph pitch survives thresholding
@@ -648,6 +697,17 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
                                          cv2.THRESH_BINARY, 41, 13)
         clahe_raw = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(bg)
         _, bw_otsu_raw = cv2.threshold(clahe_raw, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Low-contrast captures: inverted Otsu (light-ink/dark-bg scans) and a
+        # morphological close that reconnects broken glyph strokes.
+        _, bw_inv = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        bw_inv = cv2.bitwise_not(bw_inv)
+        bw_morph = cv2.morphologyEx(bw_otsu, cv2.MORPH_CLOSE,
+                                    cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+        # Projection-located second band, prepared the same way (when present).
+        bg2_de = None
+        if len(bands) > 1:
+            bg2 = cv2.resize(gray_up(bands[1], 1), None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            bg2_de = _deskew(bg2)
         micr_raws: list[str] = []
         # 1a) In-house E-13B engine (micr_engine.py): monospace cell-grid
         #     segmentation + template NCC against the bundled Nimra font.
@@ -683,17 +743,28 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
                     out.check_number = out.check_number or c
         except ImportError:
             pass
-        # 1b) tesseract preps
-        for prep in (bw_otsu, bw_adapt, bw_otsu_raw, bg_de):
+        # 1b) tesseract preps — fixed band variants first, projection band last
+        preps = [bw_otsu, bw_adapt, bw_otsu_raw, bw_inv, bw_morph, bg_de]
+        if bg2_de is not None:
+            preps.append(bg2_de)
+        for prep in preps:
             if out.routing_number:
                 break
             txt = _ocr(prep, psm=7, whitelist="0123456789⑈⑆⑇⑄ABCDabcd| ") \
-                  or _ocr(prep, psm=7)
+                  or _ocr(prep, psm=7) or _ocr(prep, psm=6) or _ocr(prep, psm=13)
             if txt:
                 micr_raws.append(txt)
             r, a, c = parse_micr(txt)
             if r and routing_checksum_valid(r):
                 out.routing_number, out.account_number, out.check_number = r, a, c
+                break
+            # one-unknown-digit repair: a single smudged MICR digit no longer
+            # costs the whole routing read (checksum pins the unique value)
+            fixed = _repair_routing(txt or "")
+            if fixed:
+                out.routing_number = fixed
+                out.account_number = out.account_number or a
+                out.check_number = out.check_number or c
                 break
             # best-effort account/check ONLY when the read actually saw MICR
             # separators (normalized to |/~ by parse_micr's symbol map).
@@ -816,20 +887,39 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
 
         # 6) Confidence rollup. The decisive signal is courtesy/legal
         #    agreement — two independent readings of the same amount agreeing
-        #    is stronger than any single model score. Ensemble voter counts
-        #    gate "high" when only one amount was readable.
-        core = [out.routing_number, out.check_number, out.amount_cents]
-        hits = sum(1 for x in core if x)
-        strong = box_score is None or box_score >= 0.85
+        #    is stronger than any single model score.
+        #
+        #    Calibration notes (the "everything is low" fix):
+        #    * check_number is NOT a core field — it's the least
+        #      settlement-relevant value on the check and the one most often
+        #      unreadable; it earns a bonus, it never gates.
+        #    * raw OCR scores for HANDWRITING (paddle/tesseract confidence)
+        #      are systematically 0.4–0.7 even on perfect reads, so a >=0.85
+        #      gate permanently suppresses "high". Ensemble consensus
+        #      (votes>=2 independent preps agreeing on parsed cents) is the
+        #      calibrated substitute for a raw score.
+        #    * capture gates measured on real phone deposits: Laplacian
+        #      variance 20 and brightness 45 separate unusable captures from
+        #      ordinary indoor photos (30/60 rejected good scans).
+        core = [out.routing_number, out.amount_cents]
+        hits = sum(1 for x in core if x) + (1 if out.check_number else 0)
+        core_hits = sum(1 for x in core if x)
+        strong = box_score is None or box_score >= 0.85 or box_votes >= 2
         amounts_agree = (out.amount_cents is not None
                          and out.amount_cents == out.legal_amount_cents)
+        legal_unread = out.legal_amount_cents is None
         consensus_ok = box_votes >= 2 and (legal_votes >= 2 or legal_votes == 0)
-        capture_ok = q["blur"] >= 30 and q["brightness"] >= 60 and q["megapixels"] >= 0.05
-        if amounts_agree and hits == 3 and not out.amount_mismatch and strong and capture_ok:
-            out.confidence = "high"
-        elif amounts_agree and hits >= 2 and strong and capture_ok:
+        capture_ok = q["blur"] >= 20 and q["brightness"] >= 45 and q["megapixels"] >= 0.05
+        if not out.amount_mismatch and strong and capture_ok and (
+                (amounts_agree and core_hits == 2)
+                or (amounts_agree and core_hits == 1 and hits >= 2)
+                or (core_hits == 2 and legal_unread and box_votes >= 2)):
+            # full agreement on a complete core; or courtesy strongly read
+            # with the legal line simply absent (many templates/photos crop it)
             out.confidence = "high"
         elif hits >= 2 and consensus_ok and not out.amount_mismatch:
+            out.confidence = "medium"
+        elif core_hits >= 1 and not out.amount_mismatch and (amounts_agree or legal_unread):
             out.confidence = "medium"
         elif hits >= 1:
             out.confidence = "medium" if amounts_agree else "low"

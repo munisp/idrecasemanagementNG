@@ -470,31 +470,31 @@ func (s *server) caseFinancials(w http.ResponseWriter, r *http.Request) {
 		       i.paid_at::text, i.remittance_ref, i.created_at,
 		       coalesce((SELECT sum(p.amount_cents) FROM public.payments p
 		                 WHERE p.invoice_id=i.id AND p.status='PAID'),0) AS paid_cents
-		FROM public.invoices i WHERE i.tenant=$1 AND i.case_id=$2 ORDER BY i.created_at`, tenant, caseID)
+		FROM public.invoices i WHERE i.tenant=$1 AND i.case_id=$2 ORDER BY i.created_at DESC`, tenant, caseID)
 	feePayments, _ := s.queryRows(r, `
 		SELECT p.id, p.invoice_id, p.provider, p.amount_cents, p.status, p.payer_email, p.payer_name,
 		       p.stripe_fee_cents, p.created_at
-		FROM public.payments p WHERE p.tenant=$1 AND p.case_id=$2 ORDER BY p.created_at`, tenant, caseID)
+		FROM public.payments p WHERE p.tenant=$1 AND p.case_id=$2 ORDER BY p.created_at DESC`, tenant, caseID)
 	svcLines, _ := s.queryRows(r, `
 		SELECT l.id, l.invoice_id, b.invoice_no, b.status AS invoice_status, b.period_start::text, b.period_end::text,
 		       l.role, l.minutes, l.rate_cents_per_hour, l.amount_cents, l.description
 		FROM public.billing_invoice_lines l
 		JOIN public.billing_invoices b ON b.id = l.invoice_id
-		WHERE l.tenant=$1 AND l.case_id=$2 AND b.status <> 'VOID' ORDER BY b.created_at, l.id`, tenant, caseID)
+		WHERE l.tenant=$1 AND l.case_id=$2 AND b.status <> 'VOID' ORDER BY b.created_at DESC, l.id`, tenant, caseID)
 	svcPayments, _ := s.queryRows(r, `
 		SELECT a.id, a.payment_id, a.invoice_id, b.invoice_no, a.amount_cents,
 		       p.method, p.ref, p.received_at::text, p.recorded_by
 		FROM public.billing_payment_allocations a
 		JOIN public.billing_invoice_payments p ON p.id = a.payment_id
 		JOIN public.billing_invoices b ON b.id = a.invoice_id
-		WHERE a.tenant=$1 AND a.case_id=$2 ORDER BY a.id`, tenant, caseID)
+		WHERE a.tenant=$1 AND a.case_id=$2 ORDER BY a.id DESC`, tenant, caseID)
 	payables, _ := s.queryRows(r, `
 		SELECT id, payee, source, amount_cents, status, due_date::text, settled_at::text,
 		       settle_method, settle_ref, note, created_by, created_at
-		FROM public.payables WHERE tenant=$1 AND case_id=$2 ORDER BY created_at`, tenant, caseID)
+		FROM public.payables WHERE tenant=$1 AND case_id=$2 ORDER BY created_at DESC`, tenant, caseID)
 	events, _ := s.queryRows(r, `
 		SELECT id, kind, direction, amount_cents, party, ref, actor, created_at
-		FROM public.financial_events WHERE tenant=$1 AND case_id=$2 ORDER BY id`, tenant, caseID)
+		FROM public.financial_events WHERE tenant=$1 AND case_id=$2 ORDER BY id DESC`, tenant, caseID)
 
 	// Rollups.
 	var arDue, collected, apOpen, settledOut, svcBilled, svcCollected int64

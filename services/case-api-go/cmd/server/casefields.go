@@ -92,7 +92,7 @@ func (s *server) zipCaseDocuments(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
 		SELECT id, object_key, coalesce(filename, id::text), sealed, size_bytes, parts
 		FROM tenant_%s.documents WHERE case_id=$1 AND scan_status='CLEAN'
-		ORDER BY folder, created_at`, sanitizeTenant(tenant)), caseID)
+		ORDER BY folder, created_at DESC`, sanitizeTenant(tenant)), caseID)
 	if err != nil {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
