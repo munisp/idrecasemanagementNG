@@ -197,9 +197,9 @@ CREATE TABLE IF NOT EXISTS public.deliverables (
 -- ---------------------------------------------------------------------------
 INSERT INTO public.program_rules (tenant, program, config) VALUES ('fl', 'FL AHCA CDR', $$
 {
-  "case_number": {"pattern": "FL{yy}-{seq}", "seq_pad": 3},
+  "case_number": {"pattern": "FL{yy}-{seq}", "seq_pad": 6},
   "statuses": {
-    "internal": ["Initial Review Pending","QA Initial Review","Provider Acceptance Letter Issued","Provider Closure Letter Issued","RFI Pending Provider Response","QA Letter","Plan Notification Packet Issued","Review In Progress","RFI Pending Plan Response","Plan - No Response","Plan Opt-Out","Provider - Withdrawal","Hold","QA Final Determination","Determination sent to FL","Final Order Issued","Decided - Invoice Paid","Dismissed","Withdrawn","Ineligible"],
+    "internal": ["Initial Review Pending","QA Initial Review","Provider Acceptance Letter Issued","Provider Closure Letter Issued","RFI Pending Provider Response","QA Letter","Plan Notification Packet Issued","Review In Progress","RFI Pending Plan Response","Plan - No Response","Plan Opt-Out","Provider - Withdrawal","Hold","QA Final Determination","Determination sent to FL","Determination Sent to FL","Final Order Issued","Decided - Invoice Paid","Invoice Paid","Dismissed","Withdrawn","Ineligible"],
     "agency": ["Pending Initial Review","Awaiting Provider Response","Awaiting Plan Response","Under Review","Decided","Closed","Other"]
   },
   "clocks": [
@@ -226,6 +226,7 @@ INSERT INTO public.program_rules (tenant, program, config) VALUES ('fl', 'FL AHC
     "proof_of_timeliness": ["last_eob_date","service_date","appeal_documents"],
     "ineligibility_reasons": ["late_payment_only","interest_only","medicare_grievance","plan_not_fl_regulated","provider_not_fl_licensed","medicaid_fair_hearing","pending_court_action","over_12_months","pre_2000_binding_process","below_threshold","internal_process_not_exhausted"]
   },
+  "time": {"quarter_hours": true},
   "fees": {"initial_fee_cents": 12359, "refund_window_days": 7, "invoice_due_days": null, "invoice_number_equals_case_number": true},
   -- Flexible payment policy (NG): "open" (no gates) | "payment_first" (fee
   -- settles before documents AND before conversion) | "custom" (explicit

@@ -57,6 +57,9 @@ type ProgramConfig struct {
 		ProofOfTimeliness  []string        `json:"proof_of_timeliness"`
 		Reasons            []string        `json:"ineligibility_reasons"`
 	} `json:"eligibility"`
+	Time struct {
+		QuarterHours bool `json:"quarter_hours"` // FL: time recorded in decimal quarter hours only
+	} `json:"time"`
 	Fees struct {
 		InitialFeeCents int64 `json:"initial_fee_cents"`
 		RefundWindowDays int  `json:"refund_window_days"`

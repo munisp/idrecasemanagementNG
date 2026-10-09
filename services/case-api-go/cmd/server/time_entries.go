@@ -102,6 +102,12 @@ func (s *server) addTimeEntry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
+	// Program time rules (config.time): FL requires decimal quarter hours —
+	// 0.25/0.5/0.75/1.0…, never odd minutes (contract field criteria).
+	if cfg := s.loadProgram(r, tenant); cfg != nil && cfg.Time.QuarterHours && minutes%15 != 0 {
+		http.Error(w, `{"error":"time must be recorded in 0.25-hour (15-minute) increments — e.g. 0.25, 0.5, 0.75, 1.0"}`, http.StatusUnprocessableEntity)
+		return
+	}
 	// the case must exist in this tenant — an entry against a phantom case
 	// would corrupt the billing rollup
 	var caseNumber string
