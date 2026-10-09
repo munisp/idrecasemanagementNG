@@ -448,7 +448,8 @@ func (s *server) ledgerBalances(w http.ResponseWriter, r *http.Request) {
 		party string
 	}
 	var refs []acctRef
-	for _, c := range []uint32{acctAdminRemittance, acctIdreCompensation, acctRefundPayable, acctStripeClearing} {
+	for _, c := range []uint32{acctAdminRemittance, acctIdreCompensation, acctRefundPayable, acctStripeClearing,
+		acctSvcReceivable, acctSvcRevenue, acctOperatingCash, acctAccountsPayable, acctProgramExpense} {
 		refs = append(refs, acctRef{c, ""})
 	}
 	for _, p := range parties {

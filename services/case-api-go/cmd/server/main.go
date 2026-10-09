@@ -528,6 +528,27 @@ func main() {
 		r.Get("/reports/time", s.timeReport)                          // weekly per-dispute + monthly team rollup
 		r.Get("/reports/time/rates", s.getTimeRates)                  // role billable rates (view: CASE_MANAGER/FINANCE/admin)
 		r.Put("/reports/time/rates", s.putTimeRate)                   // set rates (CASE_MANAGER/admin only)
+		// Service-fee invoicing engine (time ledger x rates -> invoices)
+		r.Post("/billing/invoices", s.generateInvoice)                // generate DRAFT for week/month/custom range
+		r.Get("/billing/invoices", s.listBillingInvoices)
+		r.Get("/billing/invoices/{invoiceId}", s.getBillingInvoice)
+		r.Post("/billing/invoices/{invoiceId}/{action}", s.transitionInvoice) // approve|issue|void
+		r.Post("/billing/invoices/{invoiceId}/payments", s.recordInvoicePayment) // FINANCE
+		r.Get("/billing/invoices/{invoiceId}/export", s.exportInvoiceCSV)        // accounting import CSV
+		// Reconciliation engine + accounting adapters
+		r.Post("/recon/import", s.reconImport)                        // CSV upload / configured http_json feed
+		r.Post("/recon/batches/{batchId}/match", s.reconRunMatch)     // deterministic auto-match
+		r.Get("/recon/batches", s.reconListBatches)
+		r.Get("/recon/batches/{batchId}", s.reconGetBatch)
+		r.Post("/recon/items/{itemId}/resolve", s.reconResolveItem)   // manual match|exception|ignore|unmatch
+		r.Get("/recon/summary", s.reconSummary)                       // platform vs external drift for a period
+		// AR/AP subledger (arap.go)
+		r.Get("/arap/receivables", s.listReceivables)
+		r.Get("/arap/payables", s.listPayables)
+		r.Post("/arap/payables", s.createPayable)
+		r.Post("/arap/payables/{payableId}/{action}", s.settlePayable)
+		r.Get("/arap/summary", s.arapSummary)
+		r.Get("/cases/{caseId}/financials", s.caseFinancials)         // every money record tied to the dispute
 		r.Post("/cases/{caseId}/eligibility", s.checkEligibility)     // threshold matrix + filing window (G2)
 		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)    // past reviews (G2)
 		r.Post("/cases/{caseId}/eligibility/auto", s.autoEligibility) // Lever 1: auto-adjudicate when inputs complete
@@ -1025,6 +1046,11 @@ const (
 	acctAdminRemittance  uint32 = 3000
 	acctIdreCompensation uint32 = 4000
 	acctRefundPayable    uint32 = 5000
+	acctSvcReceivable    uint32 = 7000 // service-fee invoices issued, awaiting payment (AR)
+	acctSvcRevenue       uint32 = 7001 // IDRE professional-services revenue
+	acctOperatingCash    uint32 = 7002 // invoice payments received (operating, not escrow)
+	acctAccountsPayable  uint32 = 7003 // open obligations (awards, vendor, refunds)
+	acctProgramExpense   uint32 = 7004 // expense recognition when a payable is recorded
 	ledgerCodeIDRE       uint16 = 700 // platform code; ledger id = tenantLedgerID(tenant)
 )
 

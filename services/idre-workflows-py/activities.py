@@ -149,6 +149,7 @@ async def run_cms_monthly_report(tenant: str, month: str) -> str:
 
 # ACCT codes mirror case-api (cmd/server/main.go consts + payments.go).
 ACCT_ESCROW, ACCT_ADMIN, ACCT_IDRE, ACCT_REFUND, ACCT_CLEARING = 1000, 3000, 4000, 5000, 6000
+ACCT_SVC_AR, ACCT_SVC_REV, ACCT_OP_CASH, ACCT_AP, ACCT_EXPENSE = 7000, 7001, 7002, 7003, 7004
 
 
 async def _ledger_balances(tenant: str) -> list[dict]:
@@ -192,7 +193,8 @@ async def reconcile_ledger(tenant: str) -> dict:
     an sla_breach + outbox event (lakehouse-visible, dashboard-alertable).
     """
     accounts = await _ledger_balances(tenant)
-    net = {ACCT_ESCROW: 0, ACCT_ADMIN: 0, ACCT_IDRE: 0, ACCT_REFUND: 0, ACCT_CLEARING: 0}
+    net = {ACCT_ESCROW: 0, ACCT_ADMIN: 0, ACCT_IDRE: 0, ACCT_REFUND: 0, ACCT_CLEARING: 0,
+           ACCT_SVC_AR: 0, ACCT_SVC_REV: 0, ACCT_OP_CASH: 0, ACCT_AP: 0, ACCT_EXPENSE: 0}
     for a in accounts:
         if a["exists"]:
             net[a["code"]] = net.get(a["code"], 0) + a["credits_posted"] - a["debits_posted"]
@@ -204,11 +206,28 @@ async def reconcile_ledger(tenant: str) -> dict:
         ).fetchone()
         payments_net = row[0] if row else 0
 
+        svc = c.execute(
+            "SELECT (SELECT COALESCE(SUM(total_cents),0) FROM public.billing_invoices"
+            "        WHERE tenant=%s AND status IN ('ISSUED','PAID'))"
+            "     - (SELECT COALESCE(SUM(p.amount_cents),0) FROM public.billing_invoice_payments p"
+            "        JOIN public.billing_invoices b ON b.id=p.invoice_id WHERE b.tenant=%s)",
+            (tenant, tenant),
+        ).fetchone()
+        svc_ar_expected = svc[0] if svc else 0
+        svc_ar_actual = net[ACCT_SVC_AR]
+        ap = c.execute(
+            "SELECT COALESCE(SUM(amount_cents),0) FROM public.payables"
+            " WHERE tenant=%s AND status='OPEN'", (tenant,),
+        ).fetchone()
+        ap_expected = ap[0] if ap else 0
+
         checks = [
             ("clearing_check", payments_net, net[ACCT_CLEARING]),
             ("ledger_invariant",
              net[ACCT_ESCROW] + net[ACCT_ADMIN] + net[ACCT_IDRE] + net[ACCT_REFUND],
              net[ACCT_CLEARING]),
+            ("service_ar_check", svc_ar_expected, -svc_ar_actual),
+            ("ap_check", ap_expected, net[ACCT_AP]),
         ]
         drift_found = False
         for name, expected, actual in checks:

@@ -142,6 +142,11 @@
   if (has("CASE_MANAGER") && App.feature("voice_console")) links.push(["#/voice", "☎", "Voice console"]);
   if (has("FEDERAL_ADMIN", "STATE_AUDITOR", "PLATFORM_ADMIN")) links.push(["#/reports", "◫", "Reports"]);
   if (has("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/time", "⏱", "Team time"]);
+  if (has("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
+    links.push(["#/billing", "🧾", "Billing"]);
+    links.push(["#/arap", "⚖️", "AR / AP"]);
+    links.push(["#/recon", "🔁", "Reconciliation"]);
+  }
   if (has("FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/rules", "§", "Rules"]);
   nav.innerHTML = links.map(([h, i, l]) =>
     `<a href="${h}" data-route="${h.slice(2).split("/")[0]}"><span class="ri">${i}</span><span class="rl">${l}</span></a>`).join("");
@@ -242,6 +247,9 @@
     [/^#\/voice$/, Views.voice],
     [/^#\/reports$/, Views.reports],
     [/^#\/time$/, Views.timeReport],
+    [/^#\/billing$/, Views.billingInvoices],
+    [/^#\/arap$/, Views.arapView],
+    [/^#\/recon$/, Views.reconView],
     [/^#\/rules$/, Views.rulesAdmin],
   ];
 

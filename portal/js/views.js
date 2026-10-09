@@ -993,6 +993,12 @@ const Views = (() => {
         timeCaseBox(id).then((h) => { const b = document.getElementById("time-box"); if (b) b.innerHTML = h; });
       }
 
+      // Financials — every dollar tied to this dispute.
+      if (can("CASE_MANAGER", "FINANCE", "STATE_AUDITOR", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
+        html += `<h2>Financials</h2><div id="fin-box"><p class="muted">Loading…</p></div>`;
+        caseFinBox(id).then((h) => { const b = document.getElementById("fin-box"); if (b) b.innerHTML = h; });
+      }
+
       // Program panels (per-state rules: eligibility, correspondence/QA,
       // invoices, claims, dual status, program dates, opt-out) — rendered
       // only when the tenant runs a custom program.
@@ -1290,7 +1296,7 @@ const Views = (() => {
             const usd = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
             const buckets = ["current", "1-30", "31-60", "60+"].map((b) => {
               const row = (fin.aging || []).find((a) => a.bucket === b);
-              return { label: b === "current" ? "Current" : b + "d", value: row ? row.total_cents / 100 : 0 };
+              return { label: b === "current" ? "Current" : b + "d", value: row ? row.total_cents / 100 : 0 , billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn };
             });
             document.getElementById("rpt-fin-out").innerHTML =
               `<div class="kpi-row">
@@ -2656,5 +2662,365 @@ const Views = (() => {
     }, "Computing…");
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  // ---------- Service-fee invoicing, AR/AP, reconciliation ----------
+  const usdC = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
+  const finRoles = ["CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"];
+
+  async function caseFinBox(caseId) {
+    try {
+      const r = await Api.program.caseFinancials(caseId);
+      const t = r.totals || {};
+      const feeRows = (r.fee_invoices || []).map((i) => `<tr><td class="mono">${esc(i.invoice_no)}</td>
+        <td>${esc(i.party)}</td><td>${esc(i.kind)}</td><td>${usdC(i.amount_cents)}</td>
+        <td>${usdC(i.paid_cents)}</td><td>${badge(i.status)}</td></tr>`).join("");
+      const svcRows = (r.service_lines || []).map((l) => `<tr><td class="mono">${esc(l.invoice_no)}</td>
+        <td>${badge(l.role)}</td><td>${fmtMins(l.minutes)}</td><td>${usdC(l.amount_cents)}</td>
+        <td>${badge(l.invoice_status)}</td></tr>`).join("");
+      const svcPays = (r.service_payments || []).map((p) => `<tr><td class="mono">${esc(p.invoice_no)}</td>
+        <td>${usdC(p.amount_cents)}</td><td>${esc(p.method)}</td><td class="mono">${esc(p.ref || "")}</td>
+        <td>${esc((p.received_at || "").slice(0, 10))}</td></tr>`).join("");
+      const apRows = (r.payables || []).map((p) => `<tr><td>${esc(p.payee)}</td><td>${badge(p.source)}</td>
+        <td>${usdC(p.amount_cents)}</td><td>${badge(p.status)}</td><td class="mono">${esc(p.settle_ref || "")}</td></tr>`).join("");
+      return `<div class="stat-grid">
+          <div class="stat"><div class="stat-num">${usdC(t.ar_due_cents)}</div><div class="muted">AR due (fees)</div></div>
+          <div class="stat"><div class="stat-num">${usdC(t.service_billed_cents)}</div><div class="muted">Service billed</div></div>
+          <div class="stat"><div class="stat-num">${usdC(t.collected_total_cents)}</div><div class="muted">Collected total</div></div>
+          <div class="stat"><div class="stat-num">${usdC(t.ap_open_cents)}</div><div class="muted">AP open (awards…)</div></div></div>
+        <h3>Fee invoices (payer/provider)</h3>
+        ${feeRows ? `<table class="tbl"><thead><tr><th>Invoice</th><th>Party</th><th>Kind</th><th>Amount</th><th>Paid</th><th>Status</th></tr></thead><tbody>${feeRows}</tbody></table>` : '<p class="muted">No fee invoices on this dispute.</p>'}
+        <h3>Service-fee lines</h3>
+        ${svcRows ? `<table class="tbl"><thead><tr><th>Invoice</th><th>Role</th><th>Time</th><th>Amount</th><th>Status</th></tr></thead><tbody>${svcRows}</tbody></table>` : '<p class="muted">No service billing on this dispute.</p>'}
+        ${svcPays ? `<h3>Service payments allocated to this dispute</h3><table class="tbl"><thead><tr><th>Invoice</th><th>Allocated</th><th>Method</th><th>Ref</th><th>Received</th></tr></thead><tbody>${svcPays}</tbody></table>` : ""}
+        <h3>Payables</h3>
+        ${apRows ? `<table class="tbl"><thead><tr><th>Payee</th><th>Source</th><th>Amount</th><th>Status</th><th>Settle ref</th></tr></thead><tbody>${apRows}</tbody></table>` : '<p class="muted">No obligations recorded.</p>'}`;
+    } catch (e) { return `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  // ===== Invoices view (#/billing) =====
+  function billingInvoices() {
+    if (!can(...finRoles))
+      return `<div class="view-head"><h1>Billing</h1></div><p class="muted">Requires CASE_MANAGER or FINANCE.</p>`;
+    afterRender(() => billingList());
+    const now = new Date().toISOString();
+    return `<div class="view-head"><h1>Billing — service-fee invoices</h1>
+      <span class="muted">generated from the time ledger × role rates; every dollar ties back to disputes</span></div>
+      <div class="card"><h2>Generate</h2>
+      <form class="inline-form" onsubmit="event.preventDefault(); Views.billingGen(this)">
+        <label>Week <input name="week" type="date" /></label>
+        <label>Month <input name="month" type="month" value="${now.slice(0, 7)}" /></label>
+        <label>Range <input name="start" type="date" /> → <input name="end" type="date" /></label>
+        <label><input type="checkbox" name="percase" /> per-case invoices</label>
+        <button>Generate DRAFT</button></form>
+      <p class="muted">Idempotent per period — an existing active invoice for the same period is reported, never duplicated. Billable time without a role rate blocks generation (configurable).</p>
+      <div id="billing-gen-out"></div></div>
+      <div id="billing-list"><p class="muted">Loading…</p></div>
+      <div id="billing-detail"></div>`;
+  }
+
+  async function billingGen(form) {
+    const out = document.getElementById("billing-gen-out");
+    const params = form.start.value && form.end.value ? { start: form.start.value, end: form.end.value }
+      : form.week.value ? { week: form.week.value } : { month: form.month.value };
+    out.innerHTML = `<p class="muted">Generating…</p>`;
+    try {
+      const r = await Api.program.billingGenerate(params, { consolidate: !form.percase.checked });
+      const made = (r.invoices || []).map((i) => `<div>✅ <b class="mono">${esc(i.invoice_no)}</b> — ${usdC(i.total_cents)} · ${i.lines} line(s) ${i.case_id ? `· case ${esc(i.case_id.slice(0, 8))}…` : "· consolidated"}</div>`).join("");
+      const skipped = (r.skipped || []).map((x) => `<div class="muted">⏭ ${esc(x.case_id || "consolidated")}: ${esc(x.reason)} ${x.existing_invoice_no ? `(existing <b class="mono">${esc(x.existing_invoice_no)}</b>)` : ""}</div>`).join("");
+      const unrated = (r.excluded_unrated || []).map((u) => `<div class="muted">⚠ unrated: ${esc(u.role)} ${fmtMins(u.billable_minutes)} on ${esc((u.case_id || "").slice(0, 8))}…</div>`).join("");
+      out.innerHTML = `<p><b>${esc(r.period)}</b></p>${made}${skipped}${unrated}` || `<p class="muted">No billable time in period.</p>`;
+      billingList();
+    } catch (e) {
+      const unr = e.data && e.data.unrated ? e.data.unrated.map((u) => `<div>⚠ ${esc(u.role)} — ${fmtMins(u.billable_minutes)} (case ${esc((u.case_id || "").slice(0, 8))}…)</div>`).join("") : "";
+      out.innerHTML = `<p class="error">${esc(e.message)}</p>${unr}`;
+    }
+  }
+
+  async function billingList(status) {
+    const box = document.getElementById("billing-list");
+    if (!box) return;
+    try {
+      const r = await Api.program.billingList(status ? { status } : {});
+      const rows = (r.invoices || []).map((i) => {
+        const due = Number(i.total_cents) - Number(i.paid_cents || 0);
+        let actions = "";
+        if (i.status === "DRAFT" && can("CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+          actions += `<button class="mini" onclick="Views.billingActFn('${i.id}','approve')">Approve</button> `;
+        if (i.status === "APPROVED" && can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+          actions += `<button class="mini" onclick="Views.billingActFn('${i.id}','issue')">Issue</button> `;
+        if (["DRAFT", "APPROVED", "ISSUED"].includes(i.status) && can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+          actions += `<button class="mini danger" onclick="Views.billingActFn('${i.id}','void')">Void</button> `;
+        if (i.status === "ISSUED" && can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+          actions += `<button class="mini" onclick="Views.billingPayForm('${i.id}')">Record payment</button> `;
+        actions += `<button class="mini" onclick="Views.billingDetail('${i.id}')">Detail</button>
+          <button class="mini" onclick="Views.billingExportFn('${i.id}')">CSV</button>`;
+        return `<tr><td class="mono">${esc(i.invoice_no)}</td>
+          <td>${esc(i.period_start)} → ${esc(i.period_end)}</td>
+          <td>${esc(i.bill_to_name || "")}</td><td>${usdC(i.total_cents)}</td>
+          <td>${i.status === "ISSUED" ? usdC(due) : "—"}</td>
+          <td>${badge(i.status)}</td><td>${actions}</td></tr>`;
+      }).join("");
+      box.innerHTML = `<h2>Invoices</h2>
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.billingFilter(this)">
+          <select name="status"><option value="">all statuses</option>${["DRAFT", "APPROVED", "ISSUED", "PAID", "VOID"].map((x) => `<option>${x}</option>`).join("")}</select>
+          <button class="mini">Filter</button></form>
+        ${rows ? `<table class="tbl"><thead><tr><th>Invoice</th><th>Period</th><th>Bill to</th><th>Total</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">No invoices yet — generate one above.</p>'}`;
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function billingActFn(id, action) {
+    if (action === "void" && !confirm("Void this invoice?")) return;
+    try { await Api.program.billingAct(id, action); billingList(); }
+    catch (e) { alert(e.message); }
+  }
+
+  async function billingDetail(id) {
+    const box = document.getElementById("billing-detail");
+    try {
+      const r = await Api.program.billingGet(id);
+      const inv = r.invoice || {};
+      const lines = (r.lines || []).map((l) => `<tr><td class="mono">${esc(l.case_number || "")}</td>
+        <td>${badge(l.role)}</td><td>${fmtMins(l.minutes)}</td><td>${usdC(l.rate_cents_per_hour)}/h</td>
+        <td>${usdC(l.amount_cents)}</td><td>${esc(l.description)}</td></tr>`).join("");
+      const pays = (r.payments || []).map((p) => `<tr><td>${usdC(p.amount_cents)}</td><td>${esc(p.method)}</td>
+        <td class="mono">${esc(p.ref || "")}</td><td>${esc((p.received_at || "").slice(0, 10))}</td><td>${esc(p.recorded_by)}</td></tr>`).join("");
+      const evs = (r.events || []).map((e) => `<div class="muted">${esc(e.event)} · ${esc(e.actor)} · ${fmtDate(e.created_at)}</div>`).join("");
+      box.innerHTML = `<div class="card"><h2 class="mono">${esc(inv.invoice_no)}</h2>
+        <p>${badge(inv.status)} ${esc(inv.bill_to_name || "")} · due ${esc(inv.due_date || "—")} · ${esc(inv.memo || "")}</p>
+        <table class="tbl"><thead><tr><th>Case</th><th>Role</th><th>Time</th><th>Rate</th><th>Amount</th><th>Description</th></tr></thead><tbody>${lines}</tbody></table>
+        <p><b>Subtotal ${usdC(inv.subtotal_cents)} · Tax ${usdC(inv.tax_cents)} · Total ${usdC(inv.total_cents)}</b></p>
+        ${pays ? `<h3>Payments</h3><table class="tbl"><thead><tr><th>Amount</th><th>Method</th><th>Ref</th><th>Received</th><th>By</th></tr></thead><tbody>${pays}</tbody></table>` : ""}
+        <div id="pay-form-${id}"></div><h3>Trail</h3>${evs}</div>`;
+      box.scrollIntoView({ behavior: "smooth" });
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function billingExportFn(id) {
+    try { await Api.program.billingExport(id); } catch (e) { alert(e.message); }
+  }
+
+  function billingPayForm(id) {
+    const box = document.getElementById(`pay-form-${id}`) || document.getElementById("billing-detail");
+    box.insertAdjacentHTML("beforeend", `<form class="inline-form" onsubmit="event.preventDefault(); Views.billingPayRun('${id}', this)">
+      <input name="amount" type="number" step="0.01" min="0.01" placeholder="amount $" required />
+      <select name="method"><option>ach</option><option>wire</option><option>check</option><option>card</option></select>
+      <input name="ref" placeholder="remittance / bank ref" />
+      <input name="received_at" type="date" />
+      <button class="mini">Record payment</button></form>
+      <p class="muted">Split across the invoice's disputes automatically (proportional), so collections roll up per case.</p>`);
+  }
+
+  async function billingPayRun(id, form) {
+    try {
+      await Api.program.billingPay(id, {
+        amount_cents: Math.round(Number(form.amount.value) * 100),
+        method: form.method.value, ref: form.ref.value,
+        received_at: form.received_at.value || undefined,
+      });
+      billingList(); billingDetail(id);
+    } catch (e) { alert(e.message); }
+  }
+
+  // ===== AR/AP view (#/arap) =====
+  function arapView() {
+    if (!can(...finRoles))
+      return `<div class="view-head"><h1>AR / AP</h1></div><p class="muted">Requires CASE_MANAGER or FINANCE.</p>`;
+    afterRender(() => { arapSummaryBox(); arapArBox(); arapApBox(); });
+    return `<div class="view-head"><h1>Receivables & payables</h1>
+      <span class="muted">AR derived live from invoice stores; AP obligations recorded and settled here</span></div>
+      <div id="arap-summary"></div>
+      <div class="card"><h2>Accounts receivable — aging</h2><div id="arap-ar"><p class="muted">Loading…</p></div></div>
+      <div class="card"><h2>Accounts payable</h2>
+        ${can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<form class="inline-form" onsubmit="event.preventDefault(); Views.arapRecord(this)">
+          <input name="payee" placeholder="payee" required />
+          <input name="amount" type="number" step="0.01" min="0.01" placeholder="amount $" required />
+          <select name="source"><option>award</option><option>refund</option><option>vendor</option><option>tax</option><option>other</option></select>
+          <input name="case_id" placeholder="case id (optional)" />
+          <input name="due_date" type="date" />
+          <button class="mini">Record obligation</button></form>` : ""}
+        <div id="arap-ap"><p class="muted">Loading…</p></div></div>`;
+  }
+
+  async function arapSummaryBox() {
+    const box = document.getElementById("arap-summary");
+    try {
+      const r = await Api.program.arapSummary();
+      box.innerHTML = `<div class="stat-grid">
+        <div class="stat"><div class="stat-num">${usdC(r.ar && r.ar.total_cents)}</div><div class="muted">Open receivables</div></div>
+        <div class="stat"><div class="stat-num">${usdC(r.ap && r.ap.open_cents)}</div><div class="muted">Open payables</div></div>
+        <div class="stat"><div class="stat-num">${usdC(r.net_position_cents)}</div><div class="muted">Net position</div></div></div>`;
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  function agingTable(rows, partyLabel) {
+    if (!rows || !rows.length) return '<p class="muted">Nothing open.</p>';
+    return `<table class="tbl"><thead><tr><th>${partyLabel}</th><th>Ref</th><th>Case</th><th>Amount</th><th>Due</th><th>Basis</th><th>Days</th><th>Bucket</th></tr></thead><tbody>
+      ${rows.map((x) => `<tr class="${x.bucket === "90+" ? "row-breach" : ""}">
+        <td>${esc(x.party)}</td><td class="mono">${esc(x.number || x.kind || "")}</td>
+        <td>${x.case_id ? `<a href="#/cases/${x.case_id}">${esc(x.case_id.slice(0, 8))}…</a>` : "—"}</td>
+        <td>${usdC(x.amount_cents)}</td><td><b>${usdC(x.due_cents)}</b></td>
+        <td>${esc(x.basis_date)}</td><td>${x.days_outstanding}</td><td>${badge(x.bucket)}</td></tr>`).join("")}</tbody></table>`;
+  }
+
+  async function arapArBox() {
+    const box = document.getElementById("arap-ar");
+    try {
+      const r = await Api.program.receivablesAging();
+      const ag = r.aging || {};
+      box.innerHTML = `<p>${["current", "1-30", "31-60", "61-90", "90+"].map((b) => `<span class="chip">${b}: <b>${usdC(ag[b] || 0)}</b></span> `).join("")}</p>
+        ${agingTable(r.receivables, "Owes")}`;
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function arapApBox() {
+    const box = document.getElementById("arap-ap");
+    try {
+      const r = await Api.program.payablesList();
+      const rows = (r.payables || []).map((x) => {
+        const canWrite = can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN");
+        const acts = canWrite ? `<button class="mini" onclick="Views.arapSettle('${x.id}')">Settle</button>
+          <button class="mini danger" onclick="Views.arapVoid('${x.id}')">Void</button>` : "";
+        return `<tr><td>${esc(x.party)}</td><td>${badge(x.kind)}</td><td>${usdC(x.amount_cents)}</td>
+          <td>${x.case_id ? `<a href="#/cases/${x.case_id}">${esc(x.case_id.slice(0, 8))}…</a>` : "—"}</td>
+          <td>${esc(x.basis_date)}</td><td>${x.days_outstanding}</td><td>${badge(x.bucket)}</td><td>${acts}</td></tr>`;
+      }).join("");
+      const ag = r.aging || {};
+      box.innerHTML = `<p>${["current", "1-30", "31-60", "61-90", "90+"].map((b) => `<span class="chip">${b}: <b>${usdC(ag[b] || 0)}</b></span> `).join("")}</p>
+        ${rows ? `<table class="tbl"><thead><tr><th>Payee</th><th>Source</th><th>Amount</th><th>Case</th><th>Basis</th><th>Days</th><th>Bucket</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">No open obligations.</p>'}`;
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function arapRecord(form) {
+    try {
+      await Api.program.payableCreate({
+        payee: form.payee.value, amount_cents: Math.round(Number(form.amount.value) * 100),
+        source: form.source.value, case_id: form.case_id.value || undefined,
+        due_date: form.due_date.value || undefined,
+      });
+      form.reset(); arapApBox(); arapSummaryBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function arapSettle(id) {
+    const method = prompt("Settle via (ach/wire/check):", "ach");
+    if (!method) return;
+    const ref = prompt("Remittance / bank reference (recon matches on this):", "");
+    try { await Api.program.payableAct(id, "settle", { method, ref: ref || "" }); arapApBox(); arapSummaryBox(); }
+    catch (e) { alert(e.message); }
+  }
+
+  async function arapVoid(id) {
+    if (!confirm("Void this obligation?")) return;
+    try { await Api.program.payableAct(id, "void", {}); arapApBox(); arapSummaryBox(); }
+    catch (e) { alert(e.message); }
+  }
+
+  // ===== Reconciliation view (#/recon) =====
+  function reconView() {
+    if (!can(...finRoles))
+      return `<div class="view-head"><h1>Reconciliation</h1></div><p class="muted">Requires CASE_MANAGER or FINANCE.</p>`;
+    afterRender(() => reconBatchList());
+    const canWrite = can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN");
+    return `<div class="view-head"><h1>Reconciliation</h1>
+      <span class="muted">match accounting/bank feeds against platform money records — exact ref, then amount within tolerance and date window; ambiguity always goes to a human</span></div>
+      ${canWrite ? `<div class="card"><h2>Import external feed</h2>
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.reconImportRun(this)">
+          <select name="mapping"><option value="quickbooks">QuickBooks CSV</option><option value="xero">Xero CSV</option>
+            <option value="sage">Sage CSV</option><option value="bank_generic">Bank (generic CSV)</option></select>
+          <input name="file" type="file" accept=".csv" required />
+          <button class="mini">Import</button></form>
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.reconFetchRun(this)">
+          <input name="feed" placeholder="configured http_json feed name" />
+          <button class="mini">Fetch from accounting platform</button>
+          <span class="muted">feeds are configured per tenant (reconciliation.http_feeds)</span></form>
+        <div id="recon-import-out"></div></div>` : ""}
+      <div id="recon-batches"><p class="muted">Loading…</p></div>
+      <div id="recon-detail"></div>`;
+  }
+
+  async function reconImportRun(form) {
+    const out = document.getElementById("recon-import-out");
+    out.innerHTML = `<p class="muted">Importing…</p>`;
+    try {
+      const r = await Api.program.reconImportCsv(form.mapping.value, form.file.files[0]);
+      out.innerHTML = `<p>✅ Batch #${r.batch_id} — ${r.items} items (${esc(r.period)}). Running auto-match…</p>`;
+      const m = await Api.program.reconMatch(r.batch_id);
+      out.innerHTML += `<p>Matched <b>${m.matched}</b> · exceptions <b>${m.exceptions}</b> · unmatched <b>${m.unmatched}</b></p>`;
+      reconBatchList();
+    } catch (e) { out.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function reconFetchRun(form) {
+    const out = document.getElementById("recon-import-out");
+    try {
+      const r = await Api.program.reconFetch(form.feed.value);
+      out.innerHTML = `<p>✅ Batch #${r.batch_id} — ${r.items} items. Running auto-match…</p>`;
+      const m = await Api.program.reconMatch(r.batch_id);
+      out.innerHTML += `<p>Matched <b>${m.matched}</b> · exceptions <b>${m.exceptions}</b> · unmatched <b>${m.unmatched}</b></p>`;
+      reconBatchList();
+    } catch (e) { out.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function reconBatchList() {
+    const box = document.getElementById("recon-batches");
+    if (!box) return;
+    try {
+      const r = await Api.program.reconBatches();
+      const rows = (r.batches || []).map((b) => `<tr><td>#${b.id}</td><td>${esc(b.source)}</td>
+        <td>${esc(b.period_start)} → ${esc(b.period_end)}</td><td>${b.total_items}</td>
+        <td>${b.matched}</td><td>${b.exceptions}</td><td>${b.unmatched}</td><td>${badge(b.status)}</td>
+        <td><button class="mini" onclick="Views.reconOpen(${b.id})">Open</button>
+        ${can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<button class="mini" onclick="Views.reconMatchRun(${b.id})">Re-run match</button>` : ""}</td></tr>`).join("");
+      box.innerHTML = `<h2>Batches</h2>${rows ? `<table class="tbl"><thead><tr><th></th><th>Source</th><th>Period</th><th>Items</th><th>Matched</th><th>Exceptions</th><th>Unmatched</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">No imports yet.</p>'}`;
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function reconMatchRun(id) {
+    try { const m = await Api.program.reconMatch(id);
+      alert(`matched ${m.matched} · exceptions ${m.exceptions} · unmatched ${m.unmatched}`);
+      reconBatchList(); reconOpen(id);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function reconOpen(id) {
+    const box = document.getElementById("recon-detail");
+    try {
+      const r = await Api.program.reconBatch(id);
+      const rows = (r.items || []).map((it) => {
+        let act = "";
+        if (can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") && it.status !== "MATCHED" && it.status !== "IGNORED")
+          act = `<button class="mini" onclick="Views.reconResolveFn(${it.id}, 'match')">Match…</button>
+            <button class="mini" onclick="Views.reconResolveFn(${it.id}, 'exception')">Exception</button>
+            <button class="mini" onclick="Views.reconResolveFn(${it.id}, 'ignore')">Ignore</button>`;
+        return `<tr class="${it.status === "EXCEPTION" ? "row-breach" : ""}">
+          <td>${esc(it.txn_date)}</td><td>${usdC(it.amount_cents)}</td><td class="mono">${esc(it.reference || "")}</td>
+          <td>${esc(it.description || "")}</td><td>${badge(it.status)}</td>
+          <td>${it.platform_kind ? `${esc(it.platform_kind)} ${usdC(it.platform_amount_cents)}` : ""} <span class="muted">${esc(it.match_kind || "")}</span></td>
+          <td class="muted">${esc(it.note || "")}</td><td>${act}</td></tr>`;
+      }).join("");
+      box.innerHTML = `<div class="card"><h2>Batch #${id} — ${esc(r.batch.source)}</h2>
+        <table class="tbl"><thead><tr><th>Date</th><th>Amount</th><th>Reference</th><th>Description</th><th>Status</th><th>Platform record</th><th>Note</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      box.scrollIntoView({ behavior: "smooth" });
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function reconResolveFn(itemId, action) {
+    try {
+      if (action === "match") {
+        const ev = prompt("Platform financial_event id to match (amounts must tie):");
+        if (!ev) return;
+        await Api.program.reconResolve(itemId, { action: "match", event_id: Number(ev) });
+      } else if (action === "exception") {
+        const note = prompt("Exception note (required):");
+        if (!note) return;
+        await Api.program.reconResolve(itemId, { action: "exception", note });
+      } else {
+        await Api.program.reconResolve(itemId, { action });
+      }
+      const det = document.querySelector("#recon-detail h2");
+      if (det) { const m = det.textContent.match(/#(\d+)/); if (m) reconOpen(Number(m[1])); }
+      reconBatchList();
+    } catch (e) { alert(e.message); }
+  }
+
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn };
 })();

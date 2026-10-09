@@ -65,6 +65,14 @@ func (s *server) setCaseDetails(w http.ResponseWriter, r *http.Request) {
 	for k := range in {
 		keys = append(keys, k)
 	}
+	// Award recorded/changed/cleared -> keep the AP subledger in step.
+	if _, ok := in["final_amount_awarded_cents"]; ok {
+		actor := "staff"
+		if pr, ok2 := r.Context().Value(ctxPrincipal{}).(principal); ok2 {
+			actor = pr.Subject
+		}
+		s.syncAwardPayable(r, tenant, caseID, in, actor)
+	}
 	s.logActivity(r.Context(), tenant, caseID, "DETAILS_UPDATED", "fields set: "+strings.Join(keys, ", "))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "fields": keys})
 }

@@ -23,6 +23,21 @@ const Api = (() => {
     return data;
   }
 
+  async function download(path, fallbackName) {
+    const tok = await Auth.token();
+    if (!tok) throw new Error("unauthenticated");
+    const resp = await fetch(window.IDRE_CONFIG.apiBase + path, { headers: { Authorization: `Bearer ${tok}` } });
+    if (resp.status === 401) { Auth.login(); throw new Error("redirecting"); }
+    if (!resp.ok) throw new Error(`download failed (HTTP ${resp.status})`);
+    const cd = resp.headers.get("content-disposition") || "";
+    const name = (cd.match(/filename="?([^"]+)"?/) || [])[1] || fallbackName || "download";
+    const blobUrl = URL.createObjectURL(await resp.blob());
+    const a = document.createElement("a");
+    a.href = blobUrl; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+  }
+
   const t = () => `/v1/tenants/${tenant}`;
   // query-string builder: drops empty values, returns "" or "?a=1&b=2"
   const qs = (params) => {
@@ -135,6 +150,33 @@ const Api = (() => {
       get: () => req("GET", `${t()}/program`),
       manifest: () => req("GET", `${t()}/manifest`),
       opsDashboard: () => req("GET", `${t()}/ops/dashboard`),
+      caseFinancials: (caseId) => req("GET", `${t()}/cases/${caseId}/financials`),
+      // Service-fee invoicing engine
+      billingGenerate: (params, body) => req("POST", `${t()}/billing/invoices${qs(params || {})}`, body || {}),
+      billingList: (opts) => req("GET", `${t()}/billing/invoices${qs(opts || {})}`),
+      billingGet: (id) => req("GET", `${t()}/billing/invoices/${id}`),
+      billingAct: (id, action) => req("POST", `${t()}/billing/invoices/${id}/${action}`, {}),
+      billingPay: (id, body) => req("POST", `${t()}/billing/invoices/${id}/payments`, body),
+      billingExport: async (id) => download(`${t()}/billing/invoices/${id}/export`, "invoice.csv"),
+      // Reconciliation engine + adapters
+      reconImportCsv: (mapping, file) => {
+        const fd = new FormData();
+        fd.append("source", "csv_generic"); fd.append("mapping", mapping); fd.append("file", file);
+        return req("POST", `${t()}/recon/import`, fd, true);
+      },
+      reconFetch: (feed) => req("POST", `${t()}/recon/import`, { source: "http_json", feed }),
+      reconMatch: (id) => req("POST", `${t()}/recon/batches/${id}/match`, {}),
+      reconBatches: () => req("GET", `${t()}/recon/batches`),
+      reconBatch: (id) => req("GET", `${t()}/recon/batches/${id}`),
+      reconResolve: (itemId, body) => req("POST", `${t()}/recon/items/${itemId}/resolve`, body),
+      reconSummary: (opts) => req("GET", `${t()}/recon/summary${qs(opts || {})}`),
+      // AR/AP subledger
+      receivablesAging: (asOf) => req("GET", `${t()}/arap/receivables${qs(asOf ? { as_of: asOf } : {})}`),
+      payablesList: (status, asOf) => req("GET", `${t()}/arap/payables${qs({ status: status || "OPEN", ...(asOf ? { as_of: asOf } : {}) })}`),
+      payableCreate: (body) => req("POST", `${t()}/arap/payables`, body),
+      payableAct: (id, action, body) => req("POST", `${t()}/arap/payables/${id}/${action}`, body || {}),
+      arapSummary: (asOf) => req("GET", `${t()}/arap/summary${qs(asOf ? { as_of: asOf } : {})}`),
+
       pingPresence: (name) => req("POST", `${t()}/presence/ping`, { name }),
       saveManifest: (manifest, note) => req("PUT", `${t()}/manifest`, { manifest, note }),
       rules: () => req("GET", `${t()}/rules`),

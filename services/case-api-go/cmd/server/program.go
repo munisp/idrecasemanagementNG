@@ -69,6 +69,8 @@ type ProgramConfig struct {
 	} `json:"escalation"`
 	NotesStreams []string            `json:"notes_streams"`
 	FieldSchema  map[string][]string `json:"field_schema"`
+	Billing        BillingConfig `json:"billing"`        // service-fee invoicing engine (billing.go)
+	Reconciliation ReconConfig   `json:"reconciliation"` // recon engine + accounting adapters (recon.go)
 }
 
 // loadProgram returns nil when the tenant runs the built-in federal NSA program.
