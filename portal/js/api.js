@@ -176,6 +176,9 @@ const Api = (() => {
       payableCreate: (body) => req("POST", `${t()}/arap/payables`, body),
       payableAct: (id, action, body) => req("POST", `${t()}/arap/payables/${id}/${action}`, body || {}),
       arapSummary: (asOf) => req("GET", `${t()}/arap/summary${qs(asOf ? { as_of: asOf } : {})}`),
+      nachaPayout: (body) => req("POST", `${t()}/arap/payouts/nacha`, body || {}),
+      payoutBatches: () => req("GET", `${t()}/arap/payouts`),
+      payoutBatchFile: (id) => req("GET", `${t()}/arap/payouts/${id}/file`),
       // Third-party administrators (file/track on behalf of initiating parties)
       tpaRegister: (body) => req("POST", "/api/public/tpa/register", body),
       tpaClaim: (code) => req("POST", `${t()}/tpa/claim`, { code }),

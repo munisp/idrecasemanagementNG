@@ -548,6 +548,9 @@ func main() {
 		r.Post("/arap/payables", s.createPayable)
 		r.Post("/arap/payables/{payableId}/{action}", s.settlePayable)
 		r.Get("/arap/summary", s.arapSummary)
+		r.Post("/arap/payouts/nacha", s.createNachaPayout)     // FINANCE: ACH file from open payables
+		r.Get("/arap/payouts", s.listPayoutBatches)
+		r.Get("/arap/payouts/{batchId}/file", s.payoutBatchFile)
 		r.Get("/cases/{caseId}/financials", s.caseFinancials)         // every money record tied to the dispute
 		r.Post("/cases/{caseId}/eligibility", s.checkEligibility)     // threshold matrix + filing window (G2)
 		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)    // past reviews (G2)

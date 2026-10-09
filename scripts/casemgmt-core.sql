@@ -438,3 +438,22 @@ CREATE TABLE IF NOT EXISTS public.case_origin (
 );
 CREATE INDEX IF NOT EXISTS case_origin_tpa_idx ON public.case_origin (tenant, tpa_id);
 CREATE INDEX IF NOT EXISTS case_origin_case_idx ON public.case_origin (tenant, case_id) WHERE case_id IS NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────
+-- Bank rails (bank.go): payables gain ACH destinations + batch linkage;
+-- NACHA payout batches persist their generated file for re-download.
+-- ─────────────────────────────────────────────────────────────────────
+ALTER TABLE public.payables ADD COLUMN IF NOT EXISTS destination jsonb;
+ALTER TABLE public.payables ADD COLUMN IF NOT EXISTS payout_batch_id uuid;
+CREATE TABLE IF NOT EXISTS public.bank_payout_batches (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant         text NOT NULL,
+  file_reference text NOT NULL,
+  entry_count    int  NOT NULL,
+  total_cents    bigint NOT NULL,
+  status         text NOT NULL DEFAULT 'GENERATED',
+  created_by     text NOT NULL DEFAULT '',
+  file_body      text NOT NULL,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant, file_reference)
+);

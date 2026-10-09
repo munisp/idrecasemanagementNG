@@ -392,7 +392,8 @@ BEGIN
   IF current_setting('app.config_migration', true) IS DISTINCT FROM 'on' AND (
        NEW.config->'fees'           IS DISTINCT FROM OLD.config->'fees'
     OR NEW.config->'billing'        IS DISTINCT FROM OLD.config->'billing'
-    OR NEW.config->'reconciliation' IS DISTINCT FROM OLD.config->'reconciliation') THEN
+    OR NEW.config->'reconciliation' IS DISTINCT FROM OLD.config->'reconciliation'
+    OR NEW.config->'bank'           IS DISTINCT FROM OLD.config->'bank') THEN
     RAISE EXCEPTION 'program fees/billing/reconciliation are migration-only: SET LOCAL app.config_migration = ''on'' inside a migration transaction';
   END IF;
   IF NEW.config IS DISTINCT FROM OLD.config THEN

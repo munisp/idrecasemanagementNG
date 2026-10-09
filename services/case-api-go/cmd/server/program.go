@@ -72,6 +72,7 @@ type ProgramConfig struct {
 	Billing        BillingConfig `json:"billing"`        // service-fee invoicing engine (billing.go)
 	Reconciliation ReconConfig   `json:"reconciliation"` // recon engine + accounting adapters (recon.go)
 	Payment        PaymentPolicyConfig `json:"payment"` // flexible payment policy (payment_policy.go)
+	Bank           BankConfig    `json:"bank"`           // NACHA origination (bank.go)
 }
 
 // loadProgram returns nil when the tenant runs the built-in federal NSA program.
