@@ -702,9 +702,10 @@ const Views = (() => {
     const tpls = prog?.config?.correspondence?.templates || [];
     if (!tpls.length)
       return `<div class="card"><h3>✉ Send mail</h3><p class="muted">This program defines no correspondence templates — use the case screen's correspondence tools.</p></div>`;
+    corrTplCache = tpls;
     return `<div class="card"><h3>✉ Send mail</h3>
       <form class="inline-form" onsubmit="event.preventDefault(); Views.asstSendMail('${caseId}', this)">
-        <select name="template">${tpls.map((tp) =>
+        <select name="template" onchange="Views.corrTemplateBody(this)">${tpls.map((tp) =>
           `<option value="${esc(tp.key)}">${esc(tp.key)}${tp.qa_role ? " (QA: " + esc(tp.qa_role) + ")" : ""}</option>`).join("")}</select>
         <select name="rfi_to" title="only used for the rfi template"><option value="provider">RFI to: provider</option><option value="plan">RFI to: health plan</option></select>
         <input name="to" placeholder="to emails (comma-separated)" required />
@@ -1476,7 +1477,8 @@ const Views = (() => {
 
       <details class="prog-sec"><summary>Correspondence</summary>
       <form id="p-send" class="inline-form">
-        <select name="template">${(cfg.correspondence?.templates || []).map((tp) =>
+        ${corrTplCache = cfg.correspondence?.templates || [], ""}
+        <select name="template" onchange="Views.corrTemplateBody(this)">${(cfg.correspondence?.templates || []).map((tp) =>
           `<option value="${esc(tp.key)}">${esc(tp.key)}${tp.qa_role ? " (QA: " + esc(tp.qa_role) + ")" : ""}</option>`).join("")}</select>
         <input name="to" placeholder="to emails (comma-separated)" required />
         <input name="cc" placeholder="cc emails" />
@@ -2548,6 +2550,19 @@ const Views = (() => {
     }, "Logging…");
   }
 
+  // Correspondence compose: pre-fill the body with the program template's
+  // standard text. Fills only when the body is empty or still holds another
+  // template's untouched text — staff edits are never clobbered.
+  let corrTplCache = [];
+  function corrTemplateBody(sel) {
+    const form = sel.form;
+    const tp = corrTplCache.find((t) => t.key === sel.value);
+    if (!tp || !tp.body || !form || !form.body) return;
+    const ta = form.body;
+    const untouched = corrTplCache.some((t) => t.body && t.body === ta.value);
+    if (!ta.value.trim() || untouched) ta.value = tp.body;
+  }
+
   // ---- Time entries (per-role effort, per dispute) ------------------------
   const fmtMins = (m) => `${(m / 60).toFixed(m % 60 ? 2 : 0)}h`;
 
@@ -3192,5 +3207,5 @@ const Views = (() => {
     catch (e) { alert(e.message); }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
 })();

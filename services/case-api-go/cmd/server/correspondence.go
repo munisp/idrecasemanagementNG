@@ -27,6 +27,10 @@ type CorrTemplate struct {
 	CC      []string `json:"cc"`      // copied parties per program CC matrix
 	QARole  string   `json:"qa_role"` // "" = send immediately; else gated on that role
 	Thread  bool     `json:"thread"`  // reply-all on the existing thread
+	// Body is the program's standard message text with {case_number},
+	// {share_link} and {download_link} placeholders; the compose screen
+	// pre-fills it and staff edit before sending. The caller's body wins.
+	Body string `json:"body"`
 }
 
 func (s *server) corrTemplates(r *http.Request, tenant string) []CorrTemplate {
@@ -96,7 +100,11 @@ func (s *server) draftCorrespondence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subject := s.renderTemplate(r, tenant, caseID, tpl.Subject)
-	body := s.renderTemplate(r, tenant, caseID, in.Body)
+	bodyText := in.Body
+	if strings.TrimSpace(bodyText) == "" {
+		bodyText = tpl.Body // program standard template text
+	}
+	body := s.renderTemplate(r, tenant, caseID, bodyText)
 	for k, v := range in.Vars {
 		subject = strings.ReplaceAll(subject, "{"+k+"}", v)
 		body = strings.ReplaceAll(body, "{"+k+"}", v)
