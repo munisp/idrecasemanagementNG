@@ -34,6 +34,11 @@ type PaymentPolicyConfig struct {
 	RequirePaidBeforeDocs    *bool    `json:"require_paid_before_docs,omitempty"`
 	RequirePaidBeforeConvert *bool    `json:"require_paid_before_convert,omitempty"`
 	ExemptFilingPartyTypes   []string `json:"exempt_filing_party_types,omitempty"`
+	// ExemptFilerOrgs are filing organizations accepted under an invoicing
+	// arrangement (AHCA 2026 "Payment before submission": bulk-accepted
+	// disputes are opened by the acceptance and invoiced later). Matching is
+	// case-insensitive on the intake's org.
+	ExemptFilerOrgs []string `json:"exempt_filer_orgs,omitempty"`
 }
 
 // paidBeforeDocs: does the policy demand settlement before DOCS_RECEIVED /
@@ -53,11 +58,26 @@ func (p PaymentPolicyConfig) paidBeforeConvert() bool {
 	return p.Mode == "payment_first"
 }
 
-// exempt: is this filing-party type excused from the payment gates?
+// exempt: is this filing-party type or filer organization excused from the
+// payment gates?
 func (p PaymentPolicyConfig) exempt(filingPartyType string) bool {
 	fpt := strings.ToUpper(strings.TrimSpace(filingPartyType))
 	for _, e := range p.ExemptFilingPartyTypes {
 		if strings.ToUpper(strings.TrimSpace(e)) == fpt {
+			return true
+		}
+	}
+	return false
+}
+
+// exemptOrg: is this filer organization covered by an invoicing arrangement?
+func (p PaymentPolicyConfig) exemptOrg(org string) bool {
+	o := strings.TrimSpace(org)
+	if o == "" {
+		return false
+	}
+	for _, e := range p.ExemptFilerOrgs {
+		if strings.EqualFold(strings.TrimSpace(e), o) {
 			return true
 		}
 	}
@@ -80,8 +100,11 @@ func validatePaymentPolicy(p PaymentPolicyConfig) error {
 // enforcePaymentGate runs the policy against an intake transition. target is
 // the requested status; currentStatus and filingPartyType describe the intake
 // row. Returns "" when the transition is allowed, else a 409 message.
-func enforcePaymentGate(pol PaymentPolicyConfig, target, currentStatus, filingPartyType string) string {
+func enforcePaymentGate(pol PaymentPolicyConfig, target, currentStatus, filingPartyType string, filerOrg ...string) string {
 	if pol.exempt(filingPartyType) {
+		return ""
+	}
+	if len(filerOrg) > 0 && pol.exemptOrg(filerOrg[0]) {
 		return ""
 	}
 	paid := currentStatus == "PAID"

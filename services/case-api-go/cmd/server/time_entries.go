@@ -63,6 +63,10 @@ type timeEntryIn struct {
 	EntryDate string  `json:"entry_date"` // YYYY-MM-DD; default today
 	Note      string  `json:"note"`
 	Billable  *bool   `json:"billable"` // default true
+	// Role is the role being PERFORMED for this entry, chosen per entry (a
+	// multi-role user picks per entry, e.g. coding one hour and QA the
+	// next). It must be a role the principal actually holds.
+	Role string `json:"role"`
 }
 
 func (in *timeEntryIn) normalize() (minutes int, date string, err error) {
@@ -118,6 +122,13 @@ func (s *server) addTimeEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	billable := in.Billable == nil || *in.Billable
 	role := timeEntryRole(p)
+	if want := strings.ToUpper(strings.TrimSpace(in.Role)); want != "" {
+		if !hasRole(p, want) {
+			http.Error(w, fmt.Sprintf(`{"error":"role %q is not one you hold — the entry role is chosen per entry but must be a role assigned to you"}`, strings.TrimSpace(in.Role)), http.StatusUnprocessableEntity)
+			return
+		}
+		role = want
+	}
 	var id int64
 	if err := s.db.QueryRow(r.Context(), `
 		INSERT INTO public.time_entries (tenant, case_id, subject, role, entry_date, minutes, note, billable)

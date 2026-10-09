@@ -233,7 +233,7 @@ INSERT INTO public.program_rules (tenant, program, config) VALUES ('fl', 'FL AHC
   -- require_paid_before_docs / require_paid_before_convert). Optional
   -- exempt_filing_party_types bypass the gates. Runtime-editable via
   -- PUT /v1/tenants/{tenant}/program/payment-policy (platform admins).
-  "payment": {"mode": "payment_first", "exempt_filing_party_types": []},
+  "payment": {"mode": "payment_first", "exempt_filing_party_types": [], "exempt_filer_orgs": []},
   "escalation": {"amount_trigger_cents": 100000000, "route_role": "PM", "reasons": ["fraud_waste_abuse","over_1m"]},
   "notes_streams": ["internal","coder","clinical","legal","external_agency"],
   "correspondence": {
@@ -291,8 +291,8 @@ INSERT INTO public.program_rules (tenant, program, config) VALUES ('fl', 'FL AHC
     "line_of_business": ["Medicaid","Commercial","Medicare","Medicare Advantage","Marketplace","Other"],
     "disputed_issue": ["Medicaid Medical Necessity","Underpayment","Overpayment","Denial","Other"],
     "out_of_network": ["Yes","No"],
-    "case_outcome": ["TBD - case in process","Withdrawn","Dismissed","Provider Default Award","Provider Full Award","Provider Partial Award","Provider No Award","Other"],
-    "party_billed": ["Health Plan","Provider","Both Parties","N/A"],
+    "case_outcome": ["TBD – case in process","Withdrawn","Dismissed","Provider Default Award","Provider Full Award","Provider Partial Award","Provider No Award","Other"],
+    "party_billed": ["Health Plan","Provider","Both","N/A"],
     "withdrawal_dismissed_reason": ["Dismissed-Timeliness eligibility failed","Member plan is not regulated by Florida","Self-Funded Plan","Provider No Response","Withdrawal-Claim Resolved","Other","N/A"],
     "internal_status_terminal": ["Plan Opt-Out","Ineligible","Dismissed","Withdrawn"],
     "internal_status_completed": "Decided - Invoice Paid",

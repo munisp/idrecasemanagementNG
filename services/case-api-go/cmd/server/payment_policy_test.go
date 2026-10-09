@@ -63,3 +63,21 @@ func TestEnforcePaymentGate(t *testing.T) {
 		t.Fatalf("open policy must not block: %s", msg)
 	}
 }
+
+func TestEnforcePaymentGateExemptFilerOrg(t *testing.T) {
+	pf := PaymentPolicyConfig{Mode: "payment_first", ExemptFilerOrgs: []string{"Acme RCM Group"}}
+	// Org on the invoicing arrangement bypasses both gates, case-insensitively.
+	if msg := enforcePaymentGate(pf, "CONVERTED", "INSTRUCTED", "PROVIDER", "acme rcm group"); msg != "" {
+		t.Fatalf("invoicing-arrangement org must bypass the convert gate: %s", msg)
+	}
+	if msg := enforcePaymentGate(pf, "DOCS_RECEIVED", "INSTRUCTED", "PROVIDER", "Acme RCM Group"); msg != "" {
+		t.Fatalf("invoicing-arrangement org must bypass the docs gate: %s", msg)
+	}
+	// A different org is still gated; empty org never matches.
+	if msg := enforcePaymentGate(pf, "CONVERTED", "INSTRUCTED", "PROVIDER", "Someone Else"); msg == "" {
+		t.Fatal("unlisted org must remain payment-gated")
+	}
+	if msg := enforcePaymentGate(pf, "CONVERTED", "INSTRUCTED", "PROVIDER", ""); msg == "" {
+		t.Fatal("empty org must never match the arrangement list")
+	}
+}

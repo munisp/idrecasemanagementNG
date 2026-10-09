@@ -374,17 +374,18 @@ func (s *server) advanceIntake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"status must be one of: %s"}`, machine.list), http.StatusBadRequest)
 		return
 	}
-	var current, filingPartyType string
+	var current, filingPartyType, filerOrg string
 	if err := s.db.QueryRow(r.Context(),
-		`SELECT status, coalesce(filing_party_type,'') FROM public.intake_requests WHERE tenant=$1 AND id=$2`, tenant, id).Scan(&current, &filingPartyType); err != nil {
+		`SELECT status, coalesce(filing_party_type,''), coalesce(org,'') FROM public.intake_requests WHERE tenant=$1 AND id=$2`, tenant, id).Scan(&current, &filingPartyType, &filerOrg); err != nil {
 		http.Error(w, `{"error":"intake not found"}`, http.StatusNotFound)
 		return
 	}
 	// Payment policy (config.payment): payment-first tenants require the fee
 	// settled (status PAID) before documents are accepted and/or before the
-	// intake converts. Exempt filing-party types bypass the gates.
+	// intake converts. Exempt filing-party types and invoicing-arrangement
+	// filer orgs bypass the gates.
 	if cfg := s.loadProgram(r, tenant); cfg != nil {
-		if msg := enforcePaymentGate(cfg.Payment, in.Status, current, filingPartyType); msg != "" {
+		if msg := enforcePaymentGate(cfg.Payment, in.Status, current, filingPartyType, filerOrg); msg != "" {
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusConflict)
 			return
 		}
