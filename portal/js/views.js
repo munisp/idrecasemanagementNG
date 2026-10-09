@@ -2579,13 +2579,51 @@ const Views = (() => {
       return `<div class="view-head"><h1>Team time</h1></div><p class="muted">Requires CASE_MANAGER or FINANCE.</p>`;
     const now = new Date();
     const defMonth = now.toISOString().slice(0, 7);
+    if (can("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+      afterRender(() => timeRatesBox());
     return `<div class="view-head"><h1>Team time</h1>
       <span class="muted">hours worked per dispute — weekly and monthly rollups for billing review</span></div>
       <form class="inline-form" onsubmit="event.preventDefault(); Views.timeReportRun(this)">
         <label>Week containing <input name="week" type="date" /></label>
         <label>or month <input name="month" type="month" value="${defMonth}" /></label>
         <button>Run report</button></form>
-      <div id="time-rpt"></div>`;
+      <div id="time-rpt"></div>
+      <div id="time-rates"></div>`;
+  }
+
+  async function timeRatesBox() {
+    const box = document.getElementById("time-rates");
+    if (!box) return;
+    const usd = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
+    try {
+      const r = await Api.program.timeRates();
+      const rates = r.rates || [];
+      const rows = rates.map((x) => `<tr>
+        <td>${badge(x.role)}</td><td>${usd(x.rate_cents_per_hour)}/h</td>
+        <td class="muted">${esc(x.updated_by)} · ${fmtDate(x.updated_at)}</td></tr>`).join("");
+      const manage = r.can_manage
+        ? `<form class="inline-form" onsubmit="event.preventDefault(); Views.timeRateSet(this)">
+            <select name="role">${["DOCTOR","NURSE","CASE_MANAGER","ARBITRATOR","ATTORNEY","FINANCE","STATE_AUDITOR"].map((x) => `<option>${x}</option>`).join("")}</select>
+            <input name="rate" type="number" step="0.01" min="0" placeholder="$/hour" required />
+            <button class="mini">Set rate</button></form>`
+        : "";
+      box.innerHTML = `<h2>Billable rates by role</h2>
+        ${rows ? `<table><thead><tr><th>Role</th><th>Rate</th><th>Last set</th></tr></thead><tbody>${rows}</tbody></table>`
+               : `<p class="muted">No rates configured — reports show hours only until rates are set.</p>`}
+        ${manage || `<p class="muted">Rates are set by CASE_MANAGER / administrators.</p>`}`;
+    } catch (e) { box.innerHTML = ""; }
+  }
+
+  async function timeRateSet(form) {
+    const btn = form.querySelector("button");
+    await UI.run(btn, async () => {
+      try {
+        await Api.program.timeRateSet(form.role.value, Math.round(parseFloat(form.rate.value) * 100));
+        UI.toast(`Rate set: ${form.role.value}`);
+        form.rate.value = "";
+        timeRatesBox();
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Saving…");
   }
 
   async function timeReportRun(form) {
@@ -2596,20 +2634,24 @@ const Views = (() => {
       try {
         const opts = form.week.value ? { week: form.week.value } : { month: form.month.value };
         const r = await Api.program.timeReport(opts);
+        const usd2 = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
+        const money = r.total_amount_cents !== undefined;
         const caseRows = (r.by_case || []).map((c) => `<tr>
           <td class="mono"><a href="#/cases/${c.case_id}">${esc(c.case_number || c.case_id.slice(0, 8) + "…")}</a></td>
-          <td>${fmtMins(c.minutes)}</td><td>${fmtMins(c.billable_minutes)}</td><td>${c.people}</td></tr>`).join("");
+          <td>${fmtMins(c.minutes)}</td><td>${fmtMins(c.billable_minutes)}</td><td>${c.people}</td>
+          ${money ? `<td>${c.amount_cents != null ? usd2(c.amount_cents) : "—"}${c.unrated_billable_minutes ? ` <span class="muted" title="billable minutes with no configured role rate">+${fmtMins(c.unrated_billable_minutes)} unrated</span>` : ""}</td>` : ""}</tr>`).join("");
         const personRows = (r.by_person || []).map((p) => `<tr>
-          <td>${esc(p.case_number)}</td><td>${fmtMins(p.minutes)}</td><td>${fmtMins(p.billable_minutes)}</td></tr>`).join("");
+          <td>${esc(p.case_number)}</td><td>${fmtMins(p.minutes)}</td><td>${fmtMins(p.billable_minutes)}</td>
+          ${money ? `<td>${p.amount_cents != null ? usd2(p.amount_cents) : "—"}</td>` : ""}</tr>`).join("");
         box.innerHTML = `<h2>${esc(r.period)}</h2>
-          <p><b>${fmtMins(r.total_minutes)}</b> total · <b>${fmtMins(r.billable_minutes)}</b> billable</p>
+          <p><b>${fmtMins(r.total_minutes)}</b> total · <b>${fmtMins(r.billable_minutes)}</b> billable${money ? ` · <b>${usd2(r.total_amount_cents)}</b> billable amount` : ""}${money && r.unrated_billable_minutes ? ` · <span class="muted">${fmtMins(r.unrated_billable_minutes)} unrated</span>` : ""}</p>
           <h3>By dispute</h3>
-          ${caseRows ? `<table><thead><tr><th>Case</th><th>Hours</th><th>Billable</th><th>People</th></tr></thead><tbody>${caseRows}</tbody></table>` : `<p class="muted">No time logged in this period.</p>`}
+          ${caseRows ? `<table><thead><tr><th>Case</th><th>Hours</th><th>Billable</th><th>People</th>${money ? "<th>Amount</th>" : ""}</tr></thead><tbody>${caseRows}</tbody></table>` : `<p class="muted">No time logged in this period.</p>`}
           <h3>By team member</h3>
-          ${personRows ? `<table><thead><tr><th>Who</th><th>Hours</th><th>Billable</th></tr></thead><tbody>${personRows}</tbody></table>` : ""}`;
+          ${personRows ? `<table><thead><tr><th>Who</th><th>Hours</th><th>Billable</th>${money ? "<th>Amount</th>" : ""}</tr></thead><tbody>${personRows}</tbody></table>` : ""}`;
       } catch (e) { box.innerHTML = `<p class="muted">⚠ ${esc(e.message)}</p>`; }
     }, "Computing…");
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard };
 })();

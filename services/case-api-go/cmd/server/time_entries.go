@@ -214,13 +214,37 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 		Minutes    int64  `json:"minutes"`
 		Billable   int64  `json:"billable_minutes"`
 		People     int    `json:"people"`
+		Amount  *int64 `json:"amount_cents,omitempty"`
+		Unrated *int64 `json:"unrated_billable_minutes,omitempty"`
+	}
+	showMoney := hasAnyRole(p, timeRateViewRoles...)
+	rates := map[string]int64{}
+	if showMoney {
+		rates = s.timeRateMap(r, tenant)
 	}
 	byCase := map[string]*acc{}
 	byPerson := map[string]*acc{}
 	seen := map[string]map[string]bool{}
+	addMoney := func(a *acc, role string, bill int64) {
+		if !showMoney || bill == 0 {
+			return
+		}
+		if a.Amount == nil {
+			var zero int64
+			a.Amount = &zero
+			var z2 int64
+			a.Unrated = &z2
+		}
+		if rate, ok := rates[role]; ok {
+			*a.Amount += bill * rate / 60
+		} else {
+			*a.Unrated += bill
+		}
+	}
 	for _, row := range rows {
 		cid, _ := row["case_id"].(string)
 		subj, _ := row["subject"].(string)
+		role, _ := row["role"].(string)
 		mins := toInt64(row["minutes"])
 		bill := toInt64(row["billable_minutes"])
 		if byCase[cid] == nil {
@@ -229,16 +253,18 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 		}
 		byCase[cid].Minutes += mins
 		byCase[cid].Billable += bill
+		addMoney(byCase[cid], role, bill)
 		if !seen[cid][subj] {
 			seen[cid][subj] = true
 			byCase[cid].People++
 		}
-		key := subj + "|" + fmt.Sprint(row["role"])
+		key := subj + "|" + role
 		if byPerson[key] == nil {
 			byPerson[key] = &acc{CaseID: "", CaseNumber: subj}
 		}
 		byPerson[key].Minutes += mins
 		byPerson[key].Billable += bill
+		addMoney(byPerson[key], role, bill)
 	}
 	caseList, personList := []*acc{}, []*acc{}
 	for _, a := range byCase {
@@ -249,14 +275,119 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(caseList, func(i, j int) bool { return caseList[i].Minutes > caseList[j].Minutes })
 	sort.Slice(personList, func(i, j int) bool { return personList[i].Minutes > personList[j].Minutes })
-	var total, totalBillable int64
+	var total, totalBillable, totalAmount, totalUnrated int64
 	for _, a := range caseList {
 		total += a.Minutes
 		totalBillable += a.Billable
+		if a.Amount != nil {
+			totalAmount += *a.Amount
+		}
+		if a.Unrated != nil {
+			totalUnrated += *a.Unrated
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"period": label, "from": from, "to": to,
 		"by_case": caseList, "by_person": personList,
 		"total_minutes": total, "billable_minutes": totalBillable,
+	}
+	if showMoney {
+		resp["total_amount_cents"] = totalAmount
+		resp["unrated_billable_minutes"] = totalUnrated
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ---- Billable rates (per role, per tenant) ---------------------------------
+// Rates are money-confidential: only PM/FINANCE/FEDERAL_ADMIN/PLATFORM_ADMIN
+// ever see amounts, and only PM/FEDERAL_ADMIN/PLATFORM_ADMIN may set them.
+// timeReport attaches amounts only when the caller holds one of those roles;
+// a role with no configured rate contributes hours but no dollars — never a
+// guessed rate.
+
+// timeRateManageRoles: who may SET rates. timeRateViewRoles: who may SEE
+// dollar amounts (superset: FINANCE reads for billing reconciliation).
+var timeRateManageRoles = []string{"CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN"}
+var timeRateViewRoles = []string{"CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"}
+
+// getTimeRates: GET /reports/time/rates
+func (s *server) getTimeRates(w http.ResponseWriter, r *http.Request) {
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, timeRateViewRoles...) {
+		http.Error(w, `{"error":"forbidden: rates are visible to CASE_MANAGER/FINANCE/admin only"}`, http.StatusForbidden)
+		return
+	}
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	rows, err := s.queryRows(r, `
+		SELECT role, rate_cents_per_hour, updated_by, updated_at
+		FROM public.time_rates WHERE tenant=$1 ORDER BY role`, tenant)
+	if err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rates": rows, "can_manage": hasAnyRole(p, timeRateManageRoles...),
 	})
+}
+
+// putTimeRate: PUT /reports/time/rates {"role":"DOCTOR","rate_cents_per_hour":17500}
+func (s *server) putTimeRate(w http.ResponseWriter, r *http.Request) {
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, timeRateManageRoles...) {
+		http.Error(w, `{"error":"forbidden: only CASE_MANAGER/FEDERAL_ADMIN/PLATFORM_ADMIN may set rates"}`, http.StatusForbidden)
+		return
+	}
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	var in struct {
+		Role             string `json:"role"`
+		RateCentsPerHour int64  `json:"rate_cents_per_hour"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+		return
+	}
+	role := strings.ToUpper(strings.TrimSpace(in.Role))
+	if !validTimeRole(role) {
+		http.Error(w, `{"error":"unknown role"}`, http.StatusBadRequest)
+		return
+	}
+	if in.RateCentsPerHour < 0 || in.RateCentsPerHour > 100_000_00 { // $100k/h sanity ceiling
+		http.Error(w, `{"error":"rate out of range"}`, http.StatusBadRequest)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `
+		INSERT INTO public.time_rates (tenant, role, rate_cents_per_hour, updated_by)
+		VALUES ($1,$2,$3,$4)
+		ON CONFLICT (tenant, role) DO UPDATE SET rate_cents_per_hour=EXCLUDED.rate_cents_per_hour,
+			updated_by=EXCLUDED.updated_by, updated_at=now()`,
+		tenant, role, in.RateCentsPerHour, p.Subject); err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"role": role, "rate_cents_per_hour": in.RateCentsPerHour})
+}
+
+// timeRateMap loads the tenant's role → rate table for report enrichment.
+func (s *server) timeRateMap(r *http.Request, tenant string) map[string]int64 {
+	m := map[string]int64{}
+	rows, err := s.queryRows(r, `SELECT role, rate_cents_per_hour FROM public.time_rates WHERE tenant=$1`, tenant)
+	if err != nil {
+		return m
+	}
+	for _, row := range rows {
+		role, _ := row["role"].(string)
+		m[role] = toInt64(row["rate_cents_per_hour"])
+	}
+	return m
+}
+
+// validTimeRole — NG's assignable staff vocabulary (no global role table;
+// roles are validated per-tenant at assignment time).
+func validTimeRole(role string) bool {
+	switch role {
+	case "DOCTOR", "NURSE", "CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "FINANCE",
+		"FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR", "BULK_SUBMITTER":
+		return true
+	}
+	return false
 }

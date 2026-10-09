@@ -205,3 +205,16 @@ CREATE TABLE IF NOT EXISTS public.time_entries (
 );
 CREATE INDEX IF NOT EXISTS time_entries_tenant_case ON public.time_entries (tenant, case_id);
 CREATE INDEX IF NOT EXISTS time_entries_tenant_date ON public.time_entries (tenant, entry_date);
+
+-- Billable rates per role per tenant: managed by FEDERAL_ADMIN/
+-- PLATFORM_ADMIN only. Reports multiply minutes by the rate of the role the
+-- entry was logged under; entries whose role has no rate report hours with
+-- no amount (never a guessed rate).
+CREATE TABLE IF NOT EXISTS public.time_rates (
+    tenant              text NOT NULL,
+    role                text NOT NULL,
+    rate_cents_per_hour int  NOT NULL CHECK (rate_cents_per_hour >= 0),
+    updated_by          text NOT NULL,
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant, role)
+);

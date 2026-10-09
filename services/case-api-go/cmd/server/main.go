@@ -526,6 +526,8 @@ func main() {
 		r.Post("/cases/{caseId}/time", s.addTimeEntry)               // per-role effort on the dispute
 		r.Get("/cases/{caseId}/time", s.listTimeEntries)
 		r.Get("/reports/time", s.timeReport)                          // weekly per-dispute + monthly team rollup
+		r.Get("/reports/time/rates", s.getTimeRates)                  // role billable rates (view: CASE_MANAGER/FINANCE/admin)
+		r.Put("/reports/time/rates", s.putTimeRate)                   // set rates (CASE_MANAGER/admin only)
 		r.Post("/cases/{caseId}/eligibility", s.checkEligibility)     // threshold matrix + filing window (G2)
 		r.Get("/cases/{caseId}/eligibility", s.eligibilityHistory)    // past reviews (G2)
 		r.Post("/cases/{caseId}/eligibility/auto", s.autoEligibility) // Lever 1: auto-adjudicate when inputs complete
