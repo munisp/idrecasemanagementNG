@@ -147,6 +147,7 @@
     links.push(["#/arap", "⚖️", "AR / AP"]);
     links.push(["#/recon", "🔁", "Reconciliation"]);
   }
+  if (has("TPA", "CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/tpa", "⛁", "TPA"]);
   if (has("FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/rules", "§", "Rules"]);
   nav.innerHTML = links.map(([h, i, l]) =>
     `<a href="${h}" data-route="${h.slice(2).split("/")[0]}"><span class="ri">${i}</span><span class="rl">${l}</span></a>`).join("");
@@ -250,6 +251,7 @@
     [/^#\/billing$/, Views.billingInvoices],
     [/^#\/arap$/, Views.arapView],
     [/^#\/recon$/, Views.reconView],
+    [/^#\/tpa$/, Views.tpaView],
     [/^#\/rules$/, Views.rulesAdmin],
   ];
 

@@ -585,6 +585,18 @@ func main() {
 		r.Get("/intake", s.listIntake)
 		r.Post("/intake/{intakeId}/advance", s.advanceIntake) // refund window enforced
 
+		// Third-party administrators (tpa.go): file/track on behalf of
+		// multiple initiating parties (manifest party codes).
+		r.Post("/tpa/claim", s.claimTPA)
+		r.Get("/tpa/me", s.tpaMe)
+		r.Post("/tpa/clients", s.tpaAddClient)
+		r.Get("/tpa/clients", s.tpaListClients)
+		r.Post("/tpa/clients/{clientId}/status", s.tpaSetClientStatus)
+		r.Post("/tpa/intake", s.tpaIntake)                  // file on behalf of a client (staff-driven intake)
+		r.Get("/tpa/dashboard", s.tpaDashboard)             // all my clients' filings
+		r.Get("/admin/tpas", s.adminListTPAs)
+		r.Post("/admin/tpas/{tpaId}/status", s.adminSetTPAStatus) // suspend|reactivate
+
 		// Rule engine administration (admin roles only; every write audited).
 		r.Get("/rules", s.listRules)
 		r.Put("/rules", s.putRules)
@@ -627,6 +639,7 @@ func main() {
 
 	// Public stakeholder application (no OIDC; per-IP throttled, tenant + type validated).
 	r.Post("/api/public/apply", s.publicApply)
+	r.Post("/api/public/tpa/register", s.registerTPA)
 
 	// Day-13 intake completeness gate (AHCA 2026): hourly sweep flips stale
 	// intakes to INELIGIBLE and raises staff notifications for the letters.

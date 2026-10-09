@@ -462,6 +462,13 @@ func (s *server) advanceIntake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
+	// TPA filings: carry the origin record onto the converted case so the
+	// initiating-party attribution survives intake -> case conversion.
+	if in.CaseID != "" {
+		_, _ = s.db.Exec(r.Context(), `
+			UPDATE public.case_origin SET case_id=$3 WHERE tenant=$1 AND intake_id=$2 AND case_id IS NULL`,
+			tenant, id, in.CaseID)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": in.Status})
 }
 

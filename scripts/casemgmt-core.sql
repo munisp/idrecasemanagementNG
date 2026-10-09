@@ -377,3 +377,64 @@ CREATE TABLE IF NOT EXISTS public.billing_payment_allocations (
 );
 CREATE INDEX IF NOT EXISTS billing_alloc_case ON public.billing_payment_allocations (tenant, case_id);
 CREATE INDEX IF NOT EXISTS billing_alloc_payment ON public.billing_payment_allocations (payment_id);
+
+-- ─────────────────────────────────────────────────────────────────────
+-- Third-party administrators (TPA): organizations that file/track disputes
+-- on behalf of one or more initiating parties. Self-serve onboarding via a
+-- one-time claim code; states retain suspend as after-the-fact control.
+-- No audit_log in NG — these rows carry their own timestamps; the record
+-- is the audit trail.
+-- ─────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.tpas (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant        text NOT NULL,
+  name          text NOT NULL,
+  contact_name  text NOT NULL DEFAULT '',
+  contact_email text NOT NULL,
+  claim_code    text,                    -- one-time; burned on claim
+  status        text NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE | SUSPENDED
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant, contact_email)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS tpas_claim_code_uniq ON public.tpas (tenant, claim_code) WHERE claim_code IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS public.tpa_users (
+  tenant    text NOT NULL,
+  user_sub  text NOT NULL,
+  tpa_id    uuid NOT NULL REFERENCES public.tpas(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant, user_sub)
+);
+
+-- Initiating parties a TPA acts for. party_type uses manifest codes
+-- (PartyACode/PartyBCode) — never hard-coded healthcare labels.
+CREATE TABLE IF NOT EXISTS public.tpa_clients (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant        text NOT NULL,
+  tpa_id        uuid NOT NULL REFERENCES public.tpas(id),
+  party_name    text NOT NULL,
+  party_type    text NOT NULL,
+  contact_email text NOT NULL DEFAULT '',
+  status        text NOT NULL DEFAULT 'ACTIVE',
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant, tpa_id, party_name)
+);
+
+-- Origin of every TPA-filed dispute: who it BELONGS to (initiating party)
+-- vs who filed/acts (the TPA). Keyed by intake_id (staff-driven intake);
+-- case_id attaches on conversion (advanceIntake hook).
+CREATE TABLE IF NOT EXISTS public.case_origin (
+  tenant                 text NOT NULL,
+  intake_id              uuid NOT NULL,
+  tpa_id                 uuid NOT NULL REFERENCES public.tpas(id),
+  client_id              uuid NOT NULL REFERENCES public.tpa_clients(id),
+  initiating_party_name  text NOT NULL,
+  initiating_party_type  text NOT NULL,
+  filed_by_email         text NOT NULL,
+  case_id                uuid,
+  created_at             timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant, intake_id)
+);
+CREATE INDEX IF NOT EXISTS case_origin_tpa_idx ON public.case_origin (tenant, tpa_id);
+CREATE INDEX IF NOT EXISTS case_origin_case_idx ON public.case_origin (tenant, case_id) WHERE case_id IS NOT NULL;

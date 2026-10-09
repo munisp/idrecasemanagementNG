@@ -176,6 +176,17 @@ const Api = (() => {
       payableCreate: (body) => req("POST", `${t()}/arap/payables`, body),
       payableAct: (id, action, body) => req("POST", `${t()}/arap/payables/${id}/${action}`, body || {}),
       arapSummary: (asOf) => req("GET", `${t()}/arap/summary${qs(asOf ? { as_of: asOf } : {})}`),
+      // Third-party administrators (file/track on behalf of initiating parties)
+      tpaRegister: (body) => req("POST", "/api/public/tpa/register", body),
+      tpaClaim: (code) => req("POST", `${t()}/tpa/claim`, { code }),
+      tpaMe: () => req("GET", `${t()}/tpa/me`),
+      tpaClients: () => req("GET", `${t()}/tpa/clients`),
+      tpaAddClient: (body) => req("POST", `${t()}/tpa/clients`, body),
+      tpaClientStatus: (id, status) => req("POST", `${t()}/tpa/clients/${id}/status`, { status }),
+      tpaIntake: (body) => req("POST", `${t()}/tpa/intake`, body),
+      tpaDashboard: (tpaId) => req("GET", `${t()}/tpa/dashboard${qs(tpaId ? { tpa_id: tpaId } : {})}`),
+      adminTpas: () => req("GET", `${t()}/admin/tpas`),
+      adminTpaStatus: (id, status) => req("POST", `${t()}/admin/tpas/${id}/status`, { status }),
 
       pingPresence: (name) => req("POST", `${t()}/presence/ping`, { name }),
       saveManifest: (manifest, note) => req("PUT", `${t()}/manifest`, { manifest, note }),

@@ -1296,7 +1296,7 @@ const Views = (() => {
             const usd = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
             const buckets = ["current", "1-30", "31-60", "60+"].map((b) => {
               const row = (fin.aging || []).find((a) => a.bucket === b);
-              return { label: b === "current" ? "Current" : b + "d", value: row ? row.total_cents / 100 : 0 , billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn };
+              return { label: b === "current" ? "Current" : b + "d", value: row ? row.total_cents / 100 : 0 , billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
             });
             document.getElementById("rpt-fin-out").innerHTML =
               `<div class="kpi-row">
@@ -3022,5 +3022,122 @@ const Views = (() => {
     } catch (e) { alert(e.message); }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn };
+  // ── Third-party administrators ─────────────────────────────────────
+  function tpaView() {
+    if (!can("TPA", "CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+      return `<div class="view-head"><h1>Third-party administrators</h1></div><p class="muted">Requires a TPA, CASE_MANAGER, or FINANCE account.</p>`;
+    afterRender(tpaBoot);
+    return `<div class="view-head"><h1>Third-party administrators</h1>
+      <span class="muted">File and track disputes on behalf of your initiating parties</span></div>
+      <div id="tpa-org"></div>
+      <div id="tpa-body" style="display:none">
+        <div class="card"><h2>Initiating parties (clients)</h2>
+          <form class="inline-form" onsubmit="event.preventDefault(); Views.tpaAddClientFn(this)">
+            <input name="party_name" placeholder="organization name" required />
+            <input name="party_type" placeholder="party type code (manifest)" style="text-transform:uppercase" />
+            <input name="contact_email" type="email" placeholder="contact email" />
+            <button class="mini">Add</button></form>
+          <p class="muted">Party type codes come from the tenant manifest (e.g. PROVIDER / HEALTH_PLAN).</p>
+          <div id="tpa-clients"><p class="muted">Loading…</p></div></div>
+        <div class="card"><h2>File a dispute on behalf of a client</h2>
+          <form class="inline-form" onsubmit="event.preventDefault(); Views.tpaFileFn(this)">
+            <select name="client_id" id="tpa-file-client" required></select>
+            <input name="notes" placeholder="notes" />
+            <button class="mini">Open intake</button></form>
+          <p class="muted">The intake opens with your TPA as the contact — payment and document requests come to you on behalf of the initiating party; staff advance it like any other intake.</p>
+          <div id="tpa-file-result"></div></div>
+        <div class="card"><h2>Tracking — all your parties' filings</h2>
+          <div id="tpa-rollup"></div><div id="tpa-cases"><p class="muted">Loading…</p></div></div>
+      </div>
+      ${can("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `
+      <div class="card"><h2>State oversight — all TPAs</h2><div id="tpa-admin"><p class="muted">Loading…</p></div></div>` : ""}`;
+  }
+
+  async function tpaBoot() {
+    const orgBox = document.getElementById("tpa-org");
+    try {
+      const r = await Api.program.tpaMe();
+      orgBox.innerHTML = `<div class="stat-grid"><div class="stat"><div class="stat-num">${esc(r.tpa.name)}</div>
+        <div class="muted">${esc(r.tpa.contact_email)} · ${badge(r.tpa.status)}</div></div></div>`;
+      document.getElementById("tpa-body").style.display = "";
+      tpaClientsBox(); tpaDashBox();
+    } catch (e) {
+      orgBox.innerHTML = `<div class="card"><h2>Link your TPA organization</h2>
+        <p class="muted">Enter the one-time claim code from your TPA registration.</p>
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.tpaClaimFn(this)">
+          <input name="code" placeholder="TPA-XXXXXX" required /><button class="mini">Claim</button></form></div>`;
+    }
+    if (can("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) tpaAdminBox();
+  }
+
+  async function tpaClaimFn(form) {
+    try { await Api.program.tpaClaim(form.code.value.trim()); tpaBoot(); }
+    catch (e) { alert(e.message); }
+  }
+
+  async function tpaClientsBox() {
+    const box = document.getElementById("tpa-clients");
+    try {
+      const r = await Api.program.tpaClients();
+      const cs = r.clients || [];
+      box.innerHTML = cs.length ? `<table class="tbl"><thead><tr><th>Party</th><th>Type</th><th>Email</th><th>Filings</th><th>Status</th><th></th></tr></thead><tbody>
+        ${cs.map((c) => `<tr><td>${esc(c.party_name)}</td><td>${badge(c.party_type)}</td><td>${esc(c.contact_email || "—")}</td>
+          <td>${c.intake_count}</td><td>${badge(c.status)}</td>
+          <td><button class="mini" onclick="Views.tpaClientStatusFn('${c.id}','${c.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE"}')">${c.status === "ACTIVE" ? "Suspend" : "Reactivate"}</button></td></tr>`).join("")}</tbody></table>` : '<p class="muted">No initiating parties yet — add one above.</p>';
+      const sel = document.getElementById("tpa-file-client");
+      if (sel) sel.innerHTML = cs.filter((c) => c.status === "ACTIVE").map((c) => `<option value="${c.id}">${esc(c.party_name)} (${esc(c.party_type)})</option>`).join("");
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function tpaAddClientFn(form) {
+    try {
+      await Api.program.tpaAddClient({ party_name: form.party_name.value, party_type: (form.party_type.value || "").toUpperCase(), contact_email: form.contact_email.value });
+      form.reset(); tpaClientsBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function tpaClientStatusFn(id, status) {
+    try { await Api.program.tpaClientStatus(id, status); tpaClientsBox(); }
+    catch (e) { alert(e.message); }
+  }
+
+  async function tpaFileFn(form) {
+    const out = document.getElementById("tpa-file-result");
+    try {
+      const r = await Api.program.tpaIntake({ client_id: form.client_id.value, notes: form.notes.value, fields: {} });
+      out.innerHTML = `<p class="ok">Intake <span class="mono">${esc(r.intake_id.slice(0, 8))}…</span> opened (${esc(r.status)}) for <b>${esc(r.initiating_party)}</b> — filed by ${esc(r.filed_by)}.</p>`;
+      form.reset(); tpaDashBox(); tpaClientsBox();
+    } catch (e) { out.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function tpaDashBox(tpaId) {
+    const roll = document.getElementById("tpa-rollup"), box = document.getElementById("tpa-cases");
+    try {
+      const r = await Api.program.tpaDashboard(tpaId);
+      roll.innerHTML = (r.by_client || []).map((x) => `<span class="chip">${esc(x.initiating_party)}: <b>${x.filings}</b> filings (${x.converted} converted) · paid ${usdC(x.paid_cents)}</span> `).join("");
+      const rows = (r.filings || []).map((x) => `<tr><td>${esc(x.client_name)}</td><td>${badge(x.initiating_party_type)}</td>
+        <td>${x.case_id ? `<a href="#/cases/${x.case_id}">${esc(x.case_number || String(x.case_id).slice(0, 8))}</a>` : "—"}</td>
+        <td>${badge(x.case_status || x.intake_status)}</td><td>${usdC(x.disputed_amount_cents)}</td><td>${usdC(x.paid_cents)}</td><td>${esc(x.filed)}</td></tr>`).join("");
+      box.innerHTML = rows ? `<table class="tbl"><thead><tr><th>Initiating party</th><th>Type</th><th>Case</th><th>Status</th><th>Disputed</th><th>Paid</th><th>Filed</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">No filings yet.</p>';
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function tpaAdminBox() {
+    const box = document.getElementById("tpa-admin");
+    if (!box) return;
+    try {
+      const r = await Api.program.adminTpas();
+      const rows = (r.tpas || []).map((t) => `<tr><td>${esc(t.name)}</td><td>${esc(t.contact_email)}</td><td>${t.clients}</td><td>${t.filings}</td>
+        <td>${badge(t.status)}</td>
+        <td>${can("CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<button class="mini ${t.status === "ACTIVE" ? "danger" : ""}" onclick="Views.tpaAdminStatusFn('${t.id}','${t.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE"}')">${t.status === "ACTIVE" ? "Suspend" : "Reactivate"}</button>` : ""}</td></tr>`).join("");
+      box.innerHTML = rows ? `<table class="tbl"><thead><tr><th>TPA</th><th>Contact</th><th>Clients</th><th>Filings</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">No TPAs registered.</p>';
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function tpaAdminStatusFn(id, status) {
+    try { await Api.program.adminTpaStatus(id, status); tpaAdminBox(); }
+    catch (e) { alert(e.message); }
+  }
+
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
 })();
