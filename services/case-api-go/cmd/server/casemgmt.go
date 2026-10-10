@@ -477,19 +477,29 @@ func (s *server) emailInbound(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"tenant required"}`, http.StatusBadRequest)
 		return
 	}
+	// The mail journal is written FIRST and unconditionally: every inbound
+	// mail is referable from correspondence_log whether or not it matches a
+	// case, with the full subject and body (truncated at 20k, not 400 — the
+	// journal is the record, the timeline is the summary).
+	caseID := ""
 	if in.CaseRef != "" {
-		// email-to-case: append to the case timeline
-		var caseID string
-		if err := s.db.QueryRow(r.Context(), fmt.Sprintf(
+		_ = s.db.QueryRow(r.Context(), fmt.Sprintf(
 			`SELECT id FROM tenant_%s.cases WHERE case_number=$1`, sanitizeTenant(tenant)),
-			in.CaseRef).Scan(&caseID); err == nil {
-			_, _ = s.db.Exec(r.Context(), `
-				INSERT INTO public.case_activities (tenant, case_id, type, body)
-				VALUES ($1,$2,'EMAIL',$3)`, tenant, caseID,
-				fmt.Sprintf("From %s — %s\n%s", in.From, in.Subject, truncate(in.Body, 400)))
-			writeJSON(w, http.StatusAccepted, map[string]string{"status": "attached", "case_id": caseID})
-			return
-		}
+			in.CaseRef).Scan(&caseID)
+	}
+	rcpts, _ := json.Marshal(map[string]any{"from": in.From})
+	_, _ = s.db.Exec(r.Context(), `
+		INSERT INTO public.correspondence_log (tenant, case_id, direction, template, subject, body, recipients, sent_by)
+		VALUES ($1,$2,'IN','inbound',$3,$4,$5,$6)`,
+		tenant, caseID, truncate(in.Subject, 500), truncate(in.Body, 20000), rcpts, in.From)
+	if caseID != "" {
+		// email-to-case: append to the case timeline
+		_, _ = s.db.Exec(r.Context(), `
+			INSERT INTO public.case_activities (tenant, case_id, type, body)
+			VALUES ($1,$2,'EMAIL',$3)`, tenant, caseID,
+			fmt.Sprintf("From %s — %s\n%s", in.From, in.Subject, truncate(in.Body, 400)))
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "attached", "case_id": caseID})
+		return
 	}
 	// otherwise: lead capture (email-to-lead)
 	_, _ = s.db.Exec(r.Context(), `

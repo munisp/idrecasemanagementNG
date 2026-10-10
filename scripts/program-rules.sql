@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS public.correspondence_log (
     sent_by    text,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE public.correspondence_log
+    ADD COLUMN IF NOT EXISTS delivery_status text NOT NULL DEFAULT 'SENT',  -- SENT|FAILED
+    ADD COLUMN IF NOT EXISTS delivery_error text;
+
 CREATE INDEX IF NOT EXISTS correspondence_case ON public.correspondence_log (tenant, case_id);
 
 -- Invoices: one invoice number (= case number) can carry two receivables.

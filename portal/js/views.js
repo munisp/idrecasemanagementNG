@@ -1608,7 +1608,7 @@ const Views = (() => {
         const el = document.getElementById("p-corr"); if (!el) return;
         const rows = r.correspondence || [];
         el.innerHTML = rows.length ? `<table><tbody>` + rows.slice(0, 10).map((m) =>
-          `<tr><td>${badge(m.direction)}</td><td>${esc(m.subject || "")}</td>
+          `<tr><td>${badge(m.direction)}${m.delivery_status === "FAILED" ? ` <span class="badge warn" title="${esc(m.delivery_error || "")}">FAILED</span>` : ""}</td><td>${esc(m.subject || "")}</td>
            <td class="muted">${esc(m.template || "")} · ${fmtDate(m.created_at)}</td></tr>`).join("") +
           `</tbody></table>` : "";
       }).catch(() => {});
@@ -3300,6 +3300,57 @@ const Views = (() => {
   }
 
   // ── Third-party administrators ─────────────────────────────────────
+  // ---- Mail log: every inbound + outbound mail, referable ---------------
+  function mailLog() {
+    if (!can("CASE_MANAGER", "FINANCE", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR"))
+      return `<div class="view-head"><h1>Mail log</h1></div><p class="muted">Requires a staff role.</p>`;
+    afterRender(mailLogBox);
+    return `<div class="view-head"><h1>Mail log</h1>
+      <span class="muted">every inbound and outbound mail across the platform — including failed deliveries and mail that matched no case</span></div>
+      <form class="inline-form" onsubmit="event.preventDefault(); Views.mailLogFilter(this)">
+        <select name="direction"><option value="">IN + OUT</option><option value="IN">Inbound</option><option value="OUT">Outbound</option></select>
+        <input name="q" placeholder="search subject / body / case number" style="min-width:18em" />
+        <button class="mini">Search</button></form>
+      <div id="mail-log"><p class="muted">Loading…</p></div>`;
+  }
+
+  let mailLogFilterState = {};
+
+  function mailLogFilter(form) {
+    mailLogFilterState = { direction: form.direction.value || "", q: form.q.value.trim() || "" };
+    mailLogBox();
+  }
+
+  async function mailLogBox() {
+    const box = document.getElementById("mail-log");
+    if (!box) return;
+    try {
+      const r = await Api.program.mailJournal(mailLogFilterState);
+      const ms = r.mail || [];
+      const rows = ms.map((m) => {
+        const rc = m.recipients || {};
+        const who = m.direction === "IN" ? (rc.from || m.sent_by || "") : (rc.to || []).join(", ");
+        return `<tr>
+          <td>${badge(m.direction)}</td>
+          <td>${m.case_id ? `<a href="#/cases/${m.case_id}">${esc(m.case_number || "case")}</a>` : `<span class="muted" title="pre-case or unmatched mail">—</span>`}</td>
+          <td>${esc(m.subject || "")}${m.template && m.template !== "inbound" ? ` <span class="muted">(${esc(m.template)})</span>` : ""}</td>
+          <td class="muted">${esc(who)}</td>
+          <td>${m.delivery_status === "FAILED" ? `<span class="badge warn" title="${esc(m.delivery_error || "")}">FAILED</span>` : ""}</td>
+          <td class="muted">${fmtDate(m.created_at)}</td>
+          <td><button class="mini ghost" onclick="Views.mailLogBody(${m.id})">View</button></td></tr>
+          <tr id="mail-body-${m.id}" style="display:none"><td colspan="7"><pre style="white-space:pre-wrap;max-height:16em;overflow:auto">${esc(m.body || "")}</pre></td></tr>`;
+      }).join("");
+      box.innerHTML = ms.length
+        ? `<table><thead><tr><th>Dir</th><th>Case</th><th>Subject</th><th>From / To</th><th>Delivery</th><th>When</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+        : `<p class="muted">No mail recorded for this filter.</p>`;
+    } catch (e) { box.innerHTML = `<p class="muted">⚠ ${esc(e.message)}</p>`; }
+  }
+
+  function mailLogBody(id) {
+    const row = document.getElementById(`mail-body-${id}`);
+    if (row) row.style.display = row.style.display === "none" ? "" : "none";
+  }
+
   function tpaView() {
     if (!can("TPA", "CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
       return `<div class="view-head"><h1>Third-party administrators</h1></div><p class="muted">Requires a TPA, CASE_MANAGER, or FINANCE account.</p>`;
@@ -3519,5 +3570,5 @@ const Views = (() => {
     catch (e) { alert(e.message); }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody };
 })();

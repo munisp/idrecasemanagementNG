@@ -183,6 +183,7 @@ func (s *server) draftCorrespondence(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// No QA gate on this template — deliver immediately via SMTP.
 		if err := s.sendMail(in.To, in.CC, subject, body); err != nil {
+			s.logCorrespondence(r, tenant, caseID, "OUT", in.Template, subject, body, in.To, in.CC, p.Subject, err.Error())
 			s.logActivity(r.Context(), tenant, caseID, "EMAIL_DELIVERY_FAILED",
 				fmt.Sprintf("SMTP delivery failed for %q: %s", subject, err))
 			http.Error(w, `{"error":"smtp delivery failed — draft retained as APPROVED for retry"}`, http.StatusBadGateway)
@@ -312,6 +313,7 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 		// through the configured SMTP relay. Failure keeps status APPROVED (not
 		// SENT) so the reviewer can retry — nothing is marked sent that wasn't.
 		if err := s.sendMail(to, cc, subject, body); err != nil {
+			s.logCorrespondence(r, tenant, caseID, "OUT", "qa_approved", subject, body, to, cc, p.Subject, err.Error())
 			s.logActivity(r.Context(), tenant, caseID, "EMAIL_DELIVERY_FAILED",
 				fmt.Sprintf("SMTP delivery failed for %q: %s", subject, err))
 			http.Error(w, `{"error":"smtp delivery failed — draft stays APPROVED for retry"}`, http.StatusBadGateway)
@@ -330,12 +332,55 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": newStatus})
 }
 
-func (s *server) logCorrespondence(r *http.Request, tenant, caseID, direction, template, subject, body string, to, cc []string, actor string) {
+// logCorrespondence is the platform's mail journal: EVERY inbound and
+// outbound mail is recorded here — including failed deliveries, so "did that
+// letter actually go out?" is answerable from the record, not from memory.
+// case_id may be "" for pre-case mail (payment demands, intake links).
+func (s *server) logCorrespondence(r *http.Request, tenant, caseID, direction, template, subject, body string, to, cc []string, actor string, deliveryErr ...string) {
 	rcpts, _ := json.Marshal(map[string]any{"to": to, "cc": cc})
+	status, derr := "SENT", ""
+	if len(deliveryErr) > 0 && deliveryErr[0] != "" {
+		status, derr = "FAILED", truncate(deliveryErr[0], 500)
+	}
 	_, _ = s.db.Exec(r.Context(), `
-		INSERT INTO public.correspondence_log (tenant, case_id, direction, template, subject, body, recipients, sent_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		tenant, caseID, direction, template, subject, body, rcpts, actor)
+		INSERT INTO public.correspondence_log (tenant, case_id, direction, template, subject, body, recipients, sent_by, delivery_status, delivery_error)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		tenant, caseID, direction, template, subject, body, rcpts, actor, status, derr)
+}
+
+// listMailJournal: GET /correspondence?direction=IN|OUT&q=... — the
+// tenant-wide mail log. Every inbound and outbound mail lands here,
+// including pre-case mail and inbound mail that matched no case — the
+// "can we refer to it?" view. Staff-only: bodies carry party PII.
+func (s *server) listMailJournal(w http.ResponseWriter, r *http.Request) {
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, "CASE_MANAGER", "FINANCE", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR") {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	q := `SELECT c.id, c.case_id, COALESCE(k.case_number,'') AS case_number, c.direction, c.template,
+	             c.subject, c.body, c.recipients, c.sent_by, c.created_at,
+	             c.delivery_status, coalesce(c.delivery_error,'') AS delivery_error
+	      FROM public.correspondence_log c
+	      LEFT JOIN tenant_` + sanitizeTenant(tenant) + `.cases k ON k.id::text = c.case_id
+	      WHERE c.tenant=$1`
+	args := []any{tenant}
+	if d := r.URL.Query().Get("direction"); d == "IN" || d == "OUT" {
+		q += ` AND c.direction=$2`
+		args = append(args, d)
+	}
+	if term := strings.TrimSpace(r.URL.Query().Get("q")); term != "" {
+		q += fmt.Sprintf(` AND (c.subject ILIKE $%d OR c.body ILIKE $%d OR k.case_number ILIKE $%d)`, len(args)+1, len(args)+1, len(args)+1)
+		args = append(args, "%"+term+"%")
+	}
+	q += ` ORDER BY c.created_at DESC, c.id DESC LIMIT 200`
+	rows, err := s.queryRows(r, q, args...)
+	if err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mail": rows})
 }
 
 // listCorrespondence: full OUT/IN trail for a case.
@@ -351,7 +396,8 @@ func (s *server) listCorrespondence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.queryRows(r, fmt.Sprintf(`
-		SELECT id, direction, template, subject, recipients, sent_by, created_at
+		SELECT id, direction, template, subject, recipients, sent_by, created_at,
+		       delivery_status, coalesce(delivery_error,'') AS delivery_error
 		FROM public.correspondence_log WHERE tenant=$1 AND case_id=$2
 		ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d`, limit, offset),
 		tenant, caseID)
