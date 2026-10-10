@@ -2791,7 +2791,47 @@ const Views = (() => {
         <label>or range <input name="start" type="date" /> → <input name="end" type="date" /></label>
         <button>Run report</button></form>
       <div id="time-rpt"></div>
+      ${can("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `
+      <div class="card"><h2>Send this report out</h2>
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.timeReportSend(this)">
+          <input name="emails" placeholder="recipients (comma-separated emails)" required style="min-width:20em" />
+          <input name="message" placeholder="optional message" style="min-width:14em" />
+          <button class="mini">Email report</button>
+          <button class="mini ghost" type="button" onclick="Views.timeReportCsv()">Download CSV</button></form>
+        <p class="muted">Sends the period currently shown above — run the report first. Body carries the summary; the CSV attachment carries per-person and per-dispute detail with billable amounts.</p></div>` : ""}
       <div id="time-rates"></div>`;
+  }
+
+  // Email / export the team-hours report currently on screen.
+  async function timeReportSend(form) {
+    if (!window._timeRptOpts) { UI.toast("Run the report for a period first", { kind: "warn" }); return; }
+    const emails = form.emails.value.split(",").map((x) => x.trim()).filter(Boolean);
+    if (!emails.length) { UI.toast("At least one recipient", { kind: "warn" }); return; }
+    const btn = form.querySelector("button");
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.timeReportSend({ ...window._timeRptOpts, emails, message: form.message.value.trim() });
+        UI.toast(`Report emailed to ${r.sent} recipient(s) — ${esc(r.period)}`);
+        form.emails.value = ""; form.message.value = "";
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Sending…");
+  }
+
+  function timeReportCsv() {
+    const r = window._timeRpt;
+    if (!r) { UI.toast("Run the report for a period first", { kind: "warn" }); return; }
+    const money = r.total_amount_cents !== undefined;
+    const hrs = (m) => (m / 60).toFixed(2);
+    const cell = (v) => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+    const lines = [["section", "who_or_case", "hours", "billable_hours"].concat(money ? ["amount"] : []).join(",")];
+    (r.by_person || []).forEach((p) => lines.push(["person", cell(p.case_number), hrs(p.minutes), hrs(p.billable_minutes)].concat(money ? [p.amount_cents != null ? (p.amount_cents / 100).toFixed(2) : ""] : []).join(",")));
+    (r.by_case || []).forEach((c) => lines.push(["case", cell(c.case_number || c.case_id), hrs(c.minutes), hrs(c.billable_minutes)].concat(money ? [c.amount_cents != null ? (c.amount_cents / 100).toFixed(2) : ""] : []).join(",")));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `timesheet-${(r.period || "report").replace(/\s+/g, "_")}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
   async function timeRatesBox() {
@@ -2838,7 +2878,9 @@ const Views = (() => {
         const opts = form.start.value && form.end.value
           ? { start: form.start.value, end: form.end.value }
           : form.week.value ? { week: form.week.value } : { month: form.month.value };
+        window._timeRptOpts = opts;
         const r = await Api.program.timeReport(opts);
+        window._timeRpt = r;
         const usd2 = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
         const money = r.total_amount_cents !== undefined;
         const caseRows = (r.by_case || []).map((c) => `<tr>
@@ -3477,5 +3519,5 @@ const Views = (() => {
     catch (e) { alert(e.message); }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
 })();

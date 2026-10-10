@@ -180,49 +180,38 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant := r.Context().Value(ctxTenant{}).(string)
-	var from, to, label string
-	if sd, ed := r.URL.Query().Get("start"), r.URL.Query().Get("end"); sd != "" || ed != "" {
-		// Parameterized range: ?start=YYYY-MM-DD&end=YYYY-MM-DD (end exclusive).
-		// Weekly/monthly are presets over this same query path.
-		t0, err0 := time.Parse("2006-01-02", sd)
-		t1, err1 := time.Parse("2006-01-02", ed)
-		if err0 != nil || err1 != nil {
-			http.Error(w, `{"error":"start and end must both be YYYY-MM-DD"}`, http.StatusBadRequest)
-			return
-		}
-		if !t1.After(t0) {
-			http.Error(w, `{"error":"end must be after start"}`, http.StatusBadRequest)
-			return
-		}
-		if t1.Sub(t0) > 366*24*time.Hour {
-			http.Error(w, `{"error":"range too large (max 366 days)"}`, http.StatusBadRequest)
-			return
-		}
-		from, to = sd, ed
-		label = sd + " .. " + ed
-	} else if m := r.URL.Query().Get("month"); m != "" {
-		t0, err := time.Parse("2006-01", m)
-		if err != nil {
-			http.Error(w, `{"error":"month must be YYYY-MM"}`, http.StatusBadRequest)
-			return
-		}
-		from = t0.Format("2006-01-02")
-		to = t0.AddDate(0, 1, 0).Format("2006-01-02")
-		label = "month " + m
-	} else {
-		wk := r.URL.Query().Get("week")
-		t0, err := time.Parse("2006-01-02", wk)
-		if wk == "" {
-			t0 = time.Now()
-		} else if err != nil {
-			http.Error(w, `{"error":"week must be YYYY-MM-DD (any day in the week)"}`, http.StatusBadRequest)
-			return
-		}
-		monday := t0.AddDate(0, 0, -(int(t0.Weekday())+6)%7) // Monday of t0's week
-		from = monday.Format("2006-01-02")
-		to = monday.AddDate(0, 0, 7).Format("2006-01-02")
-		label = "week of " + from
+	q := r.URL.Query()
+	from, to, label, perr := timeReportPeriod(q.Get("week"), q.Get("month"), q.Get("start"), q.Get("end"))
+	if perr != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, perr.Error()), http.StatusBadRequest)
+		return
 	}
+	resp := s.buildTimeReport(r, tenant, from, to, label, hasAnyRole(p, timeRateViewRoles...))
+	if resp == nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// timeReportAcc is one aggregation row — per dispute or per person. Amount
+// is attached only for rate-viewing roles; nil otherwise — money never
+// leaks to plain viewers.
+type timeReportAcc struct {
+	CaseID     string `json:"case_id"`
+	CaseNumber string `json:"case_number"`
+	Minutes    int64  `json:"minutes"`
+	Billable   int64  `json:"billable_minutes"`
+	People     int    `json:"people"`
+	Amount     *int64 `json:"amount_cents,omitempty"`
+	Unrated    *int64 `json:"unrated_billable_minutes,omitempty"`
+}
+
+// buildTimeReport aggregates everyone's timesheet hours over [from, to) —
+// per dispute and per person — with role-rated dollar amounts when the
+// caller may see money. Shared verbatim by the on-screen report and the
+// email-out path; returns nil on a database error.
+func (s *server) buildTimeReport(r *http.Request, tenant, from, to, label string, showMoney bool) map[string]any {
 	rows, err := s.queryRows(r, `
 		SELECT case_id, subject, role, sum(minutes) AS minutes,
 		       sum(minutes) FILTER (WHERE billable) AS billable_minutes
@@ -230,8 +219,7 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 		WHERE tenant=$1 AND entry_date >= $2::date AND entry_date < $3::date
 		GROUP BY case_id, subject, role`, tenant, from, to)
 	if err != nil {
-		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
-		return
+		return nil
 	}
 	// Resolve case numbers in one pass.
 	numbers := map[string]string{}
@@ -245,24 +233,14 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 			`SELECT case_number FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), cid).Scan(&num)
 		numbers[cid] = num
 	}
-	type acc struct {
-		CaseID     string `json:"case_id"`
-		CaseNumber string `json:"case_number"`
-		Minutes    int64  `json:"minutes"`
-		Billable   int64  `json:"billable_minutes"`
-		People     int    `json:"people"`
-		Amount  *int64 `json:"amount_cents,omitempty"`
-		Unrated *int64 `json:"unrated_billable_minutes,omitempty"`
-	}
-	showMoney := hasAnyRole(p, timeRateViewRoles...)
 	rates := map[string]int64{}
 	if showMoney {
 		rates = s.timeRateMap(r, tenant)
 	}
-	byCase := map[string]*acc{}
-	byPerson := map[string]*acc{}
+	byCase := map[string]*timeReportAcc{}
+	byPerson := map[string]*timeReportAcc{}
 	seen := map[string]map[string]bool{}
-	addMoney := func(a *acc, role string, bill int64) {
+	addMoney := func(a *timeReportAcc, role string, bill int64) {
 		if !showMoney || bill == 0 {
 			return
 		}
@@ -285,7 +263,7 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 		mins := toInt64(row["minutes"])
 		bill := toInt64(row["billable_minutes"])
 		if byCase[cid] == nil {
-			byCase[cid] = &acc{CaseID: cid, CaseNumber: numbers[cid]}
+			byCase[cid] = &timeReportAcc{CaseID: cid, CaseNumber: numbers[cid]}
 			seen[cid] = map[string]bool{}
 		}
 		byCase[cid].Minutes += mins
@@ -297,13 +275,13 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 		}
 		key := subj + "|" + role
 		if byPerson[key] == nil {
-			byPerson[key] = &acc{CaseID: "", CaseNumber: subj}
+			byPerson[key] = &timeReportAcc{CaseID: "", CaseNumber: subj}
 		}
 		byPerson[key].Minutes += mins
 		byPerson[key].Billable += bill
 		addMoney(byPerson[key], role, bill)
 	}
-	caseList, personList := []*acc{}, []*acc{}
+	caseList, personList := []*timeReportAcc{}, []*timeReportAcc{}
 	for _, a := range byCase {
 		caseList = append(caseList, a)
 	}
@@ -332,7 +310,149 @@ func (s *server) timeReport(w http.ResponseWriter, r *http.Request) {
 		resp["total_amount_cents"] = totalAmount
 		resp["unrated_billable_minutes"] = totalUnrated
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp
+}
+
+// timeReportPeriod resolves week/month/range presets to a [from, to) date
+// window plus a display label. Shared by the on-screen report and the
+// email-out path so both always cover exactly the same days.
+func timeReportPeriod(week, month, start, end string) (from, to, label string, err error) {
+	if start != "" || end != "" {
+		t0, err0 := time.Parse("2006-01-02", start)
+		t1, err1 := time.Parse("2006-01-02", end)
+		if err0 != nil || err1 != nil {
+			return "", "", "", fmt.Errorf("start and end must both be YYYY-MM-DD")
+		}
+		if !t1.After(t0) {
+			return "", "", "", fmt.Errorf("end must be after start")
+		}
+		if t1.Sub(t0) > 366*24*time.Hour {
+			return "", "", "", fmt.Errorf("range too large (max 366 days)")
+		}
+		return start, end, start + " .. " + end, nil
+	}
+	if month != "" {
+		t0, e := time.Parse("2006-01", month)
+		if e != nil {
+			return "", "", "", fmt.Errorf("month must be YYYY-MM")
+		}
+		return t0.Format("2006-01-02"), t0.AddDate(0, 1, 0).Format("2006-01-02"), "month " + month, nil
+	}
+	t0, e := time.Parse("2006-01-02", week)
+	if week == "" {
+		t0 = time.Now()
+	} else if e != nil {
+		return "", "", "", fmt.Errorf("week must be YYYY-MM-DD (any day in the week)")
+	}
+	monday := t0.AddDate(0, 0, -(int(t0.Weekday())+6)%7) // Monday of t0's week
+	return monday.Format("2006-01-02"), monday.AddDate(0, 0, 7).Format("2006-01-02"), "week of " + monday.Format("2006-01-02"), nil
+}
+
+// timeReportSend: POST /time/report/send — CASE_MANAGER/FINANCE/admins
+// aggregate the WHOLE team's timesheet hours for a period and email the
+// report out (plain summary body + CSV attachment: per person, then per
+// dispute, billable split and dollar amounts). NG has no audit_log by
+// design: the send is itself recorded as a notification to the sender, so
+// the platform keeps a durable record of what went out, to whom, when.
+func (s *server) timeReportSend(w http.ResponseWriter, r *http.Request) {
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, timeRateViewRoles...) {
+		http.Error(w, `{"error":"forbidden: requires CASE_MANAGER, FINANCE, or admin"}`, http.StatusForbidden)
+		return
+	}
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	var in struct {
+		Week    string   `json:"week"`
+		Month   string   `json:"month"`
+		Start   string   `json:"start"`
+		End     string   `json:"end"`
+		Emails  []string `json:"emails"`
+		Message string   `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+		return
+	}
+	emails := make([]string, 0, len(in.Emails))
+	for _, e := range in.Emails {
+		e = strings.TrimSpace(e)
+		if e != "" && strings.Contains(e, "@") {
+			emails = append(emails, e)
+		}
+	}
+	if len(emails) == 0 {
+		http.Error(w, `{"error":"at least one valid recipient email required"}`, http.StatusBadRequest)
+		return
+	}
+	if len(emails) > 20 {
+		http.Error(w, `{"error":"at most 20 recipients"}`, http.StatusBadRequest)
+		return
+	}
+	from, to, label, perr := timeReportPeriod(in.Week, in.Month, in.Start, in.End)
+	if perr != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, perr.Error()), http.StatusBadRequest)
+		return
+	}
+	rpt := s.buildTimeReport(r, tenant, from, to, label, true)
+
+	hrs := func(m int64) string { return fmt.Sprintf("%.2f", float64(m)/60) }
+	usd := func(c int64) string { return fmt.Sprintf("$%d.%02d", c/100, c%100) }
+
+	var body strings.Builder
+	fmt.Fprintf(&body, "Team timesheet report — %s\nTenant: %s\nGenerated by: %s at %s\n\n",
+		label, tenant, p.Subject, time.Now().UTC().Format("2006-01-02 15:04 UTC"))
+	fmt.Fprintf(&body, "Total: %s hours (%s billable)", hrs(toInt64(rpt["total_minutes"])), hrs(toInt64(rpt["billable_minutes"])))
+	if amt, ok := rpt["total_amount_cents"]; ok {
+		fmt.Fprintf(&body, " — %s billable amount", usd(toInt64(amt)))
+	}
+	if unrated, ok := rpt["unrated_billable_minutes"]; ok && toInt64(unrated) > 0 {
+		fmt.Fprintf(&body, " (%s unrated billable hours)", hrs(toInt64(unrated)))
+	}
+	body.WriteString("\n\nPer person:\n")
+	for _, a := range rpt["by_person"].([]*timeReportAcc) {
+		fmt.Fprintf(&body, "  %s: %s h (%s billable)\n", a.CaseNumber, hrs(a.Minutes), hrs(a.Billable))
+	}
+	body.WriteString("\nPer dispute:\n")
+	for _, a := range rpt["by_case"].([]*timeReportAcc) {
+		fmt.Fprintf(&body, "  %s: %s h (%s billable, %d people)\n", orDash(a.CaseNumber), hrs(a.Minutes), hrs(a.Billable), a.People)
+	}
+	if msg := strings.TrimSpace(in.Message); msg != "" {
+		fmt.Fprintf(&body, "\nMessage from sender:\n%s\n", truncate(msg, 2000))
+	}
+	body.WriteString("\nFull detail in the attached CSV.\n")
+
+	var csv strings.Builder
+	csv.WriteString("section,who_or_case,role,hours,billable_hours,amount\n")
+	for _, a := range rpt["by_person"].([]*timeReportAcc) {
+		fmt.Fprintf(&csv, "person,%s,%s,%s,%s,%s\n", csvCell(a.CaseNumber), "", hrs(a.Minutes), hrs(a.Billable), moneyCell(a.Amount))
+	}
+	for _, a := range rpt["by_case"].([]*timeReportAcc) {
+		fmt.Fprintf(&csv, "case,%s,%s,%s,%s,%s\n", csvCell(a.CaseNumber), "", hrs(a.Minutes), hrs(a.Billable), moneyCell(a.Amount))
+	}
+
+	subject := fmt.Sprintf("Team timesheet report — %s (%s)", label, strings.ToUpper(tenant))
+	fname := fmt.Sprintf("timesheet-%s-%s.csv", strings.ReplaceAll(label, " ", "_"), tenant)
+	if err := s.sendMailWithAttachment(emails, nil, subject, body.String(), fname, []byte(csv.String())); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, "email failed: "+err.Error()), http.StatusBadGateway)
+		return
+	}
+	s.notify(r, tenant, p.Subject, "TIME_REPORT_SENT",
+		fmt.Sprintf("Team timesheet report (%s) emailed to %s", label, strings.Join(emails, ", ")), "#/time")
+	writeJSON(w, http.StatusOK, map[string]any{"sent": len(emails), "period": label})
+}
+
+func csvCell(v string) string {
+	if strings.ContainsAny(v, ",\"\n") {
+		return "\"" + strings.ReplaceAll(v, "\"", "\"\"") + "\""
+	}
+	return v
+}
+
+func moneyCell(c *int64) string {
+	if c == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d.%02d", *c/100, *c%100)
 }
 
 // ---- Billable rates (per role, per tenant) ---------------------------------

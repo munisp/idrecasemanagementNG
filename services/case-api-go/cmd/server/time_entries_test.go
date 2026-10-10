@@ -43,3 +43,53 @@ func TestToInt64(t *testing.T) {
 		t.Error("toInt64 coercion wrong")
 	}
 }
+
+func TestTimeReportPeriod(t *testing.T) {
+	// Range wins over month/week.
+	from, to, _, err := timeReportPeriod("2026-10-05", "2026-10", "2026-10-01", "2026-10-08")
+	if err != nil || from != "2026-10-01" || to != "2026-10-08" {
+		t.Fatalf("range: %s %s %v", from, to, err)
+	}
+	// Month preset.
+	from, to, _, err = timeReportPeriod("", "2026-02", "", "")
+	if err != nil || from != "2026-02-01" || to != "2026-03-01" {
+		t.Fatalf("month: %s %s %v", from, to, err)
+	}
+	// Week preset: any day resolves to the Monday..+7d window.
+	from, to, label, err := timeReportPeriod("2026-10-08", "", "", "") // a Thursday
+	if err != nil || from != "2026-10-05" || to != "2026-10-12" {
+		t.Fatalf("week: %s %s %v", from, to, err)
+	}
+	if label != "week of 2026-10-05" {
+		t.Fatalf("label: %s", label)
+	}
+	// Errors.
+	if _, _, _, err = timeReportPeriod("", "", "2026-10-08", "2026-10-01"); err == nil {
+		t.Fatal("reversed range must fail")
+	}
+	if _, _, _, err = timeReportPeriod("", "", "2025-01-01", "2026-02-01"); err == nil {
+		t.Fatal(">366 days must fail")
+	}
+	if _, _, _, err = timeReportPeriod("", "2026-13", "", ""); err == nil {
+		t.Fatal("bad month must fail")
+	}
+}
+
+func TestCsvCell(t *testing.T) {
+	if got := csvCell("plain"); got != "plain" {
+		t.Fatal(got)
+	}
+	if got := csvCell(`a,b`); got != `"a,b"` {
+		t.Fatal(got)
+	}
+	if got := csvCell(`she said "hi"`); got != `"she said ""hi"""` {
+		t.Fatal(got)
+	}
+	if got := moneyCell(nil); got != "" {
+		t.Fatal(got)
+	}
+	var c int64 = 123456
+	if got := moneyCell(&c); got != "1234.56" {
+		t.Fatal(got)
+	}
+}

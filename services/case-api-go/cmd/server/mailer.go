@@ -9,6 +9,8 @@ package main
 
 import (
 	"crypto/tls"
+	"time"
+	"encoding/base64"
 	"fmt"
 	"net/smtp"
 	"strings"
@@ -21,17 +23,54 @@ func (s *server) sendMail(to, cc []string, subject, body string) error {
 		return fmt.Errorf("smtp not configured")
 	}
 	from := cfg.SMTPFrom
-	all := append(append([]string{}, to...), cc...)
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", from)
-	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
-	if len(cc) > 0 {
-		fmt.Fprintf(&b, "Cc: %s\r\n", strings.Join(cc, ", "))
-	}
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	writeMailHeaders(&b, from, to, cc, subject)
 	b.WriteString("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n")
 	b.WriteString(body)
+	return s.deliver(from, to, cc, []byte(b.String()))
+}
 
+// sendMailWithAttachment delivers a plain-text body plus one attachment
+// (MIME multipart/mixed, base64 — RFC 2045). Used for report send-out: the
+// body is the human summary, the CSV is the working artifact.
+func (s *server) sendMailWithAttachment(to, cc []string, subject, body, filename string, content []byte) error {
+	cfg := s.cfg
+	if cfg.SMTPHost == "" {
+		return fmt.Errorf("smtp not configured")
+	}
+	from := cfg.SMTPFrom
+	boundary := "idre-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	var b strings.Builder
+	writeMailHeaders(&b, from, to, cc, subject)
+	fmt.Fprintf(&b, "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n", boundary)
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n", boundary, body)
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/csv; name=%q\r\nContent-Disposition: attachment; filename=%q\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+		boundary, filename, filename)
+	enc := base64.StdEncoding.EncodeToString(content)
+	for i := 0; i < len(enc); i += 76 { // RFC 2045 line length
+		end := i + 76
+		if end > len(enc) {
+			end = len(enc)
+		}
+		b.WriteString(enc[i:end] + "\r\n")
+	}
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
+	return s.deliver(from, to, cc, []byte(b.String()))
+}
+
+func writeMailHeaders(b *strings.Builder, from string, to, cc []string, subject string) {
+	fmt.Fprintf(b, "From: %s\r\n", from)
+	fmt.Fprintf(b, "To: %s\r\n", strings.Join(to, ", "))
+	if len(cc) > 0 {
+		fmt.Fprintf(b, "Cc: %s\r\n", strings.Join(cc, ", "))
+	}
+	fmt.Fprintf(b, "Subject: %s\r\n", subject)
+}
+
+// deliver runs the SMTP transaction for an already-composed message.
+func (s *server) deliver(from string, to, cc []string, msg []byte) error {
+	cfg := s.cfg
+	all := append(append([]string{}, to...), cc...)
 	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)
 	if cfg.SMTPPort == 465 { // implicit TLS
 		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: cfg.SMTPHost})
@@ -60,7 +99,7 @@ func (s *server) sendMail(to, cc []string, subject, body string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := w.Write([]byte(b.String())); err != nil {
+		if _, err := w.Write(msg); err != nil {
 			return err
 		}
 		if err := w.Close(); err != nil {
@@ -73,5 +112,5 @@ func (s *server) sendMail(to, cc []string, subject, body string) error {
 	if cfg.SMTPUser != "" {
 		auth = smtp.PlainAuth("", cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPHost)
 	}
-	return smtp.SendMail(addr, auth, from, all, []byte(b.String()))
+	return smtp.SendMail(addr, auth, from, all, msg)
 }

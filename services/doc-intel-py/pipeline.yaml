@@ -24,6 +24,16 @@ stages:
       use_doc_orientation_classify: true
       use_doc_unwarping: true
       use_textline_orientation: true
+      # Accuracy hardening (2026): every poor page is individually enhanced
+      # (deskew + CLAHE + denoise + upscale); per-page recognizer confidence
+      # (rec_scores) is captured; low-yield pages get one retry_dpi re-render;
+      # empty or low-confidence pages get a tesseract second opinion, with
+      # word-overlap agreement recorded as corroboration. Low-confidence docs
+      # are flagged to validate() as requiring manual verification.
+      consensus_fallback: true     # tesseract second opinion on weak pages
+      consensus_min_conf: 0.75     # pages under this mean score get the second opinion
+      low_yield_chars: 40          # under this many chars on an inked page => retry hi-res
+      retry_dpi: 400               # low-yield re-render resolution
 
   - name: layout             # PP-StructureV3 seal/stamp detection (Docling has none)
     enabled: false           # disabled: PaddleX unconditionally constructs its full

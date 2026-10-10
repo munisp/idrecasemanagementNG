@@ -58,6 +58,8 @@ def fire_doc_rules(evt: dict, kind: str, subj_id: str, ctx: dict) -> None:
         "analysis_status": ctx.get("status", ""),
         "ungrounded_count": len(low_conf),
         "scan_quality_poor": bool(ctx.get("scan_quality_poor")),
+        "ocr_confidence": ctx.get("ocr_confidence"),
+        "ocr_low_confidence": bool(ctx.get("ocr_low_confidence")),
         "ambiguous": bool(ctx.get("classify_ambiguous")),
         "truncated": bool(ctx.get("result_truncated")),
         "findings_count": len(ctx.get("findings", [])),
@@ -226,6 +228,9 @@ def persist(evt: dict, ctx: dict) -> None:
                  "schema_used": ctx.get("schema_used"),
                  "scan_quality_poor": ctx.get("scan_quality_poor", False),
                  "ocr_enhanced": ctx.get("ocr_enhanced", False),
+                 "ocr_confidence": ctx.get("ocr_confidence"),
+                 "ocr_low_confidence": ctx.get("ocr_low_confidence", False),
+                 "ocr_pages": ctx.get("ocr_pages", []),
              })),
         )
     # Best-effort, like the Temporal signal call below it: the Postgres

@@ -339,3 +339,107 @@ def test_ocr_falls_back_to_serial_when_batch_rejected(monkeypatch):
     _stub_paddle(monkeypatch, predict)
     ctx = pl.stage_ocr(_ocr_ctx(3), {"batch_pages": 4})
     assert ctx["text"].count("serial-line") == 3
+
+
+# --- OCR accuracy hardening ---------------------------------------------------
+
+def test_ocr_records_recognizer_confidence(monkeypatch):
+    def predict(inp):
+        n = len(inp) if isinstance(inp, list) else 1
+        return [{"rec_texts": ["some readable text here"], "rec_scores": [0.9, 0.8]}
+                for _ in range(n)]
+
+    _stub_paddle(monkeypatch, predict)
+    ctx = pl.stage_ocr(_ocr_ctx(2), {"batch_pages": 4, "consensus_min_conf": 0.5})
+    assert ctx["ocr_confidence"] == pytest.approx(0.85)
+    assert len(ctx["ocr_pages"]) == 2
+    assert all(p["engine"] == "paddle" for p in ctx["ocr_pages"])
+    assert "ocr_low_confidence" not in ctx
+
+
+def test_ocr_consensus_rescues_empty_paddle_page(monkeypatch):
+    def predict(inp):
+        n = len(inp) if isinstance(inp, list) else 1
+        return [{"rec_texts": [], "rec_scores": []} for _ in range(n)]
+
+    _stub_paddle(monkeypatch, predict)
+    monkeypatch.setattr(pl, "_tesseract_text", lambda img: "rescued claim text")
+    ctx = pl.stage_ocr(_ocr_ctx(2), {})
+    assert "rescued claim text" in ctx["text"]
+    assert all(p["engine"] == "tesseract" for p in ctx["ocr_pages"])
+    assert ctx["ocr_low_confidence"] is True
+
+
+def test_ocr_consensus_records_agreement(monkeypatch):
+    def predict(inp):
+        return [{"rec_texts": ["allowed amount claim number"], "rec_scores": [0.6]}]
+
+    _stub_paddle(monkeypatch, predict)
+    monkeypatch.setattr(pl, "_tesseract_text", lambda img: "allowed amount claim number")
+    ctx = pl.stage_ocr(_ocr_ctx(1), {"consensus_min_conf": 0.75})
+    assert ctx["ocr_pages"][0]["agreement"] == 1.0
+    assert ctx["ocr_pages"][0]["engine"] == "paddle"  # agree -> keep primary
+
+
+def test_ocr_consensus_absent_when_confident(monkeypatch):
+    def predict(inp):
+        n = len(inp) if isinstance(inp, list) else 1
+        return [{"rec_texts": ["crisp clean text"], "rec_scores": [0.99]} for _ in range(n)]
+
+    _stub_paddle(monkeypatch, predict)
+    called = []
+    monkeypatch.setattr(pl, "_tesseract_text", lambda img: called.append(1) or "")
+    ctx = pl.stage_ocr(_ocr_ctx(2), {"consensus_min_conf": 0.75})
+    assert called == []  # second opinion only when actually needed
+    assert "ocr_low_confidence" not in ctx
+
+
+def test_ocr_low_confidence_flag_on_weak_pages(monkeypatch):
+    def predict(inp):
+        return [{"rec_texts": ["faint but present text here"], "rec_scores": [0.4]}]
+
+    _stub_paddle(monkeypatch, predict)
+    monkeypatch.setattr(pl, "_tesseract_text", lambda img: "faint but present text here")
+    ctx = pl.stage_ocr(_ocr_ctx(1), {"consensus_min_conf": 0.75})
+    assert ctx["ocr_low_confidence"] is True
+    assert ctx["ocr_low_confidence_pages"] == [0]
+
+
+def test_validate_finds_low_ocr_confidence():
+    ctx = {"extracted": {"claim_number": "X1"}, "normalized": {},
+           "markdown": "claim number X1", "ocr_low_confidence": True,
+           "ocr_confidence": 0.42}
+    out = pl.stage_validate(pl.stage_verify(ctx, {}), {}, None)
+    assert any("OCR confidence" in (f["issue"] or "") for f in out["findings"])
+
+
+def test_deskew_corrects_small_rotation():
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    # Horizontal ink bars rotated 5 degrees on white paper.
+    canvas = np.full((400, 600, 3), 255, np.uint8)
+    for y in range(80, 340, 40):
+        cv2.line(canvas, (60, y), (540, y), (0, 0, 0), 6)
+    m = cv2.getRotationMatrix2D((300, 200), 5.0, 1.0)
+    rotated = cv2.warpAffine(canvas, m, (600, 400), borderValue=(255, 255, 255))
+    fixed = pl.deskew_image(Image.fromarray(rotated))
+    gray = cv2.cvtColor(np.array(fixed), cv2.COLOR_RGB2GRAY)
+    coords = np.column_stack(np.where(gray < 128))
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle >= 45:
+        angle -= 90
+    assert abs(angle) < 1.5  # 5 degrees in, sub-1.5 out
+
+
+def test_deskew_leaves_straight_pages_alone():
+    from PIL import Image
+    img = Image.new("RGB", (300, 200), (255, 255, 255))
+    assert pl.deskew_image(img) is img  # no ink -> untouched
+
+
+def test_word_overlap():
+    assert pl._word_overlap("allowed amount $120", "allowed amount $120") == 1.0
+    assert pl._word_overlap("cat dog", "sun moon") == 0.0
+    assert 0 < pl._word_overlap("allowed amount claim", "allowed amount number") < 1

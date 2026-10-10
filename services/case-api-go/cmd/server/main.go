@@ -530,6 +530,7 @@ func main() {
 		r.Put("/time/{entryId}", s.updateTimeEntry)       // editable; prior version snapshotted
 		r.Delete("/time/{entryId}", s.deleteTimeEntry)    // deletion snapshot preserved
 		r.Get("/reports/time", s.timeReport)                          // weekly per-dispute + monthly team rollup
+		r.Post("/time/report/send", s.timeReportSend)              // email the team-hours report out (CASE_MANAGER/FINANCE/admin)
 		r.Get("/reports/time/rates", s.getTimeRates)                  // role billable rates (view: CASE_MANAGER/FINANCE/admin)
 		r.Put("/reports/time/rates", s.putTimeRate)                   // set rates (CASE_MANAGER/admin only)
 		// Service-fee invoicing engine (time ledger x rates -> invoices)

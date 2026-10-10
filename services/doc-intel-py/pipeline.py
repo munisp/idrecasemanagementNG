@@ -232,12 +232,61 @@ def assess_page_quality(img: Image.Image) -> dict:
             "brightness": round(brightness, 1), "poor": poor}
 
 
+def deskew_image(img: Image.Image) -> Image.Image:
+    """Estimate and correct page skew via the ink pixels' minimum-area
+    rectangle. Scanners and phone photos routinely land 1-5 degrees off, and
+    text-line detectors degrade well before the skew is visible to a human.
+    Only angles in (0.3, 15) degrees are applied — anything larger is almost
+    certainly the rectangle fitting page content (a table, a signature)
+    rather than the page, and rotating on that would CREATE skew."""
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(np_from_pil(img), cv2.COLOR_RGB2GRAY)
+    ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    coords = np.column_stack(np.where(ink > 0))
+    if len(coords) < 200:
+        return img
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle >= 45:
+        angle -= 90
+    if abs(angle) < 0.3 or abs(angle) > 15:
+        return img
+    # minAreaRect's angle sign convention shifts with the rectangle's aspect
+    # and OpenCV version — rotating the wrong way DOUBLES the skew. Rotate,
+    # re-measure, and flip the sign if we made it worse.
+    def skew_of(arr):
+        g = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY) if arr.ndim == 3 else arr
+        c = np.column_stack(np.where(g < 128))
+        if len(c) < 200:
+            return 0.0
+        a = cv2.minAreaRect(c)[-1]
+        return a - 90 if a >= 45 else a
+
+    h, w = gray.shape
+    raw = np_from_pil(img)
+
+    def rot(a):
+        m = cv2.getRotationMatrix2D((w // 2, h // 2), a, 1.0)
+        return cv2.warpAffine(raw, m, (w, h), flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE)
+
+    cand = rot(angle)
+    if abs(skew_of(cand)) > abs(angle):
+        cand = rot(-angle)
+    if abs(skew_of(cand)) >= abs(angle) - 0.2:
+        return img  # neither direction actually helps — leave the page alone
+    return Image.fromarray(cand)
+
+
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
-    """Enhancement pass for degraded scans before OCR: grayscale, CLAHE local
-    contrast (recovers faint print), fast denoise, and 2x upscale when the
-    page is small (sub-150dpi effective resolution starves the detector)."""
+    """Enhancement pass for degraded scans before OCR: deskew (rotation is the
+    cheapest accuracy win on scanned pages), grayscale, CLAHE local contrast
+    (recovers faint print), fast denoise, and 2x upscale when the page is
+    small (sub-150dpi effective resolution starves the detector)."""
     import cv2
 
+    img = deskew_image(img)
     gray = cv2.cvtColor(np_from_pil(img), cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
@@ -251,28 +300,69 @@ def preprocess_for_ocr(img: Image.Image) -> Image.Image:
     return Image.fromarray(enhanced)
 
 
+def _page_ink_coverage(img: Image.Image) -> float:
+    """Fraction of dark pixels — distinguishes 'blank page' from 'text the
+    OCR failed to read', which is the decision input for a hi-res retry."""
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(np_from_pil(img), cv2.COLOR_RGB2GRAY)
+    return float(np.mean(gray < 200))
+
+
+def _tesseract_text(img: Image.Image) -> str:
+    """Second-opinion OCR via tesseract. Optional by design: any failure
+    (binary missing, import error, crash) returns empty rather than costing
+    the document its primary OCR result."""
+    try:
+        import pytesseract
+        return (pytesseract.image_to_string(img) or "").strip()
+    except Exception:
+        return ""
+
+
+def _word_overlap(a: str, b: str) -> float:
+    """Jaccard similarity over word sets — the two engines agreeing on most
+    words is the cheapest possible corroboration signal."""
+    wa = set(re.findall(r"[a-z0-9]+", a.lower()))
+    wb = set(re.findall(r"[a-z0-9]+", b.lower()))
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
 def stage_ocr(ctx: dict, cfg: dict) -> dict:
-    """PaddleOCR full-text extraction, with scan-quality triage:
+    """PaddleOCR full-text extraction, engineered for accuracy on real scans:
+
     1. Assess every page (blur/contrast/exposure).
-    2. Poor-quality PDF pages are RE-RENDERED at 300dpi from the original
-       bytes (the initial 200dpi rasterization starves OCR of detail), then
-       enhanced (contrast/denoise/upscale).
-    3. OCR runs over the best available image of each page.
-    ctx['scan_quality_poor'] tells validate() to demand human verification."""
+    2. EVERY poor page is enhanced (deskew + CLAHE + denoise + upscale);
+       poor PDF pages are first re-rendered at 300dpi from the original
+       bytes, which hold more detail than the 200dpi rasterization.
+    3. PaddleOCR runs batched, but results are kept PER PAGE with their
+       recognizer confidence (rec_scores) — the confidence signal Paddle
+       always returned and this pipeline previously discarded.
+    4. Low-yield pages (almost no text despite real ink coverage) get one
+       400dpi retry; the better read wins.
+    5. Tesseract second opinion on empty or low-confidence pages: it
+       rescues text Paddle missed outright, and the word-overlap agreement
+       between the two engines is recorded as a corroboration signal.
+    ctx['scan_quality_poor'] / ctx['ocr_low_confidence'] tell validate() to
+    demand human verification; ctx['ocr_pages'] carries the per-page audit.
+    """
     from paddleocr import PaddleOCR
 
     pages = ensure_pages(ctx, dpi=cfg.get("render_dpi", 200))
     qualities = [assess_page_quality(p) for p in pages[:10]]  # sample bound
     poor_pages = [i for i, q in enumerate(qualities) if q["poor"]]
     ctx["scan_quality"] = qualities
-    if poor_pages and len(poor_pages) >= max(1, len(qualities) // 2):
-        ctx["scan_quality_poor"] = True
-        # Re-render ONLY the poor PDF pages at higher DPI (the bytes hold
-        # more detail than the 200dpi rasterization), and enhance ONLY
-        # those pages — re-rendering and CLAHE/denoise-upscaling a full
-        # 40-page document when 3 pages are bad was the OCR stage's
-        # single largest time sink. Images are used as-is.
-        if sniff_doc_kind(ctx.get("raw_bytes", b""), ctx.get("content_type", "")) == "pdf":
+    is_pdf = sniff_doc_kind(ctx.get("raw_bytes", b""), ctx.get("content_type", "")) == "pdf"
+    if poor_pages:
+        if len(poor_pages) >= max(1, len(qualities) // 2):
+            ctx["scan_quality_poor"] = True
+        # Re-render poor PDF pages at higher DPI, then enhance EVERY poor
+        # page individually — a document with 3 bad pages out of 40 still
+        # has 3 bad pages, and eligibility reads values off single pages.
+        if is_pdf:
             hires, _ = pdf_to_pages(ctx["raw_bytes"], dpi=cfg.get("enhance_dpi", 300))
             if hires:
                 for i in poor_pages:
@@ -297,28 +387,96 @@ def stage_ocr(ctx: dict, cfg: dict) -> dict:
             use_textline_orientation=cfg.get("use_textline_orientation", True),
         ),
     )
-    # Batched inference: PaddleOCR 3.x predict() accepts a LIST of images
-    # and pipelines detection/recognition across them internally — per-page
-    # calls pay Python-side and scheduler overhead on every page of every
-    # scanned document. Small batches bound the memory spike (each page is
-    # a full bitmap in worker RAM). Falls back to per-page if a Paddle
-    # version rejects list input — OCR must never fail the document.
-    texts: list[str] = []
+    # Batched inference: predict() accepts a LIST of images and pipelines
+    # detection/recognition across them internally. Results come back as one
+    # dict per input image, so per-page alignment survives batching. Falls
+    # back to per-page if a Paddle version rejects list input — OCR must
+    # never fail the document.
     arrays = [np_from_pil(p) for p in pages]
     batch_n = max(1, int(cfg.get("batch_pages", 4)))
 
-    def collect(results) -> None:
-        for res in results:
-            texts.extend(res.get("rec_texts", []))
+    def _unpack(res: dict) -> tuple[str, float | None]:
+        text = "\n".join(res.get("rec_texts", []))
+        scores = [x for x in res.get("rec_scores", []) if isinstance(x, (int, float))]
+        return text, (sum(scores) / len(scores) if scores else None)
 
+    page_reads: list[tuple[str, float | None]] = [("", None)] * len(arrays)
     try:
         for i in range(0, len(arrays), batch_n):
-            collect(ocr.predict(arrays[i:i + batch_n]))
+            for j, res in enumerate(ocr.predict(arrays[i:i + batch_n])):
+                page_reads[i + j] = _unpack(res)
     except Exception:
-        texts.clear()
-        for arr in arrays:
-            collect(ocr.predict(arr))
-    ctx["text"] = "\n".join(texts)
+        page_reads = [("", None)] * len(arrays)
+        for i, arr in enumerate(arrays):
+            for res in ocr.predict(arr):
+                page_reads[i] = _unpack(res)
+                break
+
+    # Low-yield retry: ink on the page but almost no text means the read —
+    # not the page — failed. One 400dpi enhanced retry; keep the better read.
+    low_yield_chars = int(cfg.get("low_yield_chars", 40))
+    retry_dpi = int(cfg.get("retry_dpi", 400))
+    retried = []
+    if is_pdf:
+        hires = None
+        for i, (text, _) in enumerate(page_reads):
+            if len(text) >= low_yield_chars or _page_ink_coverage(pages[i]) < 0.005:
+                continue
+            if hires is None:
+                hires, _ = pdf_to_pages(ctx["raw_bytes"], dpi=retry_dpi)
+            if not hires or i >= len(hires):
+                continue
+            cand = preprocess_for_ocr(hires[i])
+            try:
+                res = ocr.predict(np_from_pil(cand))
+                if res:
+                    t2, c2 = _unpack(res[0])
+                    if len(t2) > len(text):
+                        page_reads[i] = (t2, c2)
+                        pages[i] = cand
+                        retried.append(i)
+            except Exception:
+                pass
+    if retried:
+        ctx["ocr_retried_pages"] = retried
+
+    # Tesseract consensus on empty or unconfident pages.
+    consensus_min_conf = float(cfg.get("consensus_min_conf", 0.75))
+    use_consensus = bool(cfg.get("consensus_fallback", True))
+    page_audit: list[dict] = []
+    low_conf_pages = []
+    for i, (text, conf) in enumerate(page_reads):
+        engine, agreement = "paddle", None
+        if use_consensus and (not text.strip() or conf is None or conf < consensus_min_conf):
+            tess = _tesseract_text(preprocess_for_ocr(pages[i]))
+            if tess:
+                if not text.strip():
+                    # Paddle read nothing; tesseract read something — take it.
+                    text, engine = tess, "tesseract"
+                    page_reads[i] = (text, conf)
+                else:
+                    agreement = round(_word_overlap(text, tess), 3)
+                    # Paddle's own confidence is very low and the second
+                    # engine produced substantially MORE text: prefer the
+                    # fuller read, flagged for review via the audit trail.
+                    if (conf or 0) < 0.5 and len(tess) > 2 * len(text):
+                        text, engine = tess, "tesseract"
+                        page_reads[i] = (text, conf)
+        if conf is not None and conf < consensus_min_conf:
+            low_conf_pages.append(i)
+        page_audit.append({"page": i, "chars": len(text), "confidence": conf,
+                           "engine": engine, "agreement": agreement})
+
+    scored = [(len(t), c) for t, c in page_reads if c is not None]
+    if scored:
+        total_chars = sum(n for n, _ in scored) or 1
+        ctx["ocr_confidence"] = round(sum(n * c for n, c in scored) / total_chars, 4)
+    if low_conf_pages or any(a["engine"] == "tesseract" for a in page_audit):
+        ctx["ocr_low_confidence"] = True
+        ctx["ocr_low_confidence_pages"] = low_conf_pages
+    ctx["ocr_pages"] = page_audit
+
+    ctx["text"] = "\n\n".join(t for t, _ in page_reads if t)
     # OCR recovered text for a scanned doc: markdown has no structure, but
     # downstream stages read markdown first, so mirror it.
     ctx["markdown"] = ctx["text"]
@@ -776,6 +934,13 @@ def stage_validate(ctx: dict, cfg: dict, case: dict | None) -> dict:
     # VALID document must not be misdiagnosed as a mis-upload.
     if ctx.get("scan_quality_poor"):
         findings.append({"field": None, "issue": "Poor scan quality (blur/contrast/exposure) — extraction uncertain despite image enhancement; manual verification of all values required"})
+    # Low OCR confidence (recognizer score under threshold, or a fallback
+    # engine had to rescue a page): the text itself is suspect, so every
+    # value derived from it is too.
+    if ctx.get("ocr_low_confidence"):
+        conf = ctx.get("ocr_confidence")
+        pct = f" (mean recognizer confidence {conf:.0%})" if isinstance(conf, float) else ""
+        findings.append({"field": None, "issue": f"Low OCR confidence{pct} — one or more pages needed fallback OCR or scored below threshold; manual verification of all values required"})
     # Ambiguous classification: the winning type barely beat the runner-up.
     if ctx.get("classify_ambiguous") and ctx.get("doc_type") != "unrelated":
         findings.append({"field": None, "issue": f"Document type '{ctx['doc_type']}' is a low-margin classification — confirm type on review"})
