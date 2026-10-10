@@ -10,6 +10,7 @@ package main
 // G6 (escalation auto-trigger), G11 (numbering).
 
 import (
+	"io"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -230,6 +231,22 @@ func (s *server) setDualStatus(w http.ResponseWriter, r *http.Request) {
 	p := r.Context().Value(ctxPrincipal{}).(principal)
 	s.logActivity(r.Context(), tenant, id, "STATUS_CHANGE",
 		fmt.Sprintf("Status updated by %s — internal: %s, agency: %s", p.Subject, orDash(in.Internal), orDash(in.Agency)))
+	// Warn-only eligibility gate (G2 hardening): moving past the initial
+	// review phase without an ELIGIBLE decision on record is legal risk, so
+	// the response carries a loud warning. It does NOT block: dismissals,
+	// withdrawals and opt-outs legitimately skip eligibility.
+	var warnings []string
+	if cfg := s.loadProgram(r, tenant); cfg != nil && in.Internal != "" &&
+		pastEligibilityGate(cfg, in.Internal) && !s.hasEligibleDecision(r, tenant, id) {
+		warnings = append(warnings,
+			"No ELIGIBLE decision on record for this case — run eligibility review before proceeding further (warn-only gate; this transition was allowed)")
+		s.logActivity(r.Context(), tenant, id, "ELIGIBILITY_GATE_WARNING",
+			fmt.Sprintf("Status moved to %q with no ELIGIBLE decision on record (warn-only)", in.Internal))
+	}
+	if len(warnings) > 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "warnings": warnings})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
@@ -246,16 +263,43 @@ func (s *server) checkEligibility(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"no program rules for tenant"}`, http.StatusBadRequest)
 		return
 	}
+	raw, _ := io.ReadAll(r.Body)
 	var in eligibilityInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := json.Unmarshal(raw, &in); err != nil {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 		return
 	}
+	var override struct {
+		Override bool   `json:"override"`
+		Reason   string `json:"override_reason"`
+	}
+	_ = json.Unmarshal(raw, &override)
 
 	result, reason, evidence := evalEligibility(cfg, in)
+	opts := eligibilityPersistOpts{ruleVersion: eligibilityRuleVersion(cfg)}
+	if bl := eligibilityBorderline(cfg, in, evidence); len(bl) > 0 {
+		opts.borderline, opts.borderlineReasons = true, bl
+		evidence["borderline"] = true
+		evidence["borderline_reasons"] = bl
+	}
+	// Override: INELIGIBLE → ELIGIBLE only, with a mandatory written reason;
+	// the computed result is preserved in evidence so the record shows both.
+	if override.Override && result == "INELIGIBLE" {
+		if !validOverrideReason(override.Reason) {
+			http.Error(w, `{"error":"override requires a written reason (min 10 chars) — the legal record must show why the computed result was set aside"}`, http.StatusUnprocessableEntity)
+			return
+		}
+		evidence["computed_result"] = result
+		evidence["computed_reason"] = reason
+		opts.override, opts.overrideReason = true, strings.TrimSpace(override.Reason)
+		result, reason = "ELIGIBLE", "override"
+	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
-	reviewID := s.persistEligibilityOutcome(r, tenant, id, p.Subject, result, reason, evidence)
-	writeJSON(w, http.StatusOK, map[string]any{"review_id": reviewID, "result": result, "reason": reason, "evidence": evidence})
+	reviewID := s.persistEligibilityOutcome(r, tenant, id, p.Subject, result, reason, evidence, opts)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"review_id": reviewID, "result": result, "reason": reason, "evidence": evidence,
+		"rule_version": opts.ruleVersion, "borderline": opts.borderline, "override": opts.override,
+	})
 }
 
 // eligibilityHistory lists past reviews for a case — the UI shows how the

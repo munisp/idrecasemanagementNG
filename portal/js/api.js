@@ -71,6 +71,13 @@ const Api = (() => {
       documents: (id) => req("GET", `${t()}/cases/${id}/documents`),
       timeAdd: (id, p) => req("POST", `${t()}/cases/${id}/time`, p),
       timeList: (id) => req("GET", `${t()}/cases/${id}/time`),
+    // Personal timesheet: daily entry screen with day/week/month totals.
+    time: {
+      mine: (from, to) => req("GET", `${t()}/time/mine${from||to ? `?from=${from||""}&to=${to||""}` : ""}`),
+      summary: () => req("GET", `${t()}/time/summary`),
+      update: (id, p) => req("PUT", `${t()}/time/${id}`, p),
+      remove: (id) => req("DELETE", `${t()}/time/${id}`),
+    },
       analysis: (id, docId) => req("GET", `${t()}/cases/${id}/documents/${docId}/analysis`),
       downloadUrl: (id, docId) => `${t()}/cases/${id}/documents/${docId}/download`,
       activities: (id) => req("GET", `${t()}/cases/${id}/activities`),
@@ -234,6 +241,7 @@ const Api = (() => {
       intake: (opts) => req("GET", `${t()}/intake${qs(opts || {})}`),
       createIntake: (p) => req("POST", `${t()}/intake`, p),
       intakeBulk: (p) => req("POST", `${t()}/intake/bulk`, p),
+      intakeBatches: (submitter) => req("GET", `${t()}/intake/bulk${submitter ? `?submitter=${encodeURIComponent(submitter)}` : ""}`),
       intakeBatch: (id) => req("GET", `${t()}/intake/bulk/${id}`),
       intakeConverse: (message, fields, history) => req("POST", `${t()}/intake/converse`, { message, fields, history }),
       advanceIntake: (id, status, caseId) => req("POST", `${t()}/intake/${id}/advance`, { status, case_id: caseId }),

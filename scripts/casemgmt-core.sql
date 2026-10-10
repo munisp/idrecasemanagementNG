@@ -457,3 +457,17 @@ CREATE TABLE IF NOT EXISTS public.bank_payout_batches (
   created_at     timestamptz NOT NULL DEFAULT now(),
   UNIQUE (tenant, file_reference)
 );
+
+-- Time-entry revision history (NG's record-as-audit for editable timesheets):
+-- every UPDATE/DELETE on public.time_entries first snapshots the prior row
+-- here. Append-only — no UPDATE/DELETE path in the API.
+CREATE TABLE IF NOT EXISTS public.time_entry_revisions (
+    id          bigserial PRIMARY KEY,
+    tenant      text NOT NULL,
+    entry_id    bigint NOT NULL,
+    action      text NOT NULL CHECK (action IN ('UPDATE','DELETE')),
+    snapshot    jsonb NOT NULL,
+    changed_by  text NOT NULL,
+    changed_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS time_entry_revisions_entry ON public.time_entry_revisions (tenant, entry_id);

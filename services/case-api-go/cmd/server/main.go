@@ -525,6 +525,10 @@ func main() {
 		r.Post("/cases/{caseId}/status", s.setDualStatus)             // dual internal/agency status (G5)
 		r.Post("/cases/{caseId}/time", s.addTimeEntry)               // per-role effort on the dispute
 		r.Get("/cases/{caseId}/time", s.listTimeEntries)
+		r.Get("/time/mine", s.myTimeEntries)              // personal timesheet (all disputes)
+		r.Get("/time/summary", s.myTimeSummary)           // today / this week / this month totals
+		r.Put("/time/{entryId}", s.updateTimeEntry)       // editable; prior version snapshotted
+		r.Delete("/time/{entryId}", s.deleteTimeEntry)    // deletion snapshot preserved
 		r.Get("/reports/time", s.timeReport)                          // weekly per-dispute + monthly team rollup
 		r.Get("/reports/time/rates", s.getTimeRates)                  // role billable rates (view: CASE_MANAGER/FINANCE/admin)
 		r.Put("/reports/time/rates", s.putTimeRate)                   // set rates (CASE_MANAGER/admin only)
@@ -584,6 +588,7 @@ func main() {
 		r.Post("/intake/converse", s.intakeConverse)      // conversational intake (step 5): extraction only — filing stays on /intake
 		r.Post("/intake", s.createIntake)                 // pre-case intake (G12)
 		r.Post("/intake/bulk", s.bulkIntake)              // third-party batch filing (idempotent by batch_ref)
+		r.Get("/intake/bulk", s.listIntakeBatches)          // filer status board (own batches; staff may filter)
 		r.Get("/intake/bulk/{batchId}", s.getIntakeBatch) // batch receipt / reconciliation
 		r.Get("/intake", s.listIntake)
 		r.Post("/intake/{intakeId}/advance", s.advanceIntake) // refund window enforced

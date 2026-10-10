@@ -376,3 +376,11 @@ tr.batched td:first-child{border-left:3px solid var(--attention-fg)}
 .from-chat{border-color:var(--attention-fg)!important;background:color-mix(in srgb,var(--attention-fg) 8%,transparent)!important}
 .chat-handoff{animation:handoff-flash 1.6s ease-out}
 @keyframes handoff-flash{0%{outline:3px solid var(--attention-fg);outline-offset:3px}100%{outline:3px solid transparent;outline-offset:3px}}
+
+/* Timesheet + TPA hardening additions */
+.chk{display:inline-flex;align-items:center;gap:6px}
+.card-n{font-size:1.6em;font-weight:700}
+.card-l{color:var(--muted,#6E6A5E);font-size:.85em}
+.day-head td{background:color-mix(in srgb,var(--ink,#222) 5%,transparent);font-weight:600}
+button.ghost{background:transparent;border:1px solid currentColor}
+button.bad,.badge.warn{border-color:var(--warning-fg,#B08D3E)}

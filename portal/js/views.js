@@ -1298,7 +1298,7 @@ const Views = (() => {
             const usd = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
             const buckets = ["current", "1-30", "31-60", "60+"].map((b) => {
               const row = (fin.aging || []).find((a) => a.bucket === b);
-              return { label: b === "current" ? "Current" : b + "d", value: row ? row.total_cents / 100 : 0 , billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
+              return { label: b === "current" ? "Current" : b + "d", value: row ? row.total_cents / 100 : 0 , billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, tpaBulkFile, tpaBulkSubmit, tpaBatchesBox, tpaBatchDetail };
             });
             document.getElementById("rpt-fin-out").innerHTML =
               `<div class="kpi-row">
@@ -1510,7 +1510,8 @@ const Views = (() => {
       $("#p-status")?.addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const f = ev.target;
-        try { await Api.program.setStatus(id, { internal_status: f.internal.value, agency_status: f.agency.value });
+        try { const sr = await Api.program.setStatus(id, { internal_status: f.internal.value, agency_status: f.agency.value });
+          (sr.warnings || []).forEach((w) => UI.toast("⚠ " + w, { kind: "warn", sticky: true }));
           UI.toast("Status updated"); } catch (e) { UI.toast(e.message, { kind: "warn" }); }
       });
       const loadDates = () => {
@@ -1536,11 +1537,13 @@ const Views = (() => {
         }).catch(() => {});
       };
       loadDates();
+      const eligBadge = (v) => `${badge(v.result)}${v.borderline ? ` <span class="badge warn" title="Borderline call — PM second review required">borderline</span>` : ""}${v.override ? ` <span class="badge" title="Human override of the computed result">override</span>` : ""}`;
       const loadElig = () => Api.program.eligibilityHistory(id).then((r) => {
         const el = document.getElementById("p-elig-history"); if (!el) return;
         const revs = r.reviews || [];
-        el.innerHTML = revs.length ? `<table><thead><tr><th>Result</th><th>Reason</th><th>By</th><th>When</th></tr></thead><tbody>` +
-          revs.map((v) => `<tr><td>${badge(v.result)}</td><td>${esc(v.reason || "—")}</td>
+        el.innerHTML = revs.length ? `<table><thead><tr><th>Result</th><th>Reason</th><th>Rules</th><th>By</th><th>When</th></tr></thead><tbody>` +
+          revs.map((v) => `<tr><td>${eligBadge(v)}</td><td>${esc(v.reason || "—")}${v.override_reason ? `<div class="muted">override: ${esc(v.override_reason)}</div>` : ""}</td>
+            <td class="mono muted" title="rule version that produced this decision">${esc(v.rule_version || "—")}</td>
             <td>${esc(v.decided_by || "")}</td><td class="muted">${fmtDate(v.created_at)}</td></tr>`).join("") +
           `</tbody></table>` : `<p class="muted">No eligibility review on record yet.</p>`;
       }).catch(() => {});
@@ -1561,8 +1564,7 @@ const Views = (() => {
               out.innerHTML = `<p class="warn-box">⚠ Can't auto-decide — missing rule inputs:
                 <b>${(r.missing || []).map(esc).join(", ")}</b>. Fill them in the form below and compute manually.</p>`;
             } else {
-              out.innerHTML = `<p>${badge(r.result)} ${r.reason ? esc(r.reason) : ""}
-                <span class="muted">auto review ${esc(r.review_id)} — inputs derived from case record + analyzed documents</span></p>`;
+              showEligResult(r, out, null);
               loadElig();
             }
           } catch (e) { UI.toast(e.message, { kind: "warn" }); }
@@ -1571,15 +1573,25 @@ const Views = (() => {
       $("#p-elig")?.addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const f = ev.target;
+        const payload = () => ({
+          provider_type: f.provider_type.value, contracted: f.contracted.checked,
+          disputed_amount_cents: money(f.amount.value),
+          final_determination_at: f.fd.value || "",
+          flags: f.flags.value ? f.flags.value.split(",").map((x) => x.trim()).filter(Boolean) : [],
+          aor_valid: f.aor_valid.checked,
+        });
+        const out = document.getElementById("p-elig-out");
+        const resubmit = async (reason) => {
+          try {
+            const r = await Api.program.eligibility(id, { ...payload(), override: true, override_reason: reason });
+            UI.toast("Override recorded — case ELIGIBLE, PM notified");
+            showEligResult(r, out, null);
+            loadElig();
+          } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+        };
         try {
-          const r = await Api.program.eligibility(id, {
-            provider_type: f.provider_type.value, contracted: f.contracted.checked,
-            disputed_amount_cents: money(f.amount.value),
-            final_determination_at: f.fd.value || "",
-            flags: f.flags.value ? f.flags.value.split(",").map((x) => x.trim()).filter(Boolean) : [],
-          });
-          document.getElementById("p-elig-out").innerHTML =
-            `<p>${badge(r.result)} ${r.reason ? esc(r.reason) : ""} <span class="muted">review ${esc(r.review_id)}</span></p>`;
+          const r = await Api.program.eligibility(id, payload());
+          showEligResult(r, out, resubmit);
           loadElig();
         } catch (e) { UI.toast(e.message, { kind: "warn" }); }
       });
@@ -2609,6 +2621,161 @@ const Views = (() => {
     }, "Logging…");
   }
 
+  // ---- My timesheet: the daily time-entry screen ------------------------
+  // Entries across all disputes the user works on, with daily/weekly/monthly
+  // totals. Entries are fully editable by their owner; the server keeps the
+  // complete before/after history (audit trail / revisions).
+  let tsCache = {}; // entry id -> entry (for inline editing)
+
+  async function myTimesheet() {
+    afterRender(() => myTimesheetBoxes());
+    const today = new Date().toISOString().slice(0, 10);
+    return `<div class="view-head"><h1>My timesheet</h1>
+      <span class="muted">log the hours you work each day — totals roll up daily, weekly, and monthly</span></div>
+      <div id="ts-summary" class="cards"></div>
+      <div class="panel"><h2>Log time</h2>
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.myTimeAdd(this)">
+          <select name="case_id" id="ts-case" required><option value="">dispute…</option></select>
+          <input name="entry_date" type="date" value="${today}" required />
+          <input name="hours" type="number" step="0.25" min="0.25" max="24" placeholder="hours" required style="width:6em" />
+          ${timeRoleSelect()}
+          <input name="note" placeholder="what you worked on" style="min-width:16em" />
+          <label class="chk"><input name="billable" type="checkbox" checked /> billable</label>
+          <button>Log</button></form></div>
+      <div class="panel"><h2>My entries</h2>
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.myTimeRange(this)">
+          <label>From <input name="from" type="date" /></label>
+          <label>To <input name="to" type="date" /></label>
+          <button class="mini">Apply</button>
+          <button class="mini ghost" type="button" onclick="Views.myTimeRange(this.form, true)">Last 14 days</button></form>
+        <div id="ts-list"><p class="muted">Loading…</p></div></div>`;
+  }
+
+  let tsFrom = "", tsTo = "";
+
+  async function myTimesheetBoxes() {
+    // Summary cards
+    const sum = document.getElementById("ts-summary");
+    if (sum) {
+      try {
+        const r = await Api.time.summary();
+        sum.innerHTML = [["Today", r.today_minutes], ["This week", r.week_minutes], ["This month", r.month_minutes]]
+          .map(([l, m]) => `<div class="card"><div class="card-n">${fmtMins(m || 0)}</div><div class="card-l">${l}</div></div>`).join("");
+      } catch (e) { sum.innerHTML = ""; }
+    }
+    // Case picker for the log form
+    const sel = document.getElementById("ts-case");
+    if (sel && sel.options.length <= 1) {
+      try {
+        const r = await Api.cases.list({ limit: 200 });
+        const cs = r.cases || [];
+        sel.innerHTML = `<option value="">dispute…</option>` + cs.map((c) =>
+          `<option value="${esc(c.id)}">${esc(c.case_number || c.id.slice(0, 8))}${c.title ? " — " + esc(c.title.slice(0, 40)) : ""}</option>`).join("");
+      } catch (e) { /* leave placeholder */ }
+    }
+    await myTimeListBox();
+  }
+
+  function myTimeRange(form, reset) {
+    if (reset) { tsFrom = ""; tsTo = ""; form.from.value = ""; form.to.value = ""; }
+    else { tsFrom = form.from.value || ""; tsTo = form.to.value || ""; }
+    myTimeListBox();
+  }
+
+  async function myTimeListBox() {
+    const box = document.getElementById("ts-list");
+    if (!box) return;
+    box.innerHTML = `<p class="muted">Loading…</p>`;
+    try {
+      const r = await Api.time.mine(tsFrom, tsTo);
+      const entries = r.entries || [];
+      tsCache = {};
+      entries.forEach((e) => { tsCache[e.id] = e; });
+      const totals = {};
+      (r.day_totals || []).forEach((d) => { totals[String(d.entry_date).slice(0, 10)] = d.minutes; });
+      let lastDay = null;
+      const rows = entries.map((e) => {
+        const day = String(e.entry_date).slice(0, 10);
+        let head = "";
+        if (day !== lastDay) {
+          lastDay = day;
+          head = `<tr class="day-head"><td colspan="7"><b>${esc(day)}</b> <span class="muted">— ${fmtMins(totals[day] || 0)} total</span></td></tr>`;
+        }
+        return head + `<tr id="ts-row-${e.id}">
+          <td class="mono"><a href="#/cases/${e.case_id}">${esc(e.case_number || String(e.case_id).slice(0, 8))}</a></td>
+          <td>${badge(e.role)}</td><td>${fmtMins(e.minutes)}</td>
+          <td>${String(e.billable) === "true" || e.billable === true ? "✓" : "—"}</td>
+          <td class="muted">${esc(e.note || "")}</td>
+          <td><button class="mini ghost" onclick="Views.myTimeEditStart(${e.id})">Edit</button>
+              <button class="mini ghost bad" onclick="Views.myTimeDel(${e.id}, this)">Delete</button></td></tr>`;
+      }).join("");
+      box.innerHTML = entries.length
+        ? `<table><thead><tr><th>Dispute</th><th>Role</th><th>Time</th><th>Billable</th><th>Note</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+           <p class="muted">Showing ${esc(r.from)} → ${esc(r.to)} · ${entries.length} entr${entries.length === 1 ? "y" : "ies"}</p>`
+        : `<p class="muted">No entries in this range yet — log your first day above.</p>`;
+    } catch (e) { box.innerHTML = `<p class="muted">⚠ ${esc(e.message)}</p>`; }
+  }
+
+  async function myTimeAdd(form) {
+    const btn = form.querySelector("button");
+    await UI.run(btn, async () => {
+      try {
+        await Api.cases.timeAdd(form.case_id.value, {
+          hours: parseFloat(form.hours.value),
+          entry_date: form.entry_date.value || "",
+          note: form.note.value.trim(),
+          billable: form.billable.checked,
+          role: form.role ? form.role.value : "",
+        });
+        UI.toast("Time logged");
+        form.hours.value = ""; form.note.value = "";
+        myTimesheetBoxes();
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Logging…");
+  }
+
+  function myTimeEditStart(id) {
+    const e = tsCache[id];
+    const row = document.getElementById(`ts-row-${id}`);
+    if (!e || !row) return;
+    row.innerHTML = `<td colspan="6"><form class="inline-form" onsubmit="event.preventDefault(); Views.myTimeSave(${id}, this)">
+      <input name="entry_date" type="date" value="${esc(String(e.entry_date).slice(0, 10))}" required />
+      <input name="hours" type="number" step="0.25" min="0.25" max="24" value="${(e.minutes / 60).toFixed(2)}" required style="width:6em" />
+      ${timeRoleSelect()}
+      <input name="note" value="${esc(e.note || "")}" style="min-width:14em" />
+      <label class="chk"><input name="billable" type="checkbox" ${(e.billable === true || String(e.billable) === "true") ? "checked" : ""} /> billable</label>
+      <button class="mini">Save</button>
+      <button class="mini ghost" type="button" onclick="Views.myTimeListBox()">Cancel</button></form></td>`;
+    const rs = row.querySelector('select[name="role"]');
+    if (rs) rs.value = e.role || "";
+  }
+
+  async function myTimeSave(id, form) {
+    const btn = form.querySelector("button");
+    await UI.run(btn, async () => {
+      try {
+        await Api.time.update(id, {
+          hours: parseFloat(form.hours.value),
+          entry_date: form.entry_date.value || "",
+          note: form.note.value.trim(),
+          billable: form.billable.checked,
+          role: form.role ? form.role.value : "",
+        });
+        UI.toast("Entry updated");
+        myTimesheetBoxes();
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Saving…");
+  }
+
+  async function myTimeDel(id, btn) {
+    const e = tsCache[id];
+    if (!confirm(`Delete this time entry (${e ? fmtMins(e.minutes) + " on " + String(e.entry_date).slice(0, 10) : id})? The change is kept in the audit history.`)) return;
+    await UI.run(btn, async () => {
+      try { await Api.time.remove(id); UI.toast("Entry deleted"); myTimesheetBoxes(); }
+      catch (err) { UI.toast(err.message, { kind: "warn" }); }
+    }, "Deleting…");
+  }
+
   async function timeReport() {
     if (!can("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
       return `<div class="view-head"><h1>Team time</h1></div><p class="muted">Requires CASE_MANAGER or FINANCE.</p>`;
@@ -3114,6 +3281,15 @@ const Views = (() => {
             <button class="mini">Open intake</button></form>
           <p class="muted">The intake opens with your TPA as the contact — payment and document requests come to you on behalf of the initiating party; staff advance it like any other intake.</p>
           <div id="tpa-file-result"></div></div>
+        <div class="card"><h2>Bulk upload — file many disputes at once</h2>
+          <p class="muted">CSV with header row: <code>email</code> (required), <code>contact_name</code>, <code>org</code>, <code>amount</code>, <code>filing_party_type</code> (PROVIDER/HEALTH_PLAN), <code>external_ref</code>, <code>notes</code>. Up to 500 rows per batch.</p>
+          <form class="inline-form" onsubmit="event.preventDefault()">
+            <input id="tpa-bulk-ref" placeholder="batch reference (your idempotency key)" required style="min-width:16em" />
+            <input id="tpa-bulk-file" type="file" accept=".csv,text/csv" />
+            <button class="mini" id="tpa-bulk-btn" disabled>File batch</button></form>
+          <div id="tpa-bulk-preview"></div><div id="tpa-bulk-result"></div></div>
+        <div class="card"><h2>My batch filings — status</h2>
+          <div id="tpa-batches"><p class="muted">Loading…</p></div></div>
         <div class="card"><h2>Tracking — all your parties' filings</h2>
           <div id="tpa-rollup"></div><div id="tpa-cases"><p class="muted">Loading…</p></div></div>
       </div>
@@ -3128,7 +3304,12 @@ const Views = (() => {
       orgBox.innerHTML = `<div class="stat-grid"><div class="stat"><div class="stat-num">${esc(r.tpa.name)}</div>
         <div class="muted">${esc(r.tpa.contact_email)} · ${badge(r.tpa.status)}</div></div></div>`;
       document.getElementById("tpa-body").style.display = "";
-      tpaClientsBox(); tpaDashBox();
+      tpaClientsBox(); tpaDashBox(); tpaBatchesBox();
+      window._tpaBulk = { items: [] };
+      const bref = document.getElementById("tpa-bulk-ref");
+      if (bref && !bref.value) bref.value = "TPA-" + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+      $("#tpa-bulk-file")?.addEventListener("change", (ev) => tpaBulkFile(ev.target));
+      $("#tpa-bulk-btn")?.addEventListener("click", (ev) => { ev.preventDefault(); tpaBulkSubmit(ev.target); });
     } catch (e) {
       orgBox.innerHTML = `<div class="card"><h2>Link your TPA organization</h2>
         <p class="muted">Enter the one-time claim code from your TPA registration.</p>
@@ -3190,6 +3371,95 @@ const Views = (() => {
     } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   }
 
+  // TPA bulk upload: same parser and idempotent batch semantics as the
+  // staff intake screen, but scoped here so TPA-role users never need staff
+  // screens. Batches are recorded under the filer's own subject — "My batch
+  // filings" below is the status view.
+  function tpaBulkFile(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rows = bulkCsvRows(String(reader.result || ""));
+      const head = (rows.shift() || []).map((h) => h.trim().toLowerCase().replace(/^\uFEFF/, ""));
+      if (!head.includes("email")) {
+        $("#tpa-bulk-preview").innerHTML = `<p class="badge warn">header row must include at least: email</p>`;
+        return;
+      }
+      const items = rows.map((r) => {
+        const cell = (name) => { const i = head.indexOf(name); return i >= 0 ? (r[i] || "").trim() : ""; };
+        const cents = cell("amount") ? Math.round(parseFloat(cell("amount").replace(/[$,]/g, "")) * 100) : 0;
+        return {
+          external_ref: cell("external_ref"), email: cell("email"),
+          contact_name: cell("contact_name"), org: cell("org"), notes: cell("notes"),
+          filing_party_type: cell("filing_party_type").toUpperCase(),
+          disputed_amount_cents: Number.isFinite(cents) ? cents : 0,
+          qpa_cents: Number.isFinite(cents) ? cents : 0,
+        };
+      }).filter((it) => it.email);
+      window._tpaBulk = { items };
+      const bad = rows.length - items.length;
+      $("#tpa-bulk-preview").innerHTML =
+        `<p class="muted">${items.length} row(s) ready${bad ? ` — ${bad} row(s) skipped (no email)` : ""}${items.length > 500 ? " — <b>over the 500-row limit, split the file</b>" : ""}.</p>`;
+      $("#tpa-bulk-btn").disabled = !items.length || items.length > 500;
+    };
+    reader.readAsText(file);
+  }
+
+  async function tpaBulkSubmit(btn) {
+    const ref = ($("#tpa-bulk-ref")?.value || "").trim();
+    if (!ref) { UI.toast("batch reference required — it is the idempotency key", { kind: "warn" }); return; }
+    const { items } = window._tpaBulk || { items: [] };
+    if (!items.length) return;
+    await UI.run(btn, async () => {
+      try {
+        const r = await Api.program.intakeBulk({ batch_ref: ref, items });
+        const rows = (r.results || []).map((x) => `<tr>
+          <td class="muted">${esc(x.external_ref || "")}</td>
+          <td>${x.status === "CREATED" ? badge("CREATED") : `<span class="badge warn">ERROR</span>`}${x.payment_required ? ` <span class="badge warn">fee due</span>` : ""}</td>
+          <td>${x.case_number ? `<a href="#/cases/${x.case_id}">${esc(x.case_number)}</a>` : esc(x.intake_id || "")}</td>
+          <td class="muted">${esc(x.error || "")}</td></tr>`).join("");
+        $("#tpa-bulk-result").innerHTML = `<p><b>Batch ${esc(r.batch_ref || ref)}</b> — ${r.created} filed, ${r.errors} error(s)${r.idempotent_replay ? " — <b>idempotent replay</b>: already submitted; nothing re-filed" : ""}</p>
+          <table><thead><tr><th>Row</th><th>Outcome</th><th>Intake / case</th><th>Error</th></tr></thead><tbody>${rows}</tbody></table>`;
+        UI.toast(r.idempotent_replay ? "Batch already filed — receipt replayed" : `Batch filed: ${r.created} created, ${r.errors} errors`, { kind: r.errors ? "warn" : "ok" });
+        tpaBatchesBox();
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "Filing batch…");
+  }
+
+  async function tpaBatchesBox() {
+    const box = document.getElementById("tpa-batches");
+    if (!box) return;
+    try {
+      const r = await Api.program.intakeBatches();
+      const bs = r.batches || [];
+      box.innerHTML = bs.length ? `<table><thead><tr><th>Batch ref</th><th>Submitted</th><th>Rows</th><th>Filed</th><th>Errors</th><th></th></tr></thead><tbody>
+        ${bs.map((b) => `<tr><td class="mono">${esc(b.batch_ref)}</td><td>${esc(String(b.created_at || "").slice(0, 16).replace("T", " "))}</td>
+          <td>${b.item_count}</td><td>${b.created_count}</td><td>${b.error_count ? `<span class="badge warn">${b.error_count}</span>` : "0"}</td>
+          <td><button class="mini ghost" onclick="Views.tpaBatchDetail(${b.id})">Receipt</button></td></tr>
+          <tr id="tpa-batch-${b.id}" style="display:none"><td colspan="6"></td></tr>`).join("")}</tbody></table>`
+        : '<p class="muted">No batches yet — upload a CSV above.</p>';
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function tpaBatchDetail(id) {
+    const row = document.getElementById(`tpa-batch-${id}`);
+    if (!row) return;
+    if (row.style.display !== "none") { row.style.display = "none"; return; }
+    row.style.display = "";
+    row.firstElementChild.innerHTML = `<p class="muted">Loading receipt…</p>`;
+    try {
+      const r = await Api.program.intakeBatch(id);
+      const rows = (r.results || []).map((x) => `<tr>
+        <td class="muted">${esc(x.external_ref || "")}</td>
+        <td>${x.status === "CREATED" ? badge("CREATED") : `<span class="badge warn">ERROR</span>`}</td>
+        <td>${x.case_number ? `<a href="#/cases/${x.case_id}">${esc(x.case_number)}</a>` : esc(x.intake_id || "—")}</td>
+        <td class="muted">${esc(x.error || "")}</td></tr>`).join("");
+      row.firstElementChild.innerHTML = `<b>${esc(r.batch_ref)}</b> · submitted ${esc(String(r.submitted_at || "").slice(0, 16).replace("T", " "))} · ${r.created} filed / ${r.errors} errors
+        <table><thead><tr><th>Row</th><th>Outcome</th><th>Case</th><th>Error</th></tr></thead><tbody>${rows}</tbody></table>`;
+    } catch (e) { row.firstElementChild.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
   async function tpaAdminBox() {
     const box = document.getElementById("tpa-admin");
     if (!box) return;
@@ -3207,5 +3477,5 @@ const Views = (() => {
     catch (e) { alert(e.message); }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn };
 })();
