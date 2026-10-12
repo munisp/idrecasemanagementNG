@@ -20,10 +20,38 @@ def _to_cents(s: str) -> int:
     return int(round(float(s.replace(",", "")) * 100))
 
 
-# Context-tagged money: "Total ... $1,234.56", "Amount Billed: $900.00".
+# Context-tagged money: "Total ... $1,234.56", "Amount Billed: $900.00",
+# EOB columns: "Allowed Amount $412.00", "Plan Paid $329.60".
+# Canonical label groups let cross_check reason about billing arithmetic
+# (billed >= allowed >= paid; paid + patient_resp ~= allowed) regardless of
+# which synonym a payer's EOB template uses.
+_MONEY_LABELS: dict[str, tuple[str, ...]] = {
+    "billed": ("total billed", "amount billed", "billed amount", "billed charges",
+               "total charges", "charge amount", "total charge"),
+    "allowed": ("allowed amount", "allowed charges", "eligible amount",
+                "negotiated amount", "contracted rate"),
+    "paid": ("plan paid", "amount paid", "paid amount", "insurance paid",
+             "insurer paid", "payer paid", "total paid", "payment amount",
+             "plan payment", "benefits paid"),
+    "patient_resp": ("patient responsibility", "patient balance", "patient owes",
+                     "member responsibility", "member liability", "your share",
+                     "balance due", "amount you owe", "patient amount"),
+    "deductible": ("deductible",),
+    "copay": ("copay", "co-pay", "copayment"),
+    "coinsurance": ("coinsurance",),
+    "adjustment": ("adjustment amount", "contractual adjustment", "plan discount",
+                   "provider adjustment", "write-off", "write off", "discount amount"),
+    "total": ("total", "total amount", "total due", "amount due"),
+    "qpa": ("qpa", "qualifying payment amount"),
+}
+_LABEL_TO_CANONICAL: dict[str, str] = {
+    syn: canon for canon, syns in _MONEY_LABELS.items() for syn in syns
+}
+_MONEY_LABEL_ALT = "|".join(re.escape(s) for s in sorted(
+    _LABEL_TO_CANONICAL, key=len, reverse=True))
+
 _TAGGED_MONEY_RE = re.compile(
-    r"(?i)\b(total(?:\s+(?:billed|charges?|amount|due))?|amount\s+(?:billed|due|paid)"
-    r"|balance\s+due|patient\s+(?:responsibility|balance)|allowed\s+amount|qpa)\b"
+    rf"(?i)\b({_MONEY_LABEL_ALT})\b"
     r"[^\d$]{0,40}\$\s*(-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)"
 )
 
@@ -47,7 +75,9 @@ _MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
 
 _TAGGED_DATE_RE = re.compile(
     r"(?i)\b(date\s+of\s+service|service\s+date|dos|date\s+of\s+birth|dob|"
-    r"statement\s+date|date\s+issued|filing\s+date|discharge\s+date|admission\s+date)\b"
+    r"statement\s+date|date\s+issued|filing\s+date|discharge\s+date|admission\s+date|"
+    r"determination\s+date|process(?:ed)?\s+date|paid\s+date|check\s+date|"
+    r"decision\s+date)\b"
     r"\s*[:#]?\s*([^\n,;]{4,30})"
 )
 
@@ -81,6 +111,17 @@ _TIN_RE = re.compile(r"(?i)\b(?:TIN|EIN|FEIN|tax\s*id(?:entification)?\s*(?:numb
 _CLAIM_RE = re.compile(r"(?i)\b(?:claim|invoice|account|bill|statement)\s*(?:number|no\.?|#|:)?\s*[:#]?\s*([A-Z0-9][-A-Z0-9]{5,24})\b")
 _CPT_RE = re.compile(r"(?<![\d-])(\d{5})(?![\d])")
 _HCPCS_RE = re.compile(r"\b([A-VY]\d{4})\b")
+# Member / subscriber identifier on EOBs and claim forms.
+_MEMBER_ID_RE = re.compile(
+    r"(?i)\b(?:member|subscriber|patient|insured)\s*(?:id|number|no\.?|#)\b\s*[:#]?\s*([A-Z0-9][-A-Z0-9]{5,20})\b")
+# CARC/RARC adjustment + remark codes on EOBs (CO-45, PR-1, OA-23, N127 ...).
+_REMARK_CODE_RE = re.compile(r"\b((?:CO|PR|OA|PI|CR)-?\d{1,3}|N\d{1,3})\b")
+# ICD-10 diagnosis codes: letter + 2 digits + optional decimal suffix. Require
+# diagnostic context so CPT-adjacent tokens and ZIP+4s don't false-positive.
+_DX_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:diagnosis|dx|icd(?:-?10)?)\b[^\n]{0,40}?\b([A-TV-Z]\d{2}(?:\.\d{1,4})?)\b")
+# Provider taxonomy code (207Q00000X shape).
+_TAXONOMY_RE = re.compile(r"\b(\d{3}[A-Z]\d{5}X)\b")
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -102,14 +143,31 @@ def valid_npi(digits: str) -> bool:
 
 # --- public entry point ----------------------------------------------------
 
-def extract_fields(text: str) -> dict:
-    """Pull typed, validated fields out of document text. Deterministic."""
+def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) -> dict:
+    """Pull typed, validated fields out of document text. Deterministic.
+
+    extra_labels: canonical money label -> additional synonym phrases learned
+    from human corrections (see learning.py). Synonyms are regex-escaped and
+    OR'd into the tagged-money pattern, so a payer template the platform has
+    never seen becomes extractable after a few reviewed corrections — without
+    a code change."""
     out: dict = {"amounts": [], "dates": [], "cpt_codes": [], "identifiers": {}}
     if not text:
         return out
 
-    for m in _TAGGED_MONEY_RE.finditer(text):
-        out["amounts"].append({"label": re.sub(r"\s+", " ", m.group(1)).lower(),
+    label_map = dict(_LABEL_TO_CANONICAL)
+    if extra_labels:
+        for canon, syns in extra_labels.items():
+            for syn in syns:
+                label_map[syn.lower()] = canon
+    label_alt = "|".join(re.escape(s) for s in sorted(label_map, key=len, reverse=True))
+    tagged_money = re.compile(
+        rf"(?i)\b({label_alt})\b[^\d$]{{0,40}}\$\s*(-?\d{{1,3}}(?:,\d{{3}})*(?:\.\d{{2}})?)")
+
+    for m in tagged_money.finditer(text):
+        raw_label = re.sub(r"\s+", " ", m.group(1)).lower()
+        out["amounts"].append({"label": raw_label,
+                               "canonical": label_map.get(raw_label, raw_label),
                                "cents": _to_cents(m.group(2))})
 
     for m in _TAGGED_DATE_RE.finditer(text):
@@ -126,6 +184,12 @@ def extract_fields(text: str) -> dict:
     claim = _CLAIM_RE.search(text)
     if claim:
         out["identifiers"]["claim_number"] = claim.group(1)
+    member = _MEMBER_ID_RE.search(text)
+    if member:
+        out["identifiers"]["member_id"] = member.group(1)
+    taxonomy = _TAXONOMY_RE.search(text)
+    if taxonomy:
+        out["identifiers"]["taxonomy"] = taxonomy.group(1)
 
     cpt = sorted({c for c in _CPT_RE.findall(text)})
     if cpt:
@@ -133,8 +197,40 @@ def extract_fields(text: str) -> dict:
     hcpcs = sorted({c for c in _HCPCS_RE.findall(text)})
     if hcpcs:
         out["hcpcs_codes"] = hcpcs[:50]
+    remark = sorted({c.upper().replace("-", "") if c[:2].upper() in
+                     {"CO", "PR", "OA", "PI", "CR"} else c.upper()
+                     for c in _REMARK_CODE_RE.findall(text)})
+    # Normalize to canonical hyphenated form: CO45 -> CO-45.
+    remark = sorted({(c[:2] + "-" + c[2:]) if re.fullmatch(r"(?:CO|PR|OA|PI|CR)\d{1,3}", c) else c
+                     for c in remark})
+    if remark:
+        out["adjustment_codes"] = remark[:25]
+    dx = sorted({m.group(1).upper() for m in _DX_CONTEXT_RE.finditer(text)})
+    if dx:
+        out["diagnosis_codes"] = dx[:25]
 
     return out
+
+
+def extraction_score(text: str) -> float:
+    """Quality score for competing OCR reads of the SAME page. Field-bearing
+    text beats noise: tagged amounts, parseable tagged dates, checksum-valid
+    identifiers, and real code patterns are things a correct read produces
+    and confetti noise does not. Word count only breaks ties."""
+    if not text.strip():
+        return 0.0
+    ex = extract_fields(text)
+    score = 3.0 * len(ex.get("amounts", []))
+    score += 2.0 * len(ex.get("dates", []))
+    ids = ex.get("identifiers", {})
+    score += 3.0 * len(ids)
+    if ids.get("npi", {}).get("luhn_valid"):
+        score += 4.0  # a Luhn-valid NPI is near-impossible in noise
+    score += 1.5 * len(ex.get("cpt_codes", []))
+    score += 1.5 * len(ex.get("adjustment_codes", []))
+    words = [w for w in text.split() if sum(c.isalpha() for c in w) >= 3]
+    score += min(len(words), 200) * 0.05
+    return score
 
 
 def cross_check(fields: dict) -> list[str]:
@@ -147,4 +243,25 @@ def cross_check(fields: dict) -> list[str]:
               if a["label"].startswith("total") or a["label"] == "amount billed"]
     if len(totals) >= 2 and totals[0] != totals[-1]:
         issues.append(f"Conflicting total amounts on document ({totals[0]} vs {totals[-1]} cents) — verify before use")
+
+    # EOB billing arithmetic over canonical labels. billed >= allowed >= paid
+    # and paid + patient_responsibility ~= allowed are invariants of the
+    # remittance model; violations are OCR misreads or genuine payer errors,
+    # either way review-worthy. Tolerance $1 for rounding across lines.
+    def canon_values(canon: str) -> list[int]:
+        return [a["cents"] for a in fields.get("amounts", [])
+                if a.get("canonical") == canon]
+
+    billed = canon_values("billed")
+    allowed = canon_values("allowed")
+    paid = canon_values("paid")
+    resp = canon_values("patient_resp")
+    if billed and allowed and max(allowed) > max(billed) + 100:
+        issues.append(f"Allowed amount ({max(allowed)}c) exceeds billed amount ({max(billed)}c) — impossible remittance arithmetic; verify extraction")
+    if allowed and paid and max(paid) > max(allowed) + 100:
+        issues.append(f"Plan paid ({max(paid)}c) exceeds allowed amount ({max(allowed)}c) — impossible remittance arithmetic; verify extraction")
+    if allowed and paid and resp:
+        gap = abs(max(paid) + max(resp) - max(allowed))
+        if gap > 100:
+            issues.append(f"Plan paid + patient responsibility ({max(paid) + max(resp)}c) != allowed amount ({max(allowed)}c) — EOB does not balance; verify before use")
     return issues

@@ -672,6 +672,15 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
         q = _quality(img)
         out.detail["capture"] = {**q, "orient": orient_how, "dewarped": dewarped}
         h, w = img.shape[:2]
+        # Check security backgrounds (guilloche rosettes, void pantographs,
+        # microprint tiles) are PERIODIC patterns — the same class of noise
+        # as EOB watermark stamps. Detect the lattice once at page level and
+        # subtract it from every zone read below; courtesy/date/payee OCR
+        # over a pantograph otherwise hallucinates digits out of the pattern.
+        import dewatermark
+        _wm_shifts = dewatermark.lattice_shifts(
+            cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+        out.detail["capture"]["security_pattern_removed"] = bool(_wm_shifts)
         # Full-page paddle pass once — every field gets its lines by
         # coordinates. This is the single biggest accuracy win: the detector
         # sees full layout context instead of guessing inside tight crops.
@@ -679,6 +688,8 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
 
         def gray_up(zone: np.ndarray, fx: float = 2) -> np.ndarray:
             g = cv2.cvtColor(zone, cv2.COLOR_BGR2GRAY) if zone.ndim == 3 else zone
+            if _wm_shifts:
+                g = dewatermark.remove_with_shifts(g, _wm_shifts)
             return cv2.resize(g, None, fx=fx, fy=fx, interpolation=cv2.INTER_CUBIC)
 
         # 1) MICR band: three preps, checksum-validated parse on each; first
@@ -881,6 +892,24 @@ def extract_check(image_bytes: bytes) -> CheckExtraction:
             [gray_up(memo_zone), _ink(memo_zone)], handwritten=True,
             precomputed=memo_pre)
         memo_txt = re.sub(r"(?i)^memo\b[:\s]*", "", memo_txt).strip()
+
+        # 5b) Learned corrections: ACTIVE patterns mined from past human
+        #     check feedback (learning loop). Memo noise phrases are stripped
+        #     before case-api's invoice-no substring match; payer aliases
+        #     canonicalize recurring OCR misreads of the same issuer.
+        try:
+            import learning as _learn
+            pats = _learn.get_active_check_patterns()
+            if pats.get("memo_strip") and memo_txt:
+                memo_txt = _learn.strip_memo_noise(memo_txt, pats["memo_strip"])
+            if pats.get("payer_alias") and out.payer_name:
+                alias = pats["payer_alias"].get(out.payer_name.strip().lower())
+                if alias:
+                    out.detail["payer_alias_applied"] = out.payer_name
+                    out.payer_name = alias[:80]
+        except Exception:
+            pass  # learning is advisory — never fail an extraction over it
+
         if memo_txt:
             out.memo = memo_txt[:120]
         out.detail["date_raw"], out.detail["memo_raw"] = date_txt, memo_txt

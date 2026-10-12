@@ -1,0 +1,38 @@
+{
+  "eob_claim_form.jpeg": {
+    "doc_type": "idr_claim",
+    "fields": {
+      "payer_name": "Sunshine Coast Health Plan",
+      "member_name": "Marisol Ortega",
+      "member_id": "SCH884120077",
+      "provider_name": "Northgate Health, P.C.",
+      "provider_npi": "1487652390",
+      "provider_tin": "593344721",
+      "taxonomy": "207Q00000X",
+      "claim_number": "NGH-2026-004417",
+      "service_date": "03/12/2026",
+      "place_of_service": "11",
+      "network_status": "Out-of-network (non-participating provider)",
+      "cpt:99215": "99215",
+      "cpt:93000": "93000",
+      "diagnosis_code": "I10",
+      "billed_cents": "$1,850.00"
+    }
+  },
+  "eob_remittance.jpeg": {
+    "doc_type": "eob",
+    "fields": {
+      "payer_name": "Gulfstream Health Plan of Florida",
+      "provider_name": "Bayfront Medical Center",
+      "member_name": "Marisol Ortega",
+      "member_id": "SCH884120077",
+      "service_date": "03/12/2026",
+      "determination_date": "04/08/2026",
+      "billed_cents": "$21,800.00",
+      "allowed_cents": "$18,650.00",
+      "plan_paid_cents": "$17,337.60",
+      "patient_resp_cents": "$612.50",
+      "denial_code": "CO-45"
+    }
+  }
+}

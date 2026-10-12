@@ -446,6 +446,7 @@ func main() {
 		r.Get("/cases/{caseId}/documents/{docId}/download", s.downloadDocument)
 		r.Patch("/cases/{caseId}/documents/{docId}", s.moveDocument) // re-file to folder (staff only)
 		r.Get("/cases/{caseId}/documents/{docId}/analysis", s.documentAnalysis)
+		r.Post("/cases/{caseId}/documents/{docId}/analysis/feedback", s.submitDocFeedback)
 
 		// Stakeholder onboarding: applications, decisions, status.
 		r.Patch("/cases/{caseId}/details", s.setCaseDetails)
@@ -485,6 +486,7 @@ func main() {
 		r.Post("/checks", s.uploadCheck)                                // physical check photo/scan intake
 		r.Get("/checks", s.listChecks)                                  // review queue
 		r.Post("/checks/{checkId}/clear", s.clearCheck)                 // funds-cleared settlement
+		r.Post("/checks/{checkId}/feedback", s.submitCheckFeedback)     // extraction corrections -> learning loop
 		r.Post("/internal/checks/{checkId}/result", s.checkResult)      // worker-token: doc-intel OCR
 		r.Post("/internal/copilot/actions/apply", s.copilotApplyAction) // worker-token: Phase 3 batch executor
 		r.Post("/cases/relate", s.relateCases)

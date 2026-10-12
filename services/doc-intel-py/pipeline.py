@@ -281,19 +281,22 @@ def deskew_image(img: Image.Image) -> Image.Image:
 
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
     """Enhancement pass for degraded scans before OCR: deskew (rotation is the
-    cheapest accuracy win on scanned pages), grayscale, CLAHE local contrast
-    (recovers faint print), fast denoise, and 2x upscale when the page is
-    small (sub-150dpi effective resolution starves the detector)."""
+    cheapest accuracy win on scanned pages), periodic-watermark removal (the
+    single biggest accuracy factor on stamped/faxed EOBs and claim forms —
+    CLAHE without it amplifies the watermark lattice exactly as much as the
+    text), grayscale, CLAHE local contrast (recovers faint print), fast
+    denoise, and 2x upscale when the page is small (sub-150dpi effective
+    resolution starves the detector)."""
     import cv2
+
+    import dewatermark
 
     img = deskew_image(img)
     gray = cv2.cvtColor(np_from_pil(img), cv2.COLOR_RGB2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    # Median 3x3 in place of NLM(h=10): on salt-and-pepper scan noise the
-    # OCR-accuracy difference is negligible and the speed difference is
-    # orders of magnitude (NLM on a 300dpi page = multi-second, per page).
-    enhanced = cv2.medianBlur(enhanced, 3)
+    # enhance_page: lattice detection + subtraction (no-op on clean pages),
+    # median speckle cleanup, CLAHE — in the order that removes structure
+    # before amplifying contrast.
+    enhanced, _removed = dewatermark.enhance_page(gray)
     h, w = enhanced.shape
     if max(h, w) < 2000:
         enhanced = cv2.resize(enhanced, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
@@ -313,10 +316,26 @@ def _page_ink_coverage(img: Image.Image) -> float:
 def _tesseract_text(img: Image.Image) -> str:
     """Second-opinion OCR via tesseract. Optional by design: any failure
     (binary missing, import error, crash) returns empty rather than costing
-    the document its primary OCR result."""
+    the document its primary OCR result.
+
+    PSM fallback chain: automatic page segmentation (3) handles clean
+    multi-column layouts, but its layout analysis collapses on degraded
+    fax scans and returns NOTHING (measured: 0 chars on watermarked EOBs
+    where PSM 6 reads the page) — a single uniform block (6) is the rescue,
+    and sparse text (11) is the last resort for scattered form fields."""
     try:
         import pytesseract
-        return (pytesseract.image_to_string(img) or "").strip()
+        import fields as _fields
+        best, best_score = "", -1.0
+        for psm in (3, 6, 11):
+            text = (pytesseract.image_to_string(img, config=f"--psm {psm}") or "").strip()
+            # Scored by extraction yield, not length: confetti noise on
+            # degraded scans produces LONG strings with zero fields, so a
+            # first/longest-read-wins policy actively prefers garbage.
+            s = _fields.extraction_score(text)
+            if s > best_score:
+                best, best_score = text, s
+        return best
     except Exception:
         return ""
 
@@ -355,6 +374,21 @@ def stage_ocr(ctx: dict, cfg: dict) -> dict:
     qualities = [assess_page_quality(p) for p in pages[:10]]  # sample bound
     poor_pages = [i for i, q in enumerate(qualities) if q["poor"]]
     ctx["scan_quality"] = qualities
+    # Periodic-watermark detection drives both the enhancement path (inside
+    # preprocess_for_ocr) and the review flag: a watermarked page's text is
+    # trustworthy only after lattice removal, and reviewers should know it
+    # happened.
+    import dewatermark
+    import cv2
+    wm_pages = [i for i, p in enumerate(pages[:10])
+                if dewatermark.detect_periodic_background(
+                    cv2.cvtColor(np_from_pil(p), cv2.COLOR_RGB2GRAY))]
+    if wm_pages:
+        ctx["watermark_detected"] = True
+        ctx["watermark_pages"] = wm_pages
+        # A watermarked page is effectively degraded for OCR even when its
+        # blur/contrast metrics look fine — route it through enhancement.
+        poor_pages = sorted(set(poor_pages) | set(wm_pages))
     is_pdf = sniff_doc_kind(ctx.get("raw_bytes", b""), ctx.get("content_type", "")) == "pdf"
     if poor_pages:
         if len(poor_pages) >= max(1, len(qualities) // 2):
@@ -372,6 +406,8 @@ def stage_ocr(ctx: dict, cfg: dict) -> dict:
         for i in poor_pages:
             pages[i] = preprocess_for_ocr(pages[i])
         ctx["ocr_enhanced"] = True
+        if wm_pages:
+            ctx["watermark_removed"] = True
 
     # PaddleOCR construction loads the detector+recognizer from disk — a
     # process singleton, not a per-document cost.
@@ -613,6 +649,52 @@ def _merge_extractions(parts: list[dict], fields: list[str]) -> dict:
     return merged
 
 
+def _field_question(field: str) -> str:
+    """One atomic typed question for a schema field (System One style:
+    decompose the extraction into small, independently-judged questions
+    instead of one monolithic generate-everything prompt)."""
+    if field.endswith("_usd") or "amount" in field:
+        return (f"What is the {field.replace('_usd', '').replace('_', ' ')} in this document? "
+                'Answer {"value": <number in USD, no symbols>, "probability": <0-1>} '
+                "or {\"value\": null} if absent.")
+    if "date" in field:
+        return (f"What is the {field.replace('_', ' ')} in this document? "
+                'Answer {"value": "<date as it appears>", "probability": <0-1>} '
+                "or {\"value\": null} if absent.")
+    if field.endswith("_codes") or field == "service_lines":
+        return (f"List the {field.replace('_', ' ')} in this document. "
+                'Answer {"value": [<strings>], "probability": <0-1>} '
+                "or {\"value\": null} if absent.")
+    return (f"What is the {field.replace('_', ' ')} in this document? "
+            'Answer {"value": "<exact value as it appears>", "probability": <0-1>} '
+            "or {\"value\": null} if absent.")
+
+
+def _merge_atomic(parts: list[dict], fields: list[str]) -> tuple[dict, dict]:
+    """Merge per-chunk atomic answers: each part is {field: {"value": v,
+    "probability": p}}. Highest-probability non-null value wins per field —
+    a confident read on chunk 3 beats a hesitant null on chunk 1, and the
+    probability map rides along for verify()."""
+    merged: dict[str, Any] = {f: None for f in fields}
+    probs: dict[str, float] = {}
+    for f in fields:
+        best_p = -1.0
+        for part in parts:
+            cell = part.get(f)
+            if not isinstance(cell, dict):
+                continue
+            v, p = cell.get("value"), cell.get("probability")
+            try:
+                p = float(p)
+            except (TypeError, ValueError):
+                p = 0.5 if v not in (None, "", [], {}) else 0.0
+            if v in (None, "", [], {}):
+                continue
+            if p > best_p:
+                best_p, merged[f], probs[f] = p, v, p
+    return merged, probs
+
+
 def stage_vlm_extract(ctx: dict, cfg: dict, schemas: dict) -> dict:
     """VLM semantic extraction via an OpenAI-compatible endpoint
     (PaddleOCR-VL or Qwen2.5-VL served by vLLM; swap with one env var).
@@ -653,20 +735,48 @@ def stage_vlm_extract(ctx: dict, cfg: dict, schemas: dict) -> dict:
     pages = ensure_pages(ctx) if cfg.get("vision") else ctx.get("pages", [])
     max_pages = cfg.get("max_pages", 3)
 
-    instructions = (
-        "You are an IDR (No Surprises Act dispute) document analyst. "
-        "FIRST decide whether this document is related to medical billing, health "
-        "insurance claims, explanation-of-benefits, or IDR arbitration at all, and "
-        'set "_in_domain" true or false. A resume, menu, tax form, legal contract, '
-        "photograph with no document content, or any other unrelated material is "
-        "false. When false, set every other field null and stop. "
-        f"This document is believed to be of type '{doc_type}'. "
-        f"Extract these fields as strict JSON (null when absent): {', '.join(fields)}.\n"
-        "Only extract values that literally appear in the document — never invent "
-        "or infer identifiers or amounts. Preserve exact formatting of codes and "
-        "identifiers (CPT/HCPCS/NDC, claim numbers, NPIs). Amounts as numbers in "
-        "USD, dates as they appear.\n"
-    )
+    atomic = bool(cfg.get("atomic", True))
+    if atomic:
+        # System One decomposition: each field is an independently-judged
+        # typed question carrying its own calibrated probability, instead of
+        # one monolithic blob where a weak field silently rides on strong
+        # ones. Same single call per chunk (the local Ollama serializes
+        # anyway), but the ANSWER STRUCTURE forces per-field judgment and
+        # yields the probability map verify() routes on.
+        questions = "\n".join(f'- "{f}": {_field_question(f)}' for f in fields)
+        instructions = (
+            "You are an IDR (No Surprises Act dispute) document analyst. "
+            "FIRST decide whether this document is related to medical billing, health "
+            "insurance claims, explanation-of-benefits, or IDR arbitration at all, and "
+            'set "_in_domain" true or false. A resume, menu, tax form, legal contract, '
+            "photograph with no document content, or any other unrelated material is "
+            "false. When false, set every other field null and stop. "
+            f"This document is believed to be of type '{doc_type}'.\n"
+            "Answer EACH of these extraction questions independently. Reply as one "
+            'JSON object: {"_in_domain": true/false, "<field>": {"value": ..., '
+            '"probability": 0-1}, ...}. probability is your calibrated confidence '
+            "that the value is exactly right — honest, not optimistic. null value "
+            "when the field is absent. Only extract values that literally appear in "
+            "the document — never invent or infer identifiers or amounts. Preserve "
+            "exact formatting of codes and identifiers. Amounts as numbers in USD, "
+            "dates as they appear.\n"
+            f"QUESTIONS:\n{questions}\n"
+        )
+    else:
+        instructions = (
+            "You are an IDR (No Surprises Act dispute) document analyst. "
+            "FIRST decide whether this document is related to medical billing, health "
+            "insurance claims, explanation-of-benefits, or IDR arbitration at all, and "
+            'set "_in_domain" true or false. A resume, menu, tax form, legal contract, '
+            "photograph with no document content, or any other unrelated material is "
+            "false. When false, set every other field null and stop. "
+            f"This document is believed to be of type '{doc_type}'. "
+            f"Extract these fields as strict JSON (null when absent): {', '.join(fields)}.\n"
+            "Only extract values that literally appear in the document — never invent "
+            "or infer identifiers or amounts. Preserve exact formatting of codes and "
+            "identifiers (CPT/HCPCS/NDC, claim numbers, NPIs). Amounts as numbers in "
+            "USD, dates as they appear.\n"
+        )
 
     chunk_chars = cfg.get("chunk_chars", 12000)
     chunks = _chunk_markdown(md, chunk_chars)
@@ -747,7 +857,21 @@ def stage_vlm_extract(ctx: dict, cfg: dict, schemas: dict) -> dict:
     ctx["in_domain"] = any(in_domain_votes) if in_domain_votes else True
     # Strict schema: only declared fields survive, all present (null-filled) —
     # the VLM can't smuggle invented keys into the record.
-    ctx["extracted"] = _merge_extractions(parts, fields)
+    if atomic and any(isinstance(p.get(f), dict) for p in parts for f in fields):
+        merged, probs = _merge_atomic(parts, fields)
+        ctx["extracted"] = merged
+        ctx["vlm_field_probability"] = probs
+    else:
+        # Model didn't follow the typed structure (or atomic disabled):
+        # degrade gracefully to plain value merging rather than losing the
+        # document's extraction entirely.
+        cleaned = []
+        for p in parts:
+            cleaned.append({
+                f: (p[f].get("value") if isinstance(p.get(f), dict) else p.get(f))
+                for f in fields
+            })
+        ctx["extracted"] = _merge_extractions(cleaned, fields)
     return ctx
 
 
@@ -810,8 +934,9 @@ def stage_fields(ctx: dict, cfg: dict) -> dict:
     eligibility evidence directly. Cross-checks (Luhn failures, conflicting
     totals) become validate() findings via ctx['field_check_issues']."""
     import fields as _fields
+    import learning as _learning
     text = ctx.get("text", "") or ""
-    ex = _fields.extract_fields(text)
+    ex = _fields.extract_fields(text, extra_labels=_learning.get_active_labels())
     ctx["extracted_fields"] = ex
     ctx["field_check_issues"] = _fields.cross_check(ex)
     return ctx
@@ -895,6 +1020,8 @@ def stage_verify(ctx: dict, cfg: dict) -> dict:
     trusted normalized set."""
     hay = (ctx.get("markdown") or ctx.get("text") or "").lower()
     hay_squashed = re.sub(r"[^a-z0-9]", "", hay)
+    probs = ctx.get("vlm_field_probability", {}) or {}
+    prob_floor = float(cfg.get("probability_floor", 0.6))
     confidence: dict[str, str] = {}
     ungrounded: list[str] = []
     for field, value in ctx.get("extracted", {}).items():
@@ -902,9 +1029,18 @@ def stage_verify(ctx: dict, cfg: dict) -> dict:
             continue
         atoms = [a for a in _flatten_values(value) if a.strip()]
         ok = all(_grounded(a, hay, hay_squashed) for a in atoms) if atoms else False
-        confidence[field] = "high" if ok else "low"
+        # Three tiers: ungrounded is still the hallucination signature (low);
+        # grounded but the model itself was unsure of the value (calibrated
+        # probability under the floor) lands in "medium" — review-visible
+        # without crying hallucination.
+        p = probs.get(field)
         if not ok:
+            confidence[field] = "low"
             ungrounded.append(field)
+        elif isinstance(p, (int, float)) and p < prob_floor:
+            confidence[field] = "medium"
+        else:
+            confidence[field] = "high"
     ctx["field_confidence"] = confidence
     ctx["ungrounded_fields"] = ungrounded
     # Trusted normalized view: drop normalized copies of ungrounded fields.
@@ -955,12 +1091,22 @@ def stage_validate(ctx: dict, cfg: dict, case: dict | None) -> dict:
         conf = ctx.get("ocr_confidence")
         pct = f" (mean recognizer confidence {conf:.0%})" if isinstance(conf, float) else ""
         findings.append({"field": None, "issue": f"Low OCR confidence{pct} — one or more pages needed fallback OCR or scored below threshold; manual verification of all values required"})
+    # Periodic watermark removed before OCR: extraction ran on the recovered
+    # text layer — informational for the audit trail, values still verified
+    # by grounding like any other.
+    if ctx.get("watermark_removed"):
+        findings.append({"field": None, "issue": "Periodic watermark/stamp background detected and removed before OCR — extraction used the recovered text layer"})
     # Ambiguous classification: the winning type barely beat the runner-up.
     if ctx.get("classify_ambiguous") and ctx.get("doc_type") != "unrelated":
         findings.append({"field": None, "issue": f"Document type '{ctx['doc_type']}' is a low-margin classification — confirm type on review"})
     # Hallucination guard from verify().
     for field in ctx.get("ungrounded_fields", []):
         findings.append({"field": field, "issue": "Extracted value not found in document text — possible extraction error; verify before use"})
+    # Calibrated-uncertainty routing: grounded but the model itself reported
+    # low probability — human glance warranted, hallucination language not.
+    for field, tier in ctx.get("field_confidence", {}).items():
+        if tier == "medium":
+            findings.append({"field": field, "issue": "Model reported low confidence in this value — verify before use"})
     # Shape warnings from normalize().
     for w in ctx.get("normalize_warnings", []):
         findings.append({"field": w["field"], "issue": w["issue"]})
@@ -985,6 +1131,7 @@ def stage_index(ctx: dict, cfg: dict) -> dict:
         "extracted_fields": ctx.get("extracted_fields", {}),
         "normalized": ctx.get("normalized", {}),
         "field_confidence": ctx.get("field_confidence", {}),
+        "vlm_field_probability": ctx.get("vlm_field_probability", {}),
         "status": ctx.get("status"),
     }
     return ctx

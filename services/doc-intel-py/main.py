@@ -25,6 +25,7 @@ from opensearchpy import OpenSearch
 from pipeline import bytes_to_pages, ooxml_safe, run_pipeline, sniff_doc_kind
 from rules_engine import expand_template, fire_rules, load_rules
 from check_processor import extract_check
+import learning
 
 
 def is_blocked(evt: dict, kind: str, subj_id: str) -> bool:
@@ -232,6 +233,7 @@ def persist(evt: dict, ctx: dict) -> None:
                  "ocr_low_confidence": ctx.get("ocr_low_confidence", False),
                  "ocr_pages": ctx.get("ocr_pages", []),
                  "extracted_fields": ctx.get("extracted_fields", {}),
+                 "vlm_field_probability": ctx.get("vlm_field_probability", {}),
              })),
         )
     # Best-effort, like the Temporal signal call below it: the Postgres
@@ -418,6 +420,19 @@ def main() -> None:
     workers = int(os.environ.get("DOC_INTEL_WORKERS", "3"))
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="doc")
     pending = deque()  # (msg, future), FIFO for in-order commit
+
+    # Continuous learning: load ACTIVE extraction synonyms mined from past
+    # human corrections (stage_fields applies them immediately), then mine
+    # new corrections on an interval. Fail-open: a learning outage must never
+    # stop document processing — extraction just runs with the base label set.
+    try:
+        with psycopg.connect(DSN) as c:
+            n = learning.load_active(c)
+            if n:
+                print(f"doc-intel learning: {n} active label synonyms loaded", flush=True)
+        learning.start_learning_loop(lambda: psycopg.connect(DSN), search)
+    except Exception as exc:  # noqa: BLE001
+        print(f"doc-intel learning: startup skipped: {exc}", flush=True)
 
     def run(evt: dict) -> None:
         if evt.get("type") == "doc.uploaded":

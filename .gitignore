@@ -5,3 +5,5 @@
 /services/*/server
 /services/*/*.exe
 __pycache__/
+__pycache__/
+*.pyc

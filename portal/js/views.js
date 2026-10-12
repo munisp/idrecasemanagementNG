@@ -748,7 +748,8 @@ const Views = (() => {
       <td>${c.courtesy_amount_cents != null ? "$" + (c.courtesy_amount_cents / 100).toLocaleString() : "—"}</td>
       <td>${esc(c.memo || "")}</td>
       <td><input id="asst-ck-ref-${c.check_id || c.id}" placeholder="remittance ref" style="width:130px" />
-          <button class="mini" onclick="Views.asstClearCheck('${c.check_id || c.id}',this)">clear</button></td></tr>`).join("");
+          <button class="mini" onclick="Views.asstClearCheck('${c.check_id || c.id}',this)">clear</button>
+          <button class="mini" onclick="Views.correctCheck('${c.check_id || c.id}',this)">✎ correct</button></td></tr>`).join("");
     return `<div class="card"><h3>🧾 Manual checks — ${ck.length} awaiting review</h3>
       <p class="muted">OCR could not match these to an open invoice. Match each to its remittance and clear — or <a href="#/finance">open finance ↗</a> for the full queue.</p>
       <table><thead><tr><th>Check</th><th>Payee</th><th>Courtesy</th><th>Memo</th><th>Clear</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -766,6 +767,22 @@ const Views = (() => {
         if (box) box.innerHTML = await asstChecksHtml();
       } catch (e) { UI.toast(e.message, { kind: "warn" }); }
     }, "Clearing…");
+  }
+
+  // Human correction of an extracted check field — feeds the doc-intel
+  // learning loop (memo-noise phrases / payer aliases mined + promoted).
+  async function correctCheck(checkId, el) {
+    const field = prompt("Field to correct (memo, payer_name, check_date, check_number, routing_number, account_number, amount):", "memo");
+    if (!field) return;
+    const corrected = prompt(`Corrected value for ${field}:`, "");
+    if (corrected === null || corrected === "") return;
+    await UI.run(el, async () => {
+      try {
+        await Api.program.checkFeedback(checkId, { field: field.trim(), corrected_value: corrected.trim() });
+        UI.toast("Correction recorded — the extraction model learns from it");
+        el.disabled = true; el.textContent = "✓ sent";
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    });
   }
 
   async function escalate(caseId) {
@@ -1078,15 +1095,43 @@ const Views = (() => {
     try {
       const a = await Api.cases.analysis(caseId, docId);
       const r = a.result || {};
+      // Every extracted field is reviewable in place: a corrected value is
+      // posted as doc-intel feedback (the learning loop's training signal)
+      // and shown immediately in a "correction sent" state. Corrections are
+      // append-only facts — recurring ones are mined into extraction
+      // patterns, so the platform gets measurably better on the payer
+      // templates this tenant actually sees.
+      const ex = r.extracted || {};
+      const rows = Object.entries(ex).filter(([, v]) => v !== null && v !== "" && v !== undefined)
+        .map(([k, v]) => `<tr>
+          <td>${esc(k)}</td><td>${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</td>
+          <td><button class="link" onclick="Views.correctField('${caseId}','${docId}','${esc(k)}','${esc(String(typeof v === "object" ? JSON.stringify(v) : v)).replace(/'/g, "\\'")}', this)">correct</button></td>
+        </tr>`).join("");
       box.innerHTML = `<h3>Document analysis ${badge(a.status)}</h3>
         <p class="muted">type: ${esc(a.doc_type)} · seal detected: ${r.seal_detected ? "yes" : "no"} · tables: ${r.table_count ?? 0}</p>
-        <pre>${esc(JSON.stringify(r.extracted || {}, null, 2))}</pre>
+        ${rows ? `<table class="table"><thead><tr><th>Field</th><th>Extracted value</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+        <p class="muted">Wrong value? Click <b>correct</b> — the correction trains future extractions on documents like this one.</p>` : `<p class="muted">No fields extracted.</p>`}
+        <details><summary>Raw extraction JSON</summary><pre>${esc(JSON.stringify(ex, null, 2))}</pre></details>
         ${(r.findings || []).length ? `<p class="error">Findings: ${esc(JSON.stringify(r.findings))}</p>` : ""}`;
     } catch (e) {
       box.innerHTML = e.status === 404
         ? `<h3>Document analysis</h3><p class="muted">No analysis result yet — the document is still queued for the OCR/extraction pipeline (or was uploaded before doc-intel processed it). Try again shortly.</p>`
         : err(e);
     }
+  }
+
+  async function correctField(caseId, docId, field, extractedValue, btn) {
+    const corrected = window.prompt(`Correct value for "${field}":`, extractedValue === "null" ? "" : extractedValue);
+    if (corrected === null) return;  // cancelled
+    try {
+      await Api.cases.analysisFeedback(caseId, docId, {
+        field, extracted_value: extractedValue === "null" ? "" : extractedValue,
+        corrected_value: corrected,
+      });
+      btn.textContent = "✓ sent";
+      btn.disabled = true;
+      UI.toast("Correction recorded — it will train future extractions");
+    } catch (e) { UI.toast(e.message, { kind: "warn" }); }
   }
 
   async function check(itemId) {
@@ -3795,5 +3840,5 @@ const Views = (() => {
     } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn };
 })();

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -346,6 +347,57 @@ func (s *server) documentAnalysis(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":%q,"doc_type":%q,"result":%s}`, status, docType, payload)
+}
+
+// submitDocFeedback: POST .../documents/{docId}/analysis/feedback — captures
+// a human correction of an extracted field (from the review UI) into
+// public.doc_feedback, the training signal for doc-intel's learning loop.
+// Corrections are append-only facts; the miner (doc-intel) turns recurring
+// corrections into extraction patterns promoted by champion/challenger
+// evaluation, so a single bad correction can never change behavior on its own.
+// The feedback row itself is the audit trail — no separate audit event.
+func (s *server) submitDocFeedback(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	docID := chi.URLParam(r, "docId")
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, "CASE_MANAGER", "ARBITRATOR", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") {
+		http.Error(w, `{"error":"role may not submit analysis feedback"}`, http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Field          string `json:"field"`
+		ExtractedValue string `json:"extracted_value"`
+		CorrectedValue string `json:"corrected_value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	body.Field = strings.TrimSpace(body.Field)
+	if body.Field == "" || len(body.Field) > 60 || len(body.CorrectedValue) > 200 {
+		http.Error(w, `{"error":"field (<=60 chars) and corrected_value (<=200 chars) required"}`, http.StatusBadRequest)
+		return
+	}
+	// The feedback row references the analysis row (FK) and carries its
+	// doc_type so the miner can group corrections per document type without
+	// a join back. Analysis must exist — correcting a document that was
+	// never analyzed is a client bug.
+	var docType string
+	err := s.db.QueryRow(r.Context(), `
+		SELECT doc_type FROM public.doc_analysis WHERE doc_id=$1 AND tenant=$2`,
+		docID, tenant).Scan(&docType)
+	if err != nil {
+		http.Error(w, `{"error":"no analysis for document"}`, http.StatusNotFound)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `
+		INSERT INTO public.doc_feedback (tenant, doc_id, doc_type, field, extracted_value, corrected_value, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		tenant, docID, docType, body.Field, body.ExtractedValue, body.CorrectedValue, p.Subject); err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"doc_id": docID, "field": body.Field, "feedback": "RECORDED"})
 }
 
 // ---- vault helpers ---------------------------------------------------------

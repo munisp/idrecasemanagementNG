@@ -85,6 +85,9 @@ stages:
       # larger context multiplies KV-cache memory per request on a
       # cluster with a known OOM history.
       vlm_image_max_px: 650
+      atomic: true           # System One decomposition: per-field typed questions with
+                             # calibrated probabilities (highest-probability merge wins);
+                             # false restores the monolithic single-blob prompt
       chunk_chars: 1200      # long docs are extracted per chunk and merged -- the vlm_extract
                              # stage's own MAX_PROMPT_CHARS hard-truncates at 2000 regardless,
                              # so a chunk much larger than that would just get silently cut off
