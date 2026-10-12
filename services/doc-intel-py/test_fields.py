@@ -116,3 +116,59 @@ def test_valid_npi_passes_luhn():
     # Luhn-valid with the 80840 healthcare prefix per the CMS NPI spec
     assert fields.valid_npi("1487652392")
     assert not fields.valid_npi("1487652390")
+
+
+# --- OCR repair helpers (degraded fax reads) --------------------------------
+
+def test_join_label_lines_folds_value_then_label():
+    from fields import _join_label_lines
+    t = _join_label_lines("Marisol Ortega\nMember Name:\nSCH884120077\nMember ID:")
+    assert "Member Name: Marisol Ortega" in t
+    assert "Member ID: SCH884120077" in t
+
+
+def test_join_label_lines_leaves_normal_lines_alone():
+    from fields import _join_label_lines
+    t = _join_label_lines("Member Name: Marisol Ortega")
+    assert t == "Member Name: Marisol Ortega"
+
+
+def test_money_ocr_separators_last_dot_is_decimal():
+    from fields import _to_cents_ocr
+    assert _to_cents_ocr("1.850.00") == 185000
+    assert _to_cents_ocr("1,850.00") == 185000
+    assert _to_cents_ocr("21,800.00") == 2180000
+
+
+def test_money_ocr_separators_in_extract():
+    ex = fields.extract_fields("Billed Amount: $1.850.00\n")
+    assert any(a["cents"] == 185000 and a["canonical"] == "billed"
+               for a in ex["amounts"])
+
+
+def test_date_stray_digit_repair_validated():
+    from fields import _norm_date_token_repaired
+    assert _norm_date_token_repaired("03/1272026") == "2026-03-12"
+    # impossible dates stay rejected even after repair
+    assert _norm_date_token_repaired("13/4072026") is None
+
+
+def test_diagnosis_leading_digit_repair():
+    ex = fields.extract_fields("Diagnosis Code: 110\n")
+    assert "I10" in ex["diagnosis_codes"]
+
+
+def test_diagnosis_repair_requires_context():
+    # a bare 3-digit token without diagnostic context is NOT a dx code
+    ex = fields.extract_fields("room 110 charge\n")
+    assert "diagnosis_codes" not in ex or "I10" not in ex["diagnosis_codes"]
+
+
+def test_taxonomy_fourth_char_repair():
+    ex = fields.extract_fields("Taxonomy: 207000000X\n")
+    assert ex["identifiers"].get("taxonomy_repaired") == "207O00000X"
+
+
+def test_value_then_label_member_id_extracts():
+    ex = fields.extract_fields("SCH884120077\nMember ID:\n")
+    assert ex["identifiers"]["member_id"] == "SCH884120077"

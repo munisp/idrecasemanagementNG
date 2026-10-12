@@ -141,6 +141,77 @@ def valid_npi(digits: str) -> bool:
     return bool(re.fullmatch(r"\d{10}", digits)) and _luhn_ok("80840" + digits)
 
 
+# --- OCR repair helpers ----------------------------------------------------
+# Degraded faxes break text in characteristic ways; every repair below is
+# gated by a strict field-format validation so it can only ever RECOVER a
+# value the format rules already bless — never invent one.
+
+#: Lines that are ONLY a label (faxed forms often render value-then-label in
+#: reading order, and OCR emits them as adjacent lines):
+#:   "Marisol Ortega\nMember Name:"  ->  "Member Name: Marisol Ortega"
+_STANDALONE_LABELS = (
+    "payer name", "member name", "patient name", "provider name",
+    "billing provider", "rendering provider", "member id", "subscriber id",
+    "patient id", "provider npi", "npi", "taxonomy", "claim number",
+    "service date", "date of service", "determination date", "process date",
+    "diagnosis code", "diagnosis", "place of service", "network status",
+    "cpt/hcpcs codes", "cpt codes", "billed amount", "allowed amount",
+    "plan paid", "patient responsibility", "units",
+)
+_STANDALONE_LABEL_RE = re.compile(
+    r"(?im)^[ \t]*(" + "|".join(re.escape(s) for s in _STANDALONE_LABELS) + r")[ \t]*[:#]?[ \t]*$")
+
+
+def _join_label_lines(text: str) -> str:
+    """Fold value-then-label line pairs into canonical 'label: value' lines."""
+    lines = text.splitlines()
+    out: list[str] = []
+    for ln in lines:
+        m = _STANDALONE_LABEL_RE.match(ln)
+        if m and out and out[-1].strip():
+            out[-1] = f"{m.group(1)}: {out[-1].strip()}"
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
+def _to_cents_ocr(s: str) -> int:
+    """Cents for OCR-degraded money: when several grouping separators appear,
+    the LAST one is the decimal point ("$1.850.00" -> 185000)."""
+    body = re.sub(r"[^\d,\.\-]", "", s)
+    seps = [i for i, ch in enumerate(body) if ch in ",."]
+    if len(seps) > 1 and body[seps[-1]] == "." and (len(body) - seps[-1] - 1) == 2:
+        body = body[:seps[-1]].replace(",", "").replace(".", "") + body[seps[-1]:]
+    return _to_cents(body)
+
+
+# Date with one stray digit/char before the year: "03/1272026" -> 2026-03-12.
+# Only accepted when the repaired date is a REAL calendar date.
+_DATE_STRAY_RE = re.compile(r"\b(\d{1,2})/(\d{2})\d(\d{4})\b")
+
+
+def _norm_date_token_repaired(tok: str) -> str | None:
+    iso = _norm_date_token(tok)
+    if iso:
+        return iso
+    m = _DATE_STRAY_RE.search(tok)
+    if m:
+        return _parse_date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+    return None
+
+
+# OCR digit->letter confusions, restricted to positions where the field format
+# REQUIRES a letter (ICD-10 leading alpha, taxonomy 4th char).
+_OCR_DIGIT_TO_LETTER = {"0": "O", "1": "I", "2": "Z", "5": "S", "6": "G", "7": "T", "8": "B"}
+
+# Diagnosis context where the code's leading letter was OCR'd as a digit
+# ("Diagnosis Code: 110" -> I10).
+_DX_CONTEXT_DIGIT_RE = re.compile(
+    r"(?i)\b(?:diagnosis|dx|icd(?:-?10)?)\b[\s\S]{0,40}?\b([0125678]\d{2}(?:\.\d{1,4})?)\b")
+
+# Taxonomy whose 4th (always-alpha) char was OCR'd as a digit: "207000000X".
+_TAXONOMY_DIGIT_RE = re.compile(r"\b(\d{3})(\d)(\d{5}X)\b")
+
 # --- public entry point ----------------------------------------------------
 
 def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) -> dict:
@@ -154,6 +225,8 @@ def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) 
     out: dict = {"amounts": [], "dates": [], "cpt_codes": [], "identifiers": {}}
     if not text:
         return out
+    # Faxed forms OCR as value-then-label line pairs; canonicalize first.
+    text = _join_label_lines(text)
 
     label_map = dict(_LABEL_TO_CANONICAL)
     if extra_labels:
@@ -161,17 +234,19 @@ def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) 
             for syn in syns:
                 label_map[syn.lower()] = canon
     label_alt = "|".join(re.escape(s) for s in sorted(label_map, key=len, reverse=True))
+    # Separator-tolerant: degraded faxes mix up "," and "." ("$1.850.00").
     tagged_money = re.compile(
-        rf"(?i)\b({label_alt})\b[^\d$]{{0,40}}\$\s*(-?\d{{1,3}}(?:,\d{{3}})*(?:\.\d{{2}})?)")
+        rf"(?i)\b({label_alt})\b[^\d$]{{0,40}}\$\s*"
+        r"(-?\d{1,3}(?:[,.]\d{3})*(?:[.,]\d{2})?|-?\d+[.,]\d{2})")
 
     for m in tagged_money.finditer(text):
         raw_label = re.sub(r"\s+", " ", m.group(1)).lower()
         out["amounts"].append({"label": raw_label,
                                "canonical": label_map.get(raw_label, raw_label),
-                               "cents": _to_cents(m.group(2))})
+                               "cents": _to_cents_ocr(m.group(2))})
 
     for m in _TAGGED_DATE_RE.finditer(text):
-        iso = _norm_date_token(m.group(2).strip())
+        iso = _norm_date_token_repaired(m.group(2).strip())
         if iso:
             out["dates"].append({"label": re.sub(r"\s+", " ", m.group(1)).lower(), "iso": iso})
 
@@ -197,6 +272,14 @@ def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) 
     hcpcs = sorted({c for c in _HCPCS_RE.findall(text)})
     if hcpcs:
         out["hcpcs_codes"] = hcpcs[:50]
+    # Taxonomy 4th char is always alpha; recover when OCR made it a digit.
+    if "taxonomy" not in out["identifiers"]:
+        for m in _TAXONOMY_DIGIT_RE.finditer(text):
+            letter = _OCR_DIGIT_TO_LETTER.get(m.group(2))
+            if letter:
+                out["identifiers"]["taxonomy_repaired"] = m.group(1) + letter + m.group(3)
+                break
+
     remark = sorted({c.upper().replace("-", "") if c[:2].upper() in
                      {"CO", "PR", "OA", "PI", "CR"} else c.upper()
                      for c in _REMARK_CODE_RE.findall(text)})
@@ -205,9 +288,16 @@ def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) 
                      for c in remark})
     if remark:
         out["adjustment_codes"] = remark[:25]
-    dx = sorted({m.group(1).upper() for m in _DX_CONTEXT_RE.finditer(text)})
+    dx = {m.group(1).upper() for m in _DX_CONTEXT_RE.finditer(text)}
+    # OCR repair: leading letter of an ICD-10 read as a digit ("110" -> I10);
+    # accepted only when the repair yields a strict ICD-10 shape.
+    for m in _DX_CONTEXT_DIGIT_RE.finditer(text):
+        tok = m.group(1)
+        repaired = _OCR_DIGIT_TO_LETTER.get(tok[0], tok[0]) + tok[1:]
+        if re.fullmatch(r"[A-Z]\d{2}(?:\.\d{1,4})?", repaired):
+            dx.add(repaired)
     if dx:
-        out["diagnosis_codes"] = dx[:25]
+        out["diagnosis_codes"] = sorted(dx)[:25]
 
     return out
 

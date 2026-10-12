@@ -174,7 +174,9 @@ def _paddle():
                       # oneDNN PIR kernels crash on some CPU builds
                       # (ConvertPirAttribute2RuntimeAttribute); plain CPU
                       # inference is slower but never crashes intake.
-                      enable_mkldnn=os.environ.get("CHECK_PADDLE_MKLDNN", "0") == "1")
+                      enable_mkldnn=os.environ.get("CHECK_PADDLE_MKLDNN", "0") == "1",
+                      # cap the LONG side — see pipeline.stage_ocr comment
+                      text_det_limit_type="max")
             if ver:
                 kw["ocr_version"] = ver
             _paddle_ocr = PaddleOCR(**kw)

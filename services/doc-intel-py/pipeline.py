@@ -421,6 +421,12 @@ def stage_ocr(ctx: dict, cfg: dict) -> dict:
             use_doc_orientation_classify=cfg.get("use_doc_orientation_classify", True),
             use_doc_unwarping=cfg.get("use_doc_unwarping", True),
             use_textline_orientation=cfg.get("use_textline_orientation", True),
+            # Detection resize MUST cap the LONG side ("max"). Paddle's
+            # default for named det configs scales the SHORT side to the
+            # limit, ballooning enhanced pages (e.g. 524x1600 -> 4885x1600),
+            # which both OOMs the worker and destroys aspect fidelity.
+            text_det_limit_side_len=int(cfg.get("det_limit_side_len", 1600)),
+            text_det_limit_type="max",
         ),
     )
     # Batched inference: predict() accepts a LIST of images and pipelines
