@@ -3570,5 +3570,230 @@ const Views = (() => {
     catch (e) { alert(e.message); }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody };
+  // -------------------------------------------------------------------------
+  // Payment rails (moov-io stack) + OFAC screening
+  // -------------------------------------------------------------------------
+
+  function money(c) { return "$" + (Number(c || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 }); }
+
+  async function paymentsView() {
+    const box = el("view");
+    if (!can("CASE_MANAGER", "PM", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) { box.innerHTML = `<p class="error">Staff only.</p>`; return; }
+    const fin = can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN");
+    box.innerHTML = `
+      <h2>Payment rails</h2>
+      <div class="grid2">
+        <div class="card">
+          <h3>Bank accounts <span class="muted">(vault-sealed)</span></h3>
+          <div id="rail-accts"></div>
+          ${fin ? `<form class="inline-form" onsubmit="event.preventDefault(); Views.railAccountAddFn(this)">
+            <div class="grid2">
+              <select name="owner_type"><option>PARTY</option><option>ARBITRATOR</option><option>TPA</option><option>VENDOR</option></select>
+              <input name="owner_ref" placeholder="owner (party / sub / org)" required />
+              <input name="label" placeholder="label" />
+              <input name="routing_number" placeholder="routing (9 digits)" required />
+              <input name="account_number" placeholder="account number" required />
+              <select name="account_type"><option>CHECKING</option><option>SAVINGS</option></select>
+            </div>
+            <label class="chk"><input type="checkbox" name="ach_debit_authorized" /> ACH debit authorization on file</label>
+            <button class="mini">Add account</button></form>` : ""}
+        </div>
+        <div class="card">
+          <h3>OFAC screening</h3>
+          <div id="screen-status" class="muted">checking…</div>
+          <form class="inline-form" onsubmit="event.preventDefault(); Views.railScreenFn(this)">
+            <input name="name" placeholder="name to screen" required />
+            <select name="subject_type"><option>MANUAL</option><option>ARBITRATOR</option><option>TPA</option><option>PARTY</option><option>VENDOR</option></select>
+            <button class="mini">Screen</button></form>
+          <div id="screen-result"></div>
+        </div>
+      </div>
+      ${fin ? `<div class="card">
+        <h3>Generate payment files</h3>
+        <div class="grid2">
+          <form class="inline-form" onsubmit="event.preventDefault(); Views.railAchDebitFn(this)">
+            <b>ACH fee debit batch</b>
+            <textarea name="items" rows="3" placeholder="invoice_id:account_id pairs, one per line" required></textarea>
+            <input name="effective_date" type="date" />
+            <button class="mini">Build NACHA debit file</button></form>
+          <form class="inline-form" onsubmit="event.preventDefault(); Views.railWireFn(this)">
+            <b>Fedwire transfer</b>
+            <input name="payable_id" placeholder="payable id" required />
+            <input name="payment_account_id" placeholder="payment account id" required />
+            <button class="mini">Build wire file</button></form>
+          <div>
+            <b>Image cash letter (X9.37)</b>
+            <p class="muted">Bundles every cleared check not yet deposited.</p>
+            <button class="mini" onclick="Views.railIclFn()">Build cash letter</button></div>
+          <form class="inline-form" onsubmit="event.preventDefault(); Views.railMetro2Fn(this)">
+            <b>Metro 2 furnishing</b>
+            <input name="identification_number" placeholder="furnisher code (≥5 chars)" required />
+            <input name="threshold_days" type="number" value="60" min="30" />
+            <button class="mini">Build Metro 2 file</button></form>
+        </div>
+        <div id="rail-gen-result"></div>
+        <hr />
+        <form class="inline-form" onsubmit="event.preventDefault(); Views.railReturnsFn(this)">
+          <b>Ingest ACH return file</b>
+          <input type="file" name="returns" accept=".ach,.txt" required />
+          <button class="mini">Parse returns</button></form>
+        <div id="rail-returns-result"></div>
+      </div>` : ""}
+      <div class="card">
+        <h3>Payment files</h3>
+        <div class="inline-form"><select id="rail-kind" onchange="Views.railFilesBox()">
+          <option value="">all kinds</option><option>ACH_DEBIT</option><option>ACH_RETURN</option><option>WIRE</option><option>ICL</option><option>METRO2</option>
+        </select></div>
+        <div id="rail-files"></div>
+        <div id="rail-file-detail"></div>
+      </div>`;
+    railAccountsBox(); railFilesBox(); railScreenStatus();
+  }
+
+  async function railAccountsBox() {
+    const box = document.getElementById("rail-accts");
+    try {
+      const r = await Api.program.railAccounts();
+      const accts = r.accounts || [];
+      box.innerHTML = accts.length ? `<table><thead><tr><th>Owner</th><th>Bank</th><th>Account</th><th>Type</th><th>Debit auth</th><th></th></tr></thead><tbody>
+        ${accts.map(a => `<tr><td>${esc(a.owner_type)} ${esc(a.owner_ref)}<br /><span class="muted">${esc(a.label || "")}</span></td>
+          <td>${esc(a.routing_number)} ${a.bank_name ? `<br /><span class="muted">${esc(a.bank_name)}</span>` : ""}</td>
+          <td>••••${esc(a.account_last4)}</td><td>${esc(a.account_type)}</td>
+          <td>${a.ach_debit_authorized ? "✔" : "—"}</td>
+          <td>${can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<button class="mini bad" onclick="Views.railAccountDelFn('${a.id}')">remove</button>` : ""}</td></tr>`).join("")}
+        </tbody></table>` : '<p class="muted">No payment accounts yet.</p>';
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function railAccountAddFn(form) {
+    const f = form;
+    try {
+      const rt = f.routing_number.value.trim();
+      if (rt) { await Api.program.railRouting(rt); } // checksum + bank name lookup first
+      await Api.program.railAccountAdd({
+        owner_type: f.owner_type.value, owner_ref: f.owner_ref.value.trim(), label: f.label.value.trim(),
+        routing_number: rt, account_number: f.account_number.value.trim(),
+        account_type: f.account_type.value, ach_debit_authorized: f.ach_debit_authorized.checked,
+      });
+      f.reset(); railAccountsBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function railAccountDelFn(id) {
+    if (!confirm("Remove this payment account?")) return;
+    try { await Api.program.railAccountDel(id); railAccountsBox(); } catch (e) { alert(e.message); }
+  }
+
+  function railShowGenerated(elId, r) {
+    document.getElementById(elId).innerHTML = `
+      <p class="ok">Generated <b>${esc(r.reference)}</b> — ${r.entry_count || r.records || r.check_count || 1} item(s), ${money(r.total_cents)}</p>
+      <button class="mini" onclick="Views.railDownload('${r.file_id}', '${esc(r.filename)}')">Download ${esc(r.filename)}</button>`;
+  }
+
+  async function railDownload(fileId, filename) {
+    try {
+      const r = await Api.program.railFileBody(fileId);
+      const blob = new Blob([r.file], { type: "text/plain" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = filename || r.filename; a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function railAchDebitFn(form) {
+    try {
+      const items = form.items.value.split(/\n+/).map(l => l.trim()).filter(Boolean).map(l => {
+        const [invoice_id, payment_account_id] = l.split(":");
+        return { invoice_id: (invoice_id || "").trim(), payment_account_id: (payment_account_id || "").trim() };
+      });
+      const r = await Api.program.railAchDebits({ items, effective_date: form.effective_date.value || undefined });
+      railShowGenerated("rail-gen-result", r); railFilesBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function railWireFn(form) {
+    try {
+      const r = await Api.program.railWire({ payable_id: form.payable_id.value.trim(), payment_account_id: form.payment_account_id.value.trim() });
+      railShowGenerated("rail-gen-result", r); railFilesBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function railIclFn() {
+    if (!confirm("Build an X9.37 cash letter from all cleared, un-deposited checks?")) return;
+    try {
+      const r = await Api.program.railIcl();
+      railShowGenerated("rail-gen-result", r); railFilesBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function railMetro2Fn(form) {
+    if (!confirm("Metro 2 furnishing is a regulated FCRA act. Generate the file for seriously delinquent fee accounts?")) return;
+    try {
+      const r = await Api.program.railMetro2({ identification_number: form.identification_number.value.trim(), threshold_days: Number(form.threshold_days.value) || 60 });
+      railShowGenerated("rail-gen-result", r); railFilesBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function railReturnsFn(form) {
+    const f = form.returns.files[0];
+    if (!f) return;
+    try {
+      const raw = await f.text();
+      const r = await Api.program.railAchReturns(raw);
+      document.getElementById("rail-returns-result").innerHTML =
+        `<p class="ok">${r.applied} return(s) applied to payment items; ${r.unmatched} unmatched.</p>`;
+      railFilesBox();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function railFilesBox() {
+    const box = document.getElementById("rail-files");
+    const kind = document.getElementById("rail-kind")?.value || "";
+    try {
+      const r = await Api.program.railFiles(kind);
+      const files = r.files || [];
+      box.innerHTML = files.length ? `<table><thead><tr><th>When</th><th>Kind</th><th>Reference</th><th>Items</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>
+        ${files.map(f => `<tr><td>${esc(String(f.created_at).slice(0, 16))}</td><td>${esc(f.kind)}</td><td>${esc(f.reference)}</td>
+          <td>${f.item_count}</td><td>${money(f.total_cents)}</td><td>${esc(f.status)}</td>
+          <td><button class="mini ghost" onclick="Views.railFileDetailFn('${f.id}')">items</button>
+              ${can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<button class="mini ghost" onclick="Views.railDownload('${f.id}')">file</button>` : ""}</td></tr>`).join("")}
+        </tbody></table>` : '<p class="muted">No payment files yet.</p>';
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function railFileDetailFn(id) {
+    const box = document.getElementById("rail-file-detail");
+    try {
+      const r = await Api.program.railFileItems(id);
+      const items = r.items || [];
+      box.innerHTML = items.length ? `<table><thead><tr><th>Amount</th><th>Trace</th><th>Status</th><th>Return</th></tr></thead><tbody>
+        ${items.map(i => `<tr><td>${money(i.amount_cents)}</td><td>${esc(i.trace_number)}</td>
+          <td>${i.status === "RETURNED" ? '<span class="badge bad">RETURNED</span>' : esc(i.status)}</td>
+          <td>${i.return_code ? esc(i.return_code + " — " + (i.return_reason || "")) : "—"}</td></tr>`).join("")}
+        </tbody></table>` : '<p class="muted">No items recorded.</p>';
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  async function railScreenStatus() {
+    const box = document.getElementById("screen-status");
+    try {
+      const r = await Api.program.screeningStatus();
+      box.innerHTML = r.enabled
+        ? `SDN list: <b>${(r.entity_count || 0).toLocaleString()}</b> entities, refreshed ${r.refreshed_at ? esc(String(r.refreshed_at).slice(0, 16)) : "never"}${r.last_error ? ` — <span class="error">${esc(r.last_error)}</span>` : ""}`
+        : "Screening disabled (WATCHMAN_ENABLED=false).";
+    } catch (e) { box.textContent = e.message; }
+  }
+
+  async function railScreenFn(form) {
+    const box = document.getElementById("screen-result");
+    try {
+      const r = await Api.program.screeningCheck({ name: form.name.value.trim(), subject_type: form.subject_type.value });
+      box.innerHTML = r.matched
+        ? `<p class="error"><b>POTENTIAL MATCH</b> (score ${r.top_score.toFixed(2)}) — recorded for compliance review.</p>
+           <table><tbody>${r.matches.map(m => `<tr><td>${esc(m.name)}</td><td>${m.score.toFixed(2)}</td><td class="muted">${esc(m.source_id)}</td></tr>`).join("")}</tbody></table>`
+        : `<p class="ok">No match above threshold. Screening recorded (id ${r.screening_id}).</p>`;
+    } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  }
+
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn };
 })();

@@ -91,3 +91,82 @@ CREATE TABLE IF NOT EXISTS public.checks (
 );
 CREATE INDEX IF NOT EXISTS checks_tenant ON public.checks (tenant, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS checks_invoice ON public.checks (invoice_id);
+-- ---------------------------------------------------------------------------
+-- Payment rails (moov-io stack): vault-sealed bank accounts, generated payment
+-- files (ACH debits, Fedwire, X9.37 image cash letters, Metro 2 furnishing),
+-- and OFAC sanctions screening results.
+-- ---------------------------------------------------------------------------
+
+-- Bank details for parties/arbitrators/TPAs/vendors. The account number is
+-- NEVER stored in plaintext: vault /docs/seal encrypts under the tenant data
+-- key (AAD = object key), the DB holds only the sealed blob + last4.
+CREATE TABLE IF NOT EXISTS public.payment_accounts (
+    id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant                text NOT NULL,
+    owner_type            text NOT NULL,          -- PARTY|ARBITRATOR|TPA|VENDOR
+    owner_ref             text NOT NULL,          -- party name / user sub / org code
+    label                 text NOT NULL DEFAULT '',
+    routing_number        text NOT NULL,          -- 9-digit ABA (validated, fed-lookup)
+    bank_name             text NOT NULL DEFAULT '',-- from FedACH directory when available
+    account_sealed        bytea NOT NULL,         -- vault-sealed account number
+    account_last4         text NOT NULL,
+    account_type          text NOT NULL DEFAULT 'CHECKING', -- CHECKING|SAVINGS
+    ach_debit_authorized  boolean NOT NULL DEFAULT false,   -- NACHA authorization on file
+    created_by            text NOT NULL DEFAULT '',
+    created_at            timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS payment_accounts_tenant ON public.payment_accounts (tenant, owner_type, owner_ref);
+
+-- Every payment file the platform generates or ingests, one row per file.
+CREATE TABLE IF NOT EXISTS public.payment_files (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant       text NOT NULL,
+    kind         text NOT NULL,   -- ACH_DEBIT|ACH_RETURN|WIRE|ICL|METRO2
+    reference    text NOT NULL,   -- human-facing file reference
+    item_count   int  NOT NULL DEFAULT 0,
+    total_cents  bigint NOT NULL DEFAULT 0,
+    status       text NOT NULL DEFAULT 'GENERATED', -- GENERATED|SENT|ACKED|RETURNED|FAILED
+    file_body    text NOT NULL DEFAULT '',          -- outbound file contents
+    detail       jsonb NOT NULL DEFAULT '{}',
+    created_by   text NOT NULL DEFAULT '',
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (tenant, kind, reference)
+);
+CREATE INDEX IF NOT EXISTS payment_files_tenant ON public.payment_files (tenant, kind, created_at DESC);
+
+-- Per-item tracing for generated files (and the item-level target of ACH
+-- returns: a return file carries original trace numbers back to these rows).
+CREATE TABLE IF NOT EXISTS public.payment_file_items (
+    id            bigserial PRIMARY KEY,
+    tenant        text NOT NULL,
+    file_id       uuid NOT NULL REFERENCES public.payment_files(id),
+    invoice_id    uuid,
+    payable_id    uuid,
+    check_id      uuid,
+    amount_cents  bigint NOT NULL DEFAULT 0,
+    trace_number  text NOT NULL DEFAULT '',
+    status        text NOT NULL DEFAULT 'PENDING',  -- PENDING|SENT|RETURNED|SETTLED
+    return_code   text,
+    return_reason text,
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS payment_file_items_trace ON public.payment_file_items (tenant, trace_number);
+CREATE INDEX IF NOT EXISTS payment_file_items_file ON public.payment_file_items (file_id);
+
+-- OFAC sanctions screening record (watchman-backed). Append-only: every
+-- screening decision is preserved for examiner review.
+CREATE TABLE IF NOT EXISTS public.screening_checks (
+    id                bigserial PRIMARY KEY,
+    tenant            text NOT NULL,
+    subject_type      text NOT NULL,     -- ARBITRATOR|TPA|PARTY|VENDOR|MANUAL
+    subject_ref       text NOT NULL DEFAULT '',
+    query_name        text NOT NULL,
+    matched           boolean NOT NULL,
+    top_score         numeric(5,4) NOT NULL DEFAULT 0,
+    matches           jsonb NOT NULL DEFAULT '[]',
+    list_entity_count int NOT NULL DEFAULT 0,
+    list_refreshed_at timestamptz,
+    screened_by       text NOT NULL DEFAULT '',
+    created_at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS screening_checks_tenant ON public.screening_checks (tenant, subject_type, created_at DESC);

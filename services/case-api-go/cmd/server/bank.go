@@ -18,6 +18,7 @@ package main
 // outbound emits bank-standard NACHA, inbound speaks bank-standard BAI2.
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,6 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/moov-io/ach"
 )
 
 // BankConfig lives at config.bank in public.program_rules.
@@ -118,8 +121,10 @@ func numeric(s string, n int) string { // right-justified, zero-filled
 	return strings.Repeat("0", n-len(s)) + s
 }
 
-// generateNACHA builds a balanced PPD credit-only file (service class 220).
-// Pure: fully unit-testable without a database.
+// generateNACHA builds a balanced PPD credit-only file (service class 220)
+// on the moov-io/ach engine: batch/file construction, control totals, blocking
+// and NACHA rule validation all come from the library; the hand-rolled record
+// writer it replaced had no validation layer. Pure: unit-testable without a DB.
 func generateNACHA(cfg NachaConfig, entries []nachaDestination, amounts []int64, ids []string, eff time.Time, fileIDMod byte) (string, error) {
 	if len(entries) == 0 || len(entries) != len(amounts) || len(entries) != len(ids) {
 		return "", fmt.Errorf("entries/amounts/ids length mismatch")
@@ -131,54 +136,64 @@ func generateNACHA(cfg NachaConfig, entries []nachaDestination, amounts []int64,
 	if desc == "" {
 		desc = "IDRE PMT"
 	}
-	recs := []string{}
-	// File header
-	// "1"+"01": record type + priority code. Destination/origin are 10-char
-	// fields carrying a blank-leading 9-digit routing / tax ID.
-	recs = append(recs, "1"+"01"+
-		" "+numeric(cfg.ImmediateDestination, 9)+" "+numeric(cfg.ImmediateOrigin, 9)+
-		eff.Format("060102")+eff.Format("1504")+string(fileIDMod)+"094"+"10"+"1"+
-		alpha(cfg.CompanyName, 23)+alpha(cfg.CompanyName, 23)+"        ")
-	// Batch header
-	recs = append(recs, "5"+"220"+alpha(cfg.CompanyName, 16)+alpha("", 20)+
-		numeric(cfg.ImmediateOrigin, 10)+"PPD"+alpha(desc, 10)+
-		alpha(eff.Format("060102"), 6)+alpha(eff.Format("060102"), 6)+"   "+"1"+cfg.OriginatingDFI+numeric("1", 7))
-	// Entries
-	var hash, total uint64
+	fh := ach.NewFileHeader()
+	fh.ImmediateDestination = cfg.ImmediateDestination
+	fh.ImmediateOrigin = cfg.ImmediateOrigin
+	fh.FileCreationDate = eff.Format("060102")
+	fh.FileCreationTime = eff.Format("1504")
+	fh.FileIDModifier = string(fileIDMod)
+	fh.ImmediateDestinationName = "RECEIVING BANK"
+	fh.ImmediateOriginName = cfg.CompanyName
+	fh.ReferenceCode = "IDREPMT"
+	f := ach.NewFile()
+	f.Header = fh
+
+	bh := ach.NewBatchHeader()
+	bh.ServiceClassCode = ach.CreditsOnly
+	bh.CompanyName = cfg.CompanyName
+	bh.CompanyIdentification = cfg.ImmediateOrigin
+	bh.StandardEntryClassCode = ach.PPD
+	bh.CompanyEntryDescription = desc
+	bh.CompanyDescriptiveDate = eff.Format("060102")
+	bh.EffectiveEntryDate = eff.Format("060102")
+	bh.ODFIIdentification = cfg.OriginatingDFI
+	batch := ach.NewBatchPPD(bh)
+
 	for i, e := range entries {
 		rt := numeric(e.RoutingNumber, 9)
 		if !validRouting(rt) {
 			return "", fmt.Errorf("entry %d: invalid routing number", i)
 		}
-		tcode := "22" // checking credit
+		tcode := ach.CheckingCredit
 		if strings.EqualFold(e.AccountType, "savings") {
-			tcode = "32"
+			tcode = ach.SavingsCredit
 		}
-		h, _ := strconv.ParseUint(rt[:8], 10, 64)
-		hash += h
-		total += uint64(amounts[i])
-		trace := cfg.OriginatingDFI + numeric(strconv.Itoa(i+1), 7)
-		recs = append(recs, "6"+tcode+rt+alpha(e.AccountNumber, 17)+
-			numeric(strconv.FormatInt(amounts[i], 10), 10)+alpha(ids[i], 15)+
-			alpha(e.Name, 22)+"  "+"0"+trace)
+		entry := ach.NewEntryDetail()
+		entry.TransactionCode = tcode
+		entry.RDFIIdentification = rt[:8]
+		entry.CheckDigit = rt[8:9]
+		entry.DFIAccountNumber = e.AccountNumber
+		entry.Amount = int(amounts[i])
+		entry.IdentificationNumber = ids[i]
+		entry.IndividualName = e.Name
+		entry.TraceNumber = cfg.OriginatingDFI + numeric(strconv.Itoa(i+1), 7)
+		batch.AddEntry(entry)
 	}
-	n := len(entries)
-	hash %= 1e10
-	// Batch control
-	recs = append(recs, "8"+"220"+numeric(strconv.Itoa(n), 6)+
-		numeric(strconv.FormatUint(hash, 10), 10)+numeric("0", 12)+
-		numeric(strconv.FormatUint(total, 10), 12)+numeric(cfg.ImmediateOrigin, 10)+
-		alpha("", 19)+alpha("", 6)+cfg.OriginatingDFI+numeric("1", 7))
-	// File control (block count computed with padding)
-	head := len(recs) + 1
-	blocks := (head + 9) / 10
-	recs = append(recs, "9"+"000001"+numeric(strconv.Itoa(blocks), 6)+
-		numeric(strconv.Itoa(n), 8)+numeric(strconv.FormatUint(hash, 10), 10)+
-		numeric("0", 12)+numeric(strconv.FormatUint(total, 10), 12)+alpha("", 39))
-	for len(recs) < blocks*10 {
-		recs = append(recs, strings.Repeat("9", 94))
+	if err := batch.Create(); err != nil {
+		return "", err
 	}
-	return strings.Join(recs, "\n") + "\n", nil
+	f.AddBatch(batch)
+	if err := f.Create(); err != nil {
+		return "", err
+	}
+	if err := f.Validate(); err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := ach.NewWriter(&buf).Write(f); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 // createNachaPayout: FINANCE generates an ACH file from open payables that

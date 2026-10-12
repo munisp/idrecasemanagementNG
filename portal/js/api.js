@@ -23,6 +23,19 @@ const Api = (() => {
     return data;
   }
 
+  // reqRaw: raw-text bodies (NACHA return files are not JSON).
+  async function reqRaw(method, path, raw) {
+    const tok = await Auth.token();
+    if (!tok) throw new Error("unauthenticated");
+    const resp = await fetch(window.IDRE_CONFIG.apiBase + path, {
+      method, headers: { Authorization: `Bearer ${tok}`, "Content-Type": "text/plain" }, body: raw,
+    });
+    if (resp.status === 401) { Auth.login(); throw new Error("redirecting"); }
+    const data = resp.headers.get("content-type")?.includes("json") ? await resp.json() : await resp.text();
+    if (!resp.ok) throw new Error(typeof data === "object" && data.error ? data.error : `HTTP ${resp.status}`);
+    return data;
+  }
+
   async function download(path, fallbackName) {
     const tok = await Auth.token();
     if (!tok) throw new Error("unauthenticated");
@@ -240,6 +253,21 @@ const Api = (() => {
       qaGet: (id) => req("GET", `${t()}/qa/${id}`),
       qaDecision: (id, decision, note, editedBody) => req("POST", `${t()}/qa/${id}/decision`, { decision, note, edited_body: editedBody || undefined }),
       mailJournal: (opts) => req("GET", `${t()}/correspondence${qs(opts || {})}`),
+      // Payment rails (moov-io): vault-sealed accounts, ACH/wire/ICL/Metro2 files, OFAC screening
+      railAccounts: () => req("GET", `${t()}/payments/accounts`),
+      railAccountAdd: (body) => req("POST", `${t()}/payments/accounts`, body),
+      railAccountDel: (id) => req("DELETE", `${t()}/payments/accounts/${id}`),
+      railRouting: (num) => req("GET", `${t()}/payments/routing/${encodeURIComponent(num)}`),
+      railAchDebits: (body) => req("POST", `${t()}/payments/ach/debits`, body),
+      railAchReturns: (raw) => reqRaw("POST", `${t()}/payments/ach/returns`, raw),
+      railWire: (body) => req("POST", `${t()}/payments/wire`, body),
+      railIcl: () => req("POST", `${t()}/payments/icl`, {}),
+      railMetro2: (body) => req("POST", `${t()}/payments/metro2`, body),
+      railFiles: (kind) => req("GET", `${t()}/payments/files${qs(kind ? { kind } : {})}`),
+      railFileItems: (id) => req("GET", `${t()}/payments/files/${id}/items`),
+      railFileBody: (id) => req("GET", `${t()}/payments/files/${id}/file`),
+      screeningStatus: () => req("GET", `${t()}/screening/status`),
+      screeningCheck: (body) => req("POST", `${t()}/screening/check`, body),
       intake: (opts) => req("GET", `${t()}/intake${qs(opts || {})}`),
       createIntake: (p) => req("POST", `${t()}/intake`, p),
       intakeBulk: (p) => req("POST", `${t()}/intake/bulk`, p),

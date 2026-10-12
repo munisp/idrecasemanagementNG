@@ -143,7 +143,7 @@
   if (has("CASE_MANAGER") && App.feature("voice_console")) links.push(["#/voice", "☎", "Voice console"]);
   if (has("FEDERAL_ADMIN", "STATE_AUDITOR", "PLATFORM_ADMIN")) links.push(["#/reports", "◫", "Reports"]);
   if (has("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/time", "⏱", "Team time"]);
-  if (has("CASE_MANAGER", "FINANCE", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR")) links.push(["#/mail", "✉", "Mail log"]);
+  if (has("CASE_MANAGER", "FINANCE", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR")) links.push(["#/mail", "✉", "Mail log"]); links.push(["#/payments", "🏦", "Payments"]);
   if (has("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
     links.push(["#/billing", "🧾", "Billing"]);
     links.push(["#/arap", "⚖️", "AR / AP"]);
@@ -252,6 +252,7 @@
     [/^#\/timesheet$/, Views.myTimesheet],
     [/^#\/time$/, Views.timeReport],
     [/^#\/mail$/, Views.mailLog],
+    [/^#\/payments$/, Views.paymentsView],
     [/^#\/billing$/, Views.billingInvoices],
     [/^#\/arap$/, Views.arapView],
     [/^#\/recon$/, Views.reconView],
