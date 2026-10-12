@@ -231,6 +231,7 @@ def persist(evt: dict, ctx: dict) -> None:
                  "ocr_confidence": ctx.get("ocr_confidence"),
                  "ocr_low_confidence": ctx.get("ocr_low_confidence", False),
                  "ocr_pages": ctx.get("ocr_pages", []),
+                 "extracted_fields": ctx.get("extracted_fields", {}),
              })),
         )
     # Best-effort, like the Temporal signal call below it: the Postgres

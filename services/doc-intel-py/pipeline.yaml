@@ -102,6 +102,10 @@ stages:
   - name: normalize          # deterministic canonicalization: amounts -> floats,
     enabled: true            # dates -> ISO, NPI/code shape checks (never overwrites raw)
 
+  - name: fields             # deterministic typed-field extraction (amounts, dates,
+    enabled: true            # NPI/TIN/claim, CPT/HCPCS) + checksum cross-checks —
+                             # no LLM, offline; feeds eligibility evidence + validate()
+
   - name: verify             # grounding check: every extracted value must literally
     enabled: true            # appear in document text; per-field confidence map
 

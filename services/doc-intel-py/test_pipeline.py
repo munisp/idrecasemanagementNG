@@ -443,3 +443,79 @@ def test_word_overlap():
     assert pl._word_overlap("allowed amount $120", "allowed amount $120") == 1.0
     assert pl._word_overlap("cat dog", "sun moon") == 0.0
     assert 0 < pl._word_overlap("allowed amount claim", "allowed amount number") < 1
+
+
+
+# --- deterministic field extraction (stage_fields) --------------------------
+
+import fields as _fields
+
+
+BILL_TEXT = """
+Bright Path Surgery Center
+Statement Date: 03/15/2026
+Claim Number: CLM-88420317
+Rendering Provider NPI: 1234567893
+TIN: 59-1234567
+Date of Service: 2026-02-28
+CPT 99283   Emergency dept visit        $450.00
+CPT 70450   CT head                     $1,250.00
+Total Billed: $1,700.00
+Patient Responsibility: $340.00
+"""
+
+
+def test_extract_fields_amounts_and_dates():
+    f = _fields.extract_fields(BILL_TEXT)
+    labels = {a["label"]: a["cents"] for a in f["amounts"]}
+    assert labels["total billed"] == 170000
+    assert labels["patient responsibility"] == 34000
+    dates = {d["label"]: d["iso"] for d in f["dates"]}
+    assert dates["statement date"] == "2026-03-15"
+    assert dates["date of service"] == "2026-02-28"
+
+
+def test_extract_fields_identifiers_and_codes():
+    f = _fields.extract_fields(BILL_TEXT)
+    assert f["identifiers"]["npi"]["value"] == "1234567893"
+    assert f["identifiers"]["npi"]["luhn_valid"] is True
+    assert f["identifiers"]["tin"] == "591234567"
+    assert f["identifiers"]["claim_number"] == "CLM-88420317"
+    assert "99283" in f["cpt_codes"]
+
+
+def test_extract_fields_empty_text():
+    f = _fields.extract_fields("")
+    assert f["amounts"] == [] and f["dates"] == [] and f["identifiers"] == {}
+
+
+def test_npi_luhn_check():
+    assert _fields.valid_npi("1234567893") is True
+    assert _fields.valid_npi("1234567890") is False
+    assert _fields.valid_npi("123") is False
+
+
+def test_cross_check_flags_bad_npi():
+    f = {"identifiers": {"npi": {"value": "1234567890", "luhn_valid": False}}, "amounts": []}
+    assert any("Luhn" in i for i in _fields.cross_check(f))
+
+
+def test_cross_check_conflicting_totals():
+    f = {"identifiers": {}, "amounts": [
+        {"label": "total billed", "cents": 100000},
+        {"label": "total due", "cents": 90000},
+    ]}
+    assert any("Conflicting total" in i for i in _fields.cross_check(f))
+
+
+def test_stage_fields_docked_in_pipeline():
+    out = pl.stage_fields({"text": BILL_TEXT}, {})
+    assert out["extracted_fields"]["identifiers"]["tin"] == "591234567"
+    assert out["field_check_issues"] == []
+
+
+def test_validate_surfaces_field_check_issues():
+    ctx = {"extracted": {}, "field_check_issues": ["NPI 1234567890 fails Luhn checksum"]}
+    out = pl.stage_validate(ctx, {}, None)
+    assert any("Luhn" in f["issue"] for f in out["findings"])
+    assert out["status"] == "ANALYZED_WITH_FINDINGS"

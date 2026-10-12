@@ -803,6 +803,20 @@ def _norm_date(v: Any) -> str | None:
     return None
 
 
+def stage_fields(ctx: dict, cfg: dict) -> dict:
+    """Deterministic typed-field extraction over the document text (amounts,
+    dates, NPI/TIN/claim identifiers, CPT/HCPCS codes). Pure regex + checksum
+    — no LLM, no vendor SDK — so these fields are trustworthy enough to feed
+    eligibility evidence directly. Cross-checks (Luhn failures, conflicting
+    totals) become validate() findings via ctx['field_check_issues']."""
+    import fields as _fields
+    text = ctx.get("text", "") or ""
+    ex = _fields.extract_fields(text)
+    ctx["extracted_fields"] = ex
+    ctx["field_check_issues"] = _fields.cross_check(ex)
+    return ctx
+
+
 def stage_normalize(ctx: dict, cfg: dict) -> dict:
     """Deterministic canonicalization of extracted values: amounts to floats,
     dates to ISO, identifiers de-formatted and shape-checked. Normalized
@@ -950,6 +964,11 @@ def stage_validate(ctx: dict, cfg: dict, case: dict | None) -> dict:
     # Shape warnings from normalize().
     for w in ctx.get("normalize_warnings", []):
         findings.append({"field": w["field"], "issue": w["issue"]})
+    # Deterministic field cross-checks from stage_fields (Luhn failures,
+    # conflicting totals): deterministic evidence beats LLM output, so these
+    # always surface.
+    for issue in ctx.get("field_check_issues", []):
+        findings.append({"field": "extracted_fields", "issue": issue})
     ctx["findings"] = findings
     ctx["status"] = "ANALYZED" if not findings else "ANALYZED_WITH_FINDINGS"
     return ctx
@@ -963,6 +982,7 @@ def stage_index(ctx: dict, cfg: dict) -> dict:
         "doc_type": ctx.get("doc_type"),
         "text": ctx.get("text", "")[:100000],
         "extracted": ctx.get("extracted", {}),
+        "extracted_fields": ctx.get("extracted_fields", {}),
         "normalized": ctx.get("normalized", {}),
         "field_confidence": ctx.get("field_confidence", {}),
         "status": ctx.get("status"),
