@@ -1,6 +1,9 @@
 """TPA onboarding package validation (feature flag: tpa_onboarding).
 
-Consumes `tpa_doc.uploaded` events (published by case-api tpa_onboarding.go):
+Consumes `tpa_doc.uploaded` events (published by case-api tpa_onboarding.go
+and healthplan_onboarding.go — evt["actor"] is "tpa" (default) or
+"healthplan"; table prefix and the offer-substantiation expectation follow
+the actor):
 
   DISCRETE  — one event per slot upload; validate the document against the
               slot's expectation and write the verdict onto
@@ -72,7 +75,14 @@ def _seal(vault: str, headers: dict, tenant: str, key: str, raw: bytes) -> bytes
     return base64.b64decode(resp.json()["sealed_b64"])
 
 
-def _verdict(slot: str, filename: str, text: str, classify_text, extract_fields) -> tuple[str, list[dict]]:
+# Payer-side expectation: a health plan's offer substantiation must document
+# the QPA it derived — the median contracted rate methodology is the plan's
+# whole case in baseball-style arbitration.
+QPA_KEYWORDS = ["qualifying payment amount", "qpa", "median contracted rate"]
+
+
+def _verdict(slot: str, filename: str, text: str, classify_text, extract_fields,
+             actor: str = "tpa") -> tuple[str, list[dict]]:
     """(status, reasons). Conservative: only a confident wrong-type is a
     REJECTED; ambiguity and illegibility go to NEEDS_REVIEW for a human."""
     reasons: list[dict] = []
@@ -107,6 +117,12 @@ def _verdict(slot: str, filename: str, text: str, classify_text, extract_fields)
             reasons.append({"code": "FIELDS_MISSING",
                             "detail": "no CPT/HCPCS codes extracted"})
             return "NEEDS_REVIEW", reasons
+        if (actor == "healthplan" and slot == "OFFER_SUBSTANTIATION"
+                and not any(k in body.lower() for k in QPA_KEYWORDS)):
+            reasons.append({"code": "QPA_DOC_MISSING",
+                            "detail": "health plan offer substantiation does not document the "
+                                      "qualifying payment amount / median contracted rate methodology"})
+            return "NEEDS_REVIEW", reasons
         return "ACCEPTED", reasons
     # Keyword-floor slots.
     low = body.lower()
@@ -117,10 +133,10 @@ def _verdict(slot: str, filename: str, text: str, classify_text, extract_fields)
     return "NEEDS_REVIEW", reasons
 
 
-def _refresh_package(conn, tenant: str, package_id: str) -> str:
+def _refresh_package(conn, tenant: str, package_id: str, prefix: str = "tpa") -> str:
     """Package status from its slot verdicts. READY iff all six ACCEPTED."""
     rows = conn.execute(
-        "SELECT slot, status FROM public.tpa_package_docs WHERE tenant=%s AND package_id=%s",
+        f"SELECT slot, status FROM public.{prefix}_package_docs WHERE tenant=%s AND package_id=%s",
         (tenant, package_id)).fetchall()
     by_slot = {r[0]: r[1] for r in rows}
     if all(by_slot.get(s) == "ACCEPTED" for s in SLOTS):
@@ -130,17 +146,29 @@ def _refresh_package(conn, tenant: str, package_id: str) -> str:
     else:
         status = "VALIDATING"
     conn.execute(
-        "UPDATE public.tpa_packages SET status=%s, updated_at=now() WHERE tenant=%s AND id=%s",
+        f"UPDATE public.{prefix}_packages SET status=%s, updated_at=now() WHERE tenant=%s AND id=%s",
         (status, tenant, package_id))
-    # A READY package can complete the client's docs gate.
-    conn.execute(
-        """UPDATE public.tpa_clients c SET onboarding_status='READY'
-           WHERE c.tenant=%s AND c.id=(SELECT client_id FROM public.tpa_packages WHERE id=%s)
-             AND %s='READY'
-             AND c.npi IS NOT NULL AND c.tin IS NOT NULL AND c.address IS NOT NULL
-             AND EXISTS (SELECT 1 FROM public.tpa_payment_methods m
-                          WHERE m.tenant=c.tenant AND m.client_id=c.id AND m.verified AND m.status='ACTIVE')""",
-        (tenant, package_id, status))
+    # A READY package can complete the party's docs gate (employer groups on
+    # the health-plan rail have no NPI requirement).
+    if prefix == "tpa":
+        conn.execute(
+            """UPDATE public.tpa_clients c SET onboarding_status='READY'
+               WHERE c.tenant=%s AND c.id=(SELECT client_id FROM public.tpa_packages WHERE id=%s)
+                 AND %s='READY'
+                 AND c.npi IS NOT NULL AND c.tin IS NOT NULL AND c.address IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM public.tpa_payment_methods m
+                              WHERE m.tenant=c.tenant AND m.client_id=c.id AND m.verified AND m.status='ACTIVE')""",
+            (tenant, package_id, status))
+    else:
+        conn.execute(
+            """UPDATE public.hp_parties c SET onboarding_status='READY'
+               WHERE c.tenant=%s AND c.id=(SELECT party_id FROM public.hp_packages WHERE id=%s)
+                 AND %s='READY'
+                 AND c.tin IS NOT NULL AND c.address IS NOT NULL
+                 AND (c.party_type='EMPLOYER_GROUP' OR c.npi IS NOT NULL)
+                 AND EXISTS (SELECT 1 FROM public.hp_payment_methods m
+                              WHERE m.tenant=c.tenant AND m.party_id=c.id AND m.verified AND m.status='ACTIVE')""",
+            (tenant, package_id, status))
     return status
 
 
@@ -152,19 +180,22 @@ def handle_tpa_doc(evt: dict, ctx: dict) -> None:
     tenant = evt.get("tenant")
     if not tenant:
         return
-    if not ctx["features_for"](tenant).get("tpa_onboarding", True):
+    actor = evt.get("actor") or "tpa"
+    flag = "healthplan_onboarding" if actor == "healthplan" else "tpa_onboarding"
+    if not ctx["features_for"](tenant).get(flag, True):
         return
     if evt.get("merged"):
-        _handle_merged(evt, ctx)
+        _handle_merged(evt, ctx, actor)
     else:
-        _handle_discrete(evt, ctx)
+        _handle_discrete(evt, ctx, actor)
 
 
-def _handle_discrete(evt: dict, ctx: dict) -> None:
+def _handle_discrete(evt: dict, ctx: dict, actor: str = "tpa") -> None:
     tenant, doc_id = evt["tenant"], evt["package_doc_id"]
+    prefix = "hp" if actor == "healthplan" else "tpa"
     with psycopg.connect(ctx["dsn"]) as conn:
         conn.execute(
-            "UPDATE public.tpa_package_docs SET status='ANALYZING' WHERE tenant=%s AND id=%s",
+            f"UPDATE public.{prefix}_package_docs SET status='ANALYZING' WHERE tenant=%s AND id=%s",
             (tenant, doc_id))
         conn.commit()
     try:
@@ -176,24 +207,25 @@ def _handle_discrete(evt: dict, ctx: dict) -> None:
         else:
             text = raw.decode("utf-8", "ignore")
         status, reasons = _verdict(evt["slot"], evt.get("filename") or "", text,
-                                   ctx["classify_text"], ctx["extract_fields"])
+                                   ctx["classify_text"], ctx["extract_fields"], actor)
     except Exception as exc:  # noqa: BLE001 — analyzer outage must fail open
         status, reasons = "NEEDS_REVIEW", [{"code": "ANALYZER_ERROR", "detail": str(exc)[:300]}]
     with psycopg.connect(ctx["dsn"]) as conn:
         conn.execute(
-            """UPDATE public.tpa_package_docs
+            f"""UPDATE public.{prefix}_package_docs
                SET status=%s, reasons=%s::jsonb, analyzed_at=now()
                WHERE tenant=%s AND id=%s""",
             (status, json.dumps(reasons), tenant, doc_id))
-        pkg_status = _refresh_package(conn, tenant, evt["package_id"])
+        pkg_status = _refresh_package(conn, tenant, evt["package_id"], prefix)
         conn.commit()
     print(f"tpa-doc {doc_id} slot={evt['slot']} -> {status} ({len(reasons)} reasons); "
           f"package {evt['package_id']} -> {pkg_status}", flush=True)
 
 
-def _handle_merged(evt: dict, ctx: dict) -> None:
+def _handle_merged(evt: dict, ctx: dict, actor: str = "tpa") -> None:
     """Split the giant PDF by page classification into the six slots."""
     tenant, package_id = evt["tenant"], evt["package_id"]
+    prefix = "hp" if actor == "healthplan" else "tpa"
     try:
         raw = ctx["fetch_and_decrypt"](tenant, evt["object_key"])
         texts, pdf = _pdf_pages(raw)
@@ -239,14 +271,14 @@ def _handle_merged(evt: dict, ctx: dict) -> None:
                 if slot in assigned:
                     start, end = assigned[slot]
                     seg = _export_segment(pdf, start, end)
-                    key = f"{tenant}/tpa-packages/{package_id}/{slot.lower()}-{uuid.uuid4()}.enc"
+                    key = f"{tenant}/{prefix}-packages/{package_id}/{slot.lower()}-{uuid.uuid4()}.enc"
                     ct = _seal(ctx["vault"], ctx["vault_headers"], tenant, key, seg)
                     ctx["minio"].put_object("idre-docs", key, io.BytesIO(ct), len(ct))
                     text = "\n".join(texts[start:end + 1])
                     status, reasons = _verdict(slot, f"{slot.lower()}.pdf", text,
-                                               ctx["classify_text"], ctx["extract_fields"])
+                                               ctx["classify_text"], ctx["extract_fields"], actor)
                     conn.execute(
-                        """INSERT INTO public.tpa_package_docs
+                        f"""INSERT INTO public.{prefix}_package_docs
                              (tenant, package_id, slot, object_key, filename, status, reasons, page_start, page_end, analyzed_at)
                            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,now())
                            ON CONFLICT (package_id, slot) DO UPDATE SET
@@ -263,7 +295,7 @@ def _handle_merged(evt: dict, ctx: dict) -> None:
                     # source as evidence — a human decides whether it's missing
                     # or the splitter missed it.
                     conn.execute(
-                        """INSERT INTO public.tpa_package_docs
+                        f"""INSERT INTO public.{prefix}_package_docs
                              (tenant, package_id, slot, object_key, filename, status, reasons, analyzed_at)
                            VALUES (%s,%s,%s,%s,%s,'NEEDS_REVIEW',
                                    %s::jsonb, now())
@@ -272,14 +304,14 @@ def _handle_merged(evt: dict, ctx: dict) -> None:
                         (tenant, package_id, slot, evt["object_key"], evt.get("filename") or "merged.pdf",
                          json.dumps([{"code": "SLOT_NOT_FOUND_IN_MERGED",
                                       "detail": "page classification found no segment for this slot"}])))
-            pkg_status = _refresh_package(conn, tenant, package_id)
+            pkg_status = _refresh_package(conn, tenant, package_id, prefix)
             conn.commit()
         pdf.close()
         print(f"tpa-doc merged {package_id}: slots {sorted(assigned)} -> package {pkg_status}", flush=True)
     except Exception as exc:  # noqa: BLE001
         with psycopg.connect(ctx["dsn"]) as conn:
             conn.execute(
-                "UPDATE public.tpa_packages SET status='REJECTED', updated_at=now() WHERE tenant=%s AND id=%s",
+                f"UPDATE public.{prefix}_packages SET status='REJECTED', updated_at=now() WHERE tenant=%s AND id=%s",
                 (tenant, package_id))
             conn.commit()
         print(f"tpa-doc merged {package_id} FAILED: {exc}", flush=True)

@@ -81,3 +81,35 @@ def test_six_slots():
     assert set(tpa_docs.SLOT_TYPE) == set(tpa_docs.SLOTS)
     for slot in tpa_docs.SLOTS:
         assert tpa_docs.SLOT_TYPE[slot] is not None or slot in tpa_docs.SLOT_KEYWORDS
+
+
+QPA_SUBSTANTIATION = ("OFFER SUBSTANTIATION. The qualifying payment amount (QPA) for CPT 99285 "
+                      "was derived as the median contracted rate for the service in the region "
+                      "as of January 31 2019, trended forward. CPT 99285. Billed amount $2,400.00. "
+                      "Itemized calculation attached.") * 2
+
+PLAIN_SUBSTANTIATION = ("OFFER SUBSTANTIATION. We believe our offer is fair given the complexity "
+                        "of the case. CPT 99285. Billed amount $2,400.00.") * 2
+
+
+def test_healthplan_substantiation_with_qpa_accepted():
+    status, reasons = tpa_docs._verdict("OFFER_SUBSTANTIATION", "offer_substantiation.pdf",
+                                        QPA_SUBSTANTIATION, classify_text, extract_fields,
+                                        actor="healthplan")
+    assert status == "ACCEPTED", reasons
+
+
+def test_healthplan_substantiation_without_qpa_needs_review():
+    status, reasons = tpa_docs._verdict("OFFER_SUBSTANTIATION", "offer_substantiation.pdf",
+                                        PLAIN_SUBSTANTIATION, classify_text, extract_fields,
+                                        actor="healthplan")
+    assert status == "NEEDS_REVIEW"
+    assert any(r["code"] == "QPA_DOC_MISSING" for r in reasons)
+
+
+def test_tpa_substantiation_has_no_qpa_floor():
+    # The QPA floor is payer-side only; a provider-side TPA package is fine.
+    status, _ = tpa_docs._verdict("OFFER_SUBSTANTIATION", "offer_substantiation.pdf",
+                                  PLAIN_SUBSTANTIATION, classify_text, extract_fields,
+                                  actor="tpa")
+    assert status == "ACCEPTED"

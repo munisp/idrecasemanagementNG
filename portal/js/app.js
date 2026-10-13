@@ -122,7 +122,7 @@
       const on = ["review_queues", "party_workspace", "benchmarks", "batch_suggestions",
         "bundling_filter", "necessity_screen", "deadline_verification", "duplicate_detection",
         "win_probability", "payer_analytics", "fraud_signals", "network_adequacy", "letter_citation",
-        "tpa_onboarding"];
+        "tpa_onboarding", "healthplan_onboarding"];
       if (on.includes(name)) return true;
       return name === "sealed_offers" || name === "negotiation_window"; // NSA defaults
     },
@@ -165,6 +165,7 @@
     links.push(["#/recon", "🔁", "Reconciliation"]);
   }
   if (has("TPA", "CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/tpa", "⛁", "TPA"]);
+  if (App.feature("healthplan_onboarding") && has("HEALTH_PLAN", "CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/healthplan", "⛃", "Health plan"]);
   if (has("FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/rules", "§", "Rules"]);
   nav.innerHTML = links.map(([h, i, l]) =>
     `<a href="${h}" data-route="${h.slice(2).split("/")[0]}"><span class="ri">${i}</span><span class="rl">${l}</span></a>`).join("");
@@ -277,6 +278,7 @@
     [/^#\/arap$/, Views.arapView],
     [/^#\/recon$/, Views.reconView],
     [/^#\/tpa$/, Views.tpaView],
+    [/^#\/healthplan$/, Views.hpView],
     [/^#\/rules$/, Views.rulesAdmin],
   ];
 
