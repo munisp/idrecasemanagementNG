@@ -70,6 +70,8 @@ const Api = (() => {
       get: (id) => req("GET", `${t()}/cases/${id}`),
       initiate: (payload) => req("POST", `${t()}/cases/initiate`, payload),
       signal: (id, signal, data) => req("POST", `${t()}/cases/${id}/signal`, { signal, data }),
+      benchmarks: (id) => req("GET", `${t()}/cases/${id}/benchmarks`),
+      batchable: (id) => req("GET", `${t()}/cases/${id}/batchable`),
       upload: (id, file, sealed, folder) => {
         const fd = new FormData();
         fd.append("file", file);
