@@ -977,18 +977,22 @@ const Views = (() => {
 
   async function queueView(discipline) {
     const meta = DISCIPLINES[discipline] || { title: "Review queue", blurb: "" };
+    const issue = new URLSearchParams((location.hash.split("?")[1] || "")).get("issue") || "";
     let rows;
-    try { rows = await Api.reviews.queue(discipline); }
+    try { rows = await Api.reviews.queue(discipline, false, issue); }
     catch (e) { return `<div class="view-head"><h1>${esc(meta.title)}</h1></div><p class="muted">${esc(e.message)}</p>`; }
-    rows = rows.reviews || rows || [];
+    rows = rows.queue || rows.reviews || rows || [];
     const usd = (c) => (c == null ? "—" : "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 }));
+    const dxOf = (r) => { try { return typeof r.diagnosis_codes === "string" ? JSON.parse(r.diagnosis_codes) : (r.diagnosis_codes || []); } catch { return []; } };
+    const chip = (val, label) => `<a class="btn ${issue === val ? "" : "ghost"} sm" href="#/queues/${discipline}${val ? `?issue=${val}` : ""}">${label}</a>`;
     const html = `<div class="view-head"><h1>${esc(meta.title)}</h1>
-        <a class="btn ghost" href="#/queues/${discipline}?all=1" data-all>Show completed</a></div>
-      <p class="muted">${esc(meta.blurb)}</p>
+        <span class="chipbar">${chip("", "All issues")}${chip("bundling", "Bundling only")}
+        <a class="btn ghost sm" href="#" data-all>Show completed</a></span></div>
+      <p class="muted">${esc(meta.blurb)}${issue === "bundling" ? " Filtered to bundling/unbundling disputes — cases flagged by document analysis (NCCI edits, modifier 59, bundled-denial vocabulary) or with a bundling disputed issue on record." : ""}</p>
       <table class="tbl"><thead><tr><th>Case</th><th>Status</th><th>Service line</th><th>Disputed</th><th>Review</th><th>Requested</th><th></th></tr></thead><tbody>` +
       (rows.length ? rows.map((r) => `<tr>
         <td><a href="#/cases/${esc(r.case_id)}" class="mono">${esc(r.case_number || r.case_id)}</a></td>
-        <td>${badge(r.case_status || "")}</td><td>${esc(r.service_line || "—")}</td><td>${usd(r.disputed_amount_cents)}</td>
+        <td>${badge(r.case_status || "")}</td><td>${esc(r.service_line || "—")}${r.bundling_suspected === "true" ? ' <span class="badge s-flag" title="Bundling vocabulary detected in case documents">bundling</span>' : ""}<br><span class="muted mono" style="font-size:11px">${dxOf(r).slice(0, 6).map(esc).join(" ")}${dxOf(r).length > 6 ? " …" : ""}</span></td><td>${usd(r.disputed_amount_cents)}</td>
         <td>${badge(r.status)}${r.reviewer ? ` <span class="muted">${esc(r.reviewer)}</span>` : ""}</td>
         <td>${fmtDate(r.requested_at)}</td>
         <td>${r.status === "REQUESTED" ? `<button class="btn sm" data-claim="${r.id}">Claim</button>`

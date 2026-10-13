@@ -212,6 +212,16 @@ _DX_CONTEXT_DIGIT_RE = re.compile(
 # Taxonomy whose 4th (always-alpha) char was OCR'd as a digit: "207000000X".
 _TAXONOMY_DIGIT_RE = re.compile(r"\b(\d{3})(\d)(\d{5}X)\b")
 
+# Bundling vocabulary: an EOB/remit that denies a line as bundled, or an
+# itemized bill a coder suspects of unbundling, uses a small, stable lexicon
+# (NCCI edits, modifier 59, mutually exclusive, column 1/2). Presence of any
+# of these terms marks the document as bundling-relevant; persist() lifts it
+# onto the case so the coding-review queue can filter to bundling disputes.
+_BUNDLING_RE = re.compile(
+    r"(?i)\b(bundl(?:e|es|ed|ing)|unbundl(?:e|es|ed|ing)|mutually exclusive|"
+    r"ncci|national correct coding|modifier[\s-]*59|column[\s-]*[12]\b|"
+    r"incidental to|comprehensive cod\w+|rebundl\w*)\b")
+
 # --- public entry point ----------------------------------------------------
 
 def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) -> dict:
@@ -298,6 +308,11 @@ def extract_fields(text: str, extra_labels: dict[str, list[str]] | None = None) 
             dx.add(repaired)
     if dx:
         out["diagnosis_codes"] = sorted(dx)[:25]
+
+    bundling = sorted({re.sub(r"\s+", " ", m.group(1)).lower()
+                       for m in _BUNDLING_RE.finditer(text)})
+    if bundling:
+        out["bundling_signals"] = bundling[:10]
 
     return out
 

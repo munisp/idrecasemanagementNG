@@ -211,6 +211,43 @@ def subject(evt: dict) -> tuple[str, str]:
     return "application", evt["application_id"]
 
 
+def merge_case_codes(tenant: str, case_id: str, ex: dict) -> None:
+    """Lift extracted clinical codes onto the case row so queue filters have
+    structured data to work with. Until now ICD-10/CPT/HCPCS extraction was a
+    dead end -- it sat in doc_analysis.result and nothing downstream could
+    query it. Codes merge (union, deduped, capped) into cases.details, which
+    is already GIN-indexed; a bundling vocabulary hit sets
+    details.bundling_suspected=true (sticky -- later docs never clear a flag
+    an earlier doc earned)."""
+    if not ex:
+        return
+    dx = set(ex.get("diagnosis_codes") or [])
+    cpt = set(ex.get("cpt_codes") or [])
+    hcpcs = set(ex.get("hcpcs_codes") or [])
+    bundling = bool(ex.get("bundling_signals"))
+    if not (dx or cpt or hcpcs or bundling):
+        return
+    with psycopg.connect(DSN, autocommit=True) as c:
+        row = c.execute(
+            f"SELECT details FROM tenant_{tenant}.cases WHERE id=%s", (case_id,),
+        ).fetchone()
+        if not row:
+            return
+        details = dict(row[0] or {})
+        for key, vals, cap in (("diagnosis_codes", dx, 50),
+                               ("cpt_codes", cpt, 80),
+                               ("hcpcs_codes", hcpcs, 50)):
+            if vals:
+                merged = sorted(set(details.get(key) or []) | vals)[:cap]
+                details[key] = merged
+        if bundling:
+            details["bundling_suspected"] = True
+        c.execute(
+            f"UPDATE tenant_{tenant}.cases SET details=%s, updated_at=now() WHERE id=%s",
+            (json.dumps(details), case_id),
+        )
+
+
 def persist(evt: dict, ctx: dict) -> None:
     kind, subj_id = subject(evt)
     case_id = subj_id if kind == "case" else None
@@ -240,6 +277,11 @@ def persist(evt: dict, ctx: dict) -> None:
                  "vlm_field_probability": ctx.get("vlm_field_probability", {}),
              })),
         )
+    # Lift clinical codes onto the case itself (structured, queryable) — the
+    # doc_analysis row above is the forensic record; this is what the coding
+    # queue's bundling filter and downstream reviews actually read.
+    if kind == "case":
+        merge_case_codes(evt["tenant"], case_id, ctx.get("extracted_fields") or {})
     # Best-effort, like the Temporal signal call below it: the Postgres
     # insert just above is the real system of record for analysis status.
     # A search-index outage should never cost the already-persisted result

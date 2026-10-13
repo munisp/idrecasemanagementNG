@@ -172,3 +172,23 @@ def test_taxonomy_fourth_char_repair():
 def test_value_then_label_member_id_extracts():
     ex = fields.extract_fields("SCH884120077\nMember ID:\n")
     assert ex["identifiers"]["member_id"] == "SCH884120077"
+
+
+def test_bundling_vocabulary_detected():
+    ex = fields.extract_fields(
+        "Claim line denied: procedure bundled with primary service per NCCI edit. "
+        "Mutually exclusive procedures. Modifier 59 not supported.\n")
+    sig = ex.get("bundling_signals", [])
+    assert any("bundl" in s for s in sig)
+    assert "ncci" in sig
+    assert "mutually exclusive" in sig
+
+
+def test_unbundling_detected():
+    ex = fields.extract_fields("Provider appears to unbundle the panel into component codes.\n")
+    assert any("unbundl" in s for s in ex.get("bundling_signals", []))
+
+
+def test_no_bundling_signals_on_clean_claim():
+    ex = fields.extract_fields("CMS-1500. CPT 99213. Billed Amount: $185.00. Diagnosis: I10.\n")
+    assert "bundling_signals" not in ex

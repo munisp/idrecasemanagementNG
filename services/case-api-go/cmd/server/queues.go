@@ -99,13 +99,24 @@ func (s *server) reviewQueue(w http.ResponseWriter, r *http.Request) {
 	q := fmt.Sprintf(`
 		SELECT v.id, v.case_id, c.case_number, c.status, c.service_line,
 		       c.disputed_amount_cents, v.discipline, v.status AS review_status,
-		       v.note, v.requested_by, v.requested_at, v.reviewer, v.claimed_at
+		       v.note, v.requested_by, v.requested_at, v.reviewer, v.claimed_at,
+		       coalesce(c.details->>'diagnosis_codes','[]') AS diagnosis_codes,
+		       coalesce(c.details->>'bundling_suspected','') AS bundling_suspected
 		FROM public.specialty_reviews v
 		JOIN tenant_%s.cases c ON c.id = v.case_id
 		WHERE v.tenant=$1 AND v.discipline=$2`, sanitizeTenant(tenant))
 	args := []any{tenant, discipline}
 	if !showAll {
 		q += ` AND v.status <> 'COMPLETE'`
+	}
+	// ?issue=bundling narrows to bundling/unbundling disputes: cases an
+	// extracted document flagged (details.bundling_suspected, set by
+	// doc-intel from NCCI/modifier-59/bundling vocabulary) or whose recorded
+	// disputed issue mentions bundling.
+	if r.URL.Query().Get("issue") == "bundling" {
+		q += ` AND (coalesce(c.details->>'bundling_suspected','') = 'true'
+		            OR c.details->>'disputed_issue' ILIKE '%bundl%'
+		            OR c.details->>'issue' ILIKE '%bundl%')`
 	}
 	q += ` ORDER BY v.requested_at LIMIT 500`
 	rows, _ := s.queryRows(r, q, args...)
