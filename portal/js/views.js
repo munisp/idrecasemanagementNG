@@ -871,31 +871,228 @@ const Views = (() => {
     catch (e) { UI.toast(e.message, { kind: "warn" }); }
   }
 
-  // Sealed offer — value goes only to the vault via the signal; never rendered back.
-  async function offerForm(caseId) {
+  // Sealed offer — the amount is sealed in the vault (AES-256-GCM, AAD
+  // tenant:case:offer:party) before it touches Postgres; the double-blind is
+  // only lifted server-side once the workflow reaches OFFERS_REVEALED.
+  async function offerForm(caseId, partyId) {
+    let pid = partyId;
+    if (!pid && can("PARTY")) {
+      // A mapped party account knows its own side; no selector needed.
+      try { pid = (await Api.party.caseDetail(caseId)).your_party; } catch { /* fall through */ }
+    }
+    const fields = [];
+    if (!pid) fields.push({ name: "party_id", label: "Submitting for", type: "select", required: true,
+      options: [["INITIATING", "Initiating party"], ["RESPONDING", "Responding party"]] });
+    fields.push({ name: "amount", label: "Offer amount (USD)", type: "number", step: "0.01", required: true });
+    fields.push({ name: "justification", label: "Justification (sealed with the offer)", type: "textarea", required: false,
+      hint: "Optional. Sealed alongside the amount; revealed only when the offer window closes." });
     const v = await UI.modal({ title: "Submit sealed offer", submitLabel: "Seal and submit",
-      body: "Your offer is encrypted in the vault the moment you submit. It is visible to no one — including arbitrators — until the offer window closes and the lawful-reveal gate passes.",
-      fields: [{ name: "amount", label: "Offer amount (USD)", type: "number", step: "0.01", required: true }] });
+      body: "Your offer is encrypted in the vault the moment you submit. It is visible to no one — including arbitrators — until the offer window closes and the lawful-reveal gate passes. One offer per party; resubmission is refused.",
+      fields });
     if (!v) return;
     try {
-      await Api.cases.signal(caseId, "OFFER_SUBMITTED", { party_id: Auth.claims().sub, amount_cents: Math.round(parseFloat(v.amount) * 100) });
-      UI.toast("Offer received and sealed — receipt logged");
+      await Api.offers.submit(caseId, {
+        party_id: pid || v.party_id,
+        amount_cents: Math.round(parseFloat(v.amount) * 100),
+        justification: v.justification || "",
+      });
+      UI.toast("Offer sealed in the vault — receipt logged");
       App.rerender();
     } catch (e) { UI.toast(e.message, { kind: "warn" }); }
   }
 
   async function determinationForm(caseId) {
+    let offers;
+    try { offers = await Api.offers.list(caseId); }
+    catch (e) { UI.toast(e.message, { kind: "warn" }); return; }
+    const rows = offers.offers || offers || [];
+    if (!rows.length) { UI.toast("No offers on file", { kind: "warn" }); return; }
+    const revealed = rows.filter((o) => o.revealed_amount_cents != null);
+    if (revealed.length < rows.length) {
+      const go = await UI.confirm("Offers not yet revealed",
+        "The double-blind is still on. Reveal is lawful only once the workflow reaches OFFERS_REVEALED. Attempt reveal now?", "Reveal");
+      if (!go) return;
+      try { await Api.offers.reveal(caseId); UI.toast("Offers revealed — double-blind lifted"); }
+      catch (e) { UI.toast(e.message, { kind: "warn" }); return; }
+      try { offers = await Api.offers.list(caseId); } catch (e) { UI.toast(e.message, { kind: "warn" }); return; }
+    }
+    const final = (offers.offers || offers || []).filter((o) => o.revealed_amount_cents != null);
+    if (!final.length) { UI.toast("No revealed offers to select from", { kind: "warn" }); return; }
+    const usd = (c) => "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
     const v = await UI.modal({ title: "Issue determination", submitLabel: "Issue determination", danger: true,
-      body: "This selects the prevailing offer under 45 CFR 149.510(c)(4) and starts the 30-calendar-day payment clock. It cannot be undone.",
+      body: "Baseball-style arbitration: you select exactly one of the revealed offers — no splitting, no middle figure (45 CFR 149.520(b)). Issuing starts the 30-calendar-day payment clock and cannot be undone.",
       fields: [
-        { name: "winning", label: "Winning offer (party id)", required: true },
+        { name: "selected", label: "Prevailing offer", type: "select", required: true,
+          options: final.map((o) => [o.id, `${o.party_id} — ${usd(o.revealed_amount_cents)}`]) },
         { name: "rationale", label: "Determination rationale", type: "textarea", required: true,
           hint: "Required — becomes part of the certified determination letter." },
       ] });
     if (!v) return;
     try {
-      await Api.cases.signal(caseId, "DETERMINATION_ISSUED", { winning_offer_party: v.winning, rationale: v.rationale });
-      UI.toast("Determination issued — payment clock started");
+      const r = await Api.offers.determine(caseId, { selected_offer_id: v.selected, rationale: v.rationale });
+      UI.toast(`Determination issued (${r.payment_due || "payment due in 30 calendar days"})`);
+      App.rerender();
+    } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+  }
+
+  // ---- Sealed-offer arbitration panel (case staff / arbitrator) --------------
+  async function caseOffers(caseId) {
+    let c, offers;
+    try {
+      [c, offers] = await Promise.all([Api.cases.get(caseId), Api.offers.list(caseId)]);
+    } catch (e) { return `<div class="view-head"><h1>Offers</h1></div><p class="muted">${esc(e.message)}</p>`; }
+    const usd = (c2) => "$" + ((Number(c2) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
+    const rows = (offers.offers || offers || []);
+    const blind = offers.double_blind !== false && rows.some((o) => o.revealed_amount_cents == null);
+    let html = `<div class="view-head"><h1>Offers — <span class="mono">${esc(c.case_number)}</span></h1>${badge(c.status)}</div>
+      <p class="muted">Double-blind sealed bidding (45 CFR 149.520(b)). ${blind ? "Amounts are vault-sealed until lawful reveal." : "Double-blind lifted."}</p>`;
+    html += `<table class="tbl"><thead><tr><th>Party</th><th>Submitted</th><th>By</th><th>Amount</th><th>Reveal</th></tr></thead><tbody>` +
+      (rows.length ? rows.map((o) => `<tr>
+        <td>${badge(o.party_id)}</td><td>${fmtDate(o.submitted_at)}</td><td>${esc(o.submitted_by || "—")}</td>
+        <td>${o.revealed_amount_cents != null ? `<strong>${usd(o.revealed_amount_cents)}</strong>` : '<span class="muted">🔒 sealed</span>'}</td>
+        <td>${o.revealed_at ? `${fmtDate(o.revealed_at)} <span class="muted">(${esc(o.reveal_reason || "")})</span>` : "—"}</td></tr>`).join("")
+        : `<tr><td colspan="5" class="muted">No offers submitted yet.</td></tr>`) + `</tbody></table>`;
+    const acts = [];
+    if (["OFFER_WINDOW_OPEN"].includes(c.status) && can("PARTY", "TPA", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+      acts.push(["Submit sealed offer", () => offerForm(caseId)]);
+    if (can("ARBITRATOR") && c.status === "OFFERS_REVEALED" && blind)
+      acts.push(["Lift double-blind (reveal)", async () => {
+        try { await Api.offers.reveal(caseId); UI.toast("Offers revealed"); App.rerender(); }
+        catch (e) { UI.toast(e.message, { kind: "warn" }); }
+      }]);
+    if (can("ARBITRATOR") && ["OFFERS_REVEALED", "SELECTION_FINALIZED"].includes(c.status))
+      acts.push(["Issue determination", () => determinationForm(caseId)]);
+    if (acts.length) html += `<div class="actions">` + acts.map((a, i) => `<button class="btn" data-act="${i}">${esc(a[0])}</button>`).join("") + `</div>`;
+    return { html, wire: () => {
+      document.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => acts[Number(b.dataset.act)][1]()));
+    } };
+  }
+
+  // ---- Specialty review queues -------------------------------------------------
+  const DISCIPLINES = {
+    CODING: { title: "Coding review queue", blurb: "Bundling, unbundling and code-accuracy disputes awaiting review. Completing a review signals the case workflow (CODING_REVIEW_COMPLETE)." },
+    CLINICAL: { title: "Clinical review queue", blurb: "Medical-necessity and level-of-care questions awaiting DOCTOR / NURSE review. Completion signals CLINICAL_REVIEW_COMPLETE." },
+    LEGAL: { title: "Legal review queue", blurb: "Opt-out recording, eligibility and process questions awaiting ATTORNEY review. Completion signals ATTORNEY_REVIEW_COMPLETE." },
+  };
+
+  async function queueView(discipline) {
+    const meta = DISCIPLINES[discipline] || { title: "Review queue", blurb: "" };
+    let rows;
+    try { rows = await Api.reviews.queue(discipline); }
+    catch (e) { return `<div class="view-head"><h1>${esc(meta.title)}</h1></div><p class="muted">${esc(e.message)}</p>`; }
+    rows = rows.reviews || rows || [];
+    const usd = (c) => (c == null ? "—" : "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 }));
+    const html = `<div class="view-head"><h1>${esc(meta.title)}</h1>
+        <a class="btn ghost" href="#/queues/${discipline}?all=1" data-all>Show completed</a></div>
+      <p class="muted">${esc(meta.blurb)}</p>
+      <table class="tbl"><thead><tr><th>Case</th><th>Status</th><th>Service line</th><th>Disputed</th><th>Review</th><th>Requested</th><th></th></tr></thead><tbody>` +
+      (rows.length ? rows.map((r) => `<tr>
+        <td><a href="#/cases/${esc(r.case_id)}" class="mono">${esc(r.case_number || r.case_id)}</a></td>
+        <td>${badge(r.case_status || "")}</td><td>${esc(r.service_line || "—")}</td><td>${usd(r.disputed_amount_cents)}</td>
+        <td>${badge(r.status)}${r.reviewer ? ` <span class="muted">${esc(r.reviewer)}</span>` : ""}</td>
+        <td>${fmtDate(r.requested_at)}</td>
+        <td>${r.status === "REQUESTED" ? `<button class="btn sm" data-claim="${r.id}">Claim</button>`
+          : r.status === "IN_REVIEW" ? `<button class="btn sm" data-complete="${r.id}">Complete</button>` : ""}</td></tr>`).join("")
+        : `<tr><td colspan="7" class="muted">Queue is clear — nothing awaiting ${esc(discipline.toLowerCase())} review.</td></tr>`) +
+      `</tbody></table>`;
+    return { html, wire: () => {
+      document.querySelectorAll("[data-claim]").forEach((b) => b.addEventListener("click", async () => {
+        try { await Api.reviews.claim(b.dataset.claim); UI.toast("Review claimed"); App.rerender(); }
+        catch (e) { UI.toast(e.message, { kind: "warn" }); }
+      }));
+      document.querySelectorAll("[data-complete]").forEach((b) => b.addEventListener("click", async () => {
+        const v = await UI.modal({ title: "Complete review", submitLabel: "Complete and signal workflow",
+          body: "Your completion note is stored on the review record and the case workflow is signaled immediately.",
+          fields: [{ name: "note", label: "Completion note", type: "textarea", required: true }] });
+        if (!v) return;
+        try { await Api.reviews.complete(b.dataset.complete, v.note); UI.toast("Review complete — workflow signaled"); App.rerender(); }
+        catch (e) { UI.toast(e.message, { kind: "warn" }); }
+      }));
+      const all = document.querySelector("[data-all]");
+      if (all) all.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        try {
+          const full = await Api.reviews.queue(discipline, true);
+          const list = full.reviews || full || [];
+          const done = list.filter((r) => r.status === "COMPLETE");
+          await UI.modal({ title: "Completed reviews", wide: true, submitLabel: "Close",
+            body: done.length ? `<table class="tbl"><thead><tr><th>Case</th><th>Reviewer</th><th>Completed</th><th>Note</th></tr></thead><tbody>` +
+              done.map((r) => `<tr><td class="mono">${esc(r.case_number || r.case_id)}</td><td>${esc(r.reviewer || "")}</td><td>${fmtDate(r.completed_at)}</td><td>${esc(r.completion_note || "")}</td></tr>`).join("") + `</tbody></table>`
+              : "<p class='muted'>No completed reviews yet.</p>",
+            fields: [] });
+        } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+      });
+    } };
+  }
+
+  // ---- Party workspace ----------------------------------------------------------
+  async function partyCases() {
+    let rows;
+    try { rows = await Api.party.cases(); }
+    catch (e) { return `<div class="view-head"><h1>My disputes</h1></div><p class="muted">${esc(e.message)}</p>`; }
+    rows = rows.cases || rows || [];
+    const usd = (c) => (c == null ? "—" : "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 }));
+    return `<div class="view-head"><h1>My disputes</h1></div>
+      <p class="muted">Every dispute your account is a mapped party on. Access is granted per-case by the IDRE entity — your login alone opens nothing else.</p>
+      <table class="tbl"><thead><tr><th>Case</th><th>Side</th><th>Status</th><th>Service line</th><th>Amount</th><th>Opened</th></tr></thead><tbody>` +
+      (rows.length ? rows.map((r) => `<tr>
+        <td><a href="#/party/cases/${esc(r.case_id)}" class="mono">${esc(r.case_number)}</a></td>
+        <td>${badge(r.party_id)}</td><td>${badge(r.status)}</td><td>${esc(r.service_line || "—")}</td>
+        <td>${usd(r.disputed_amount_cents)}</td><td>${fmtDate(r.opened_at)}</td></tr>`).join("")
+        : `<tr><td colspan="6" class="muted">You are not mapped to any disputes yet.</td></tr>`) + `</tbody></table>`;
+  }
+
+  async function partyCaseDetail(caseId) {
+    let d;
+    try { d = await Api.party.caseDetail(caseId); }
+    catch (e) { return `<div class="view-head"><h1>Dispute</h1></div><p class="muted">${esc(e.message)}</p>`; }
+    const c = d.case || d;
+    const usd = (x) => (x == null ? "—" : "$" + ((Number(x) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 }));
+    let html = `<div class="view-head"><h1><span class="mono">${esc(c.case_number)}</span></h1>${badge(c.status)} ${badge(d.your_party)}</div>
+      <p class="muted">${esc(c.service_line || "")} · disputed ${usd(c.disputed_amount_cents)} · opened ${fmtDate(c.opened_at)}</p>`;
+    const acts = [];
+    if (["OFFER_WINDOW_OPEN"].includes(c.status)) acts.push(["Submit sealed offer", () => offerForm(c.id, d.your_party)]);
+    if (acts.length) html += `<div class="actions">` + acts.map((a, i) => `<button class="btn" data-act="${i}">${esc(a[0])}</button>`).join("") + `</div>`;
+    if (d.determination)
+      html += `<h2>Determination</h2><div class="card"><p><strong>${usd(d.determination.amount_cents)}</strong> — issued ${fmtDate(d.determination.issued_at)}</p>
+        <p>${esc(d.determination.rationale || "")}</p><p class="muted">Payment due within 30 calendar days of this determination (45 CFR 149.520(b)(4)).</p></div>`;
+    if (d.invoices && d.invoices.length)
+      html += `<h2>Invoices</h2><table class="tbl"><thead><tr><th>Invoice</th><th>Status</th><th>Amount</th><th>Due</th></tr></thead><tbody>` +
+        d.invoices.map((i) => `<tr><td class="mono">${esc(i.invoice_number || i.id)}</td><td>${badge(i.status)}</td><td>${usd(i.amount_cents)}</td><td>${fmtDate(i.due_date)}</td></tr>`).join("") + `</tbody></table>`;
+    return { html, wire: () => {
+      document.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => acts[Number(b.dataset.act)][1]()));
+    } };
+  }
+
+  async function reviewRequestForm(caseId) {
+    const v = await UI.modal({ title: "Request specialty review", submitLabel: "Request review",
+      body: "Queues the case for a discipline reviewer. Only one active review per discipline per case.",
+      fields: [
+        { name: "discipline", label: "Discipline", type: "select", required: true,
+          options: [["CODING", "Coding (bundling / code accuracy)"], ["CLINICAL", "Clinical (medical necessity)"], ["LEGAL", "Legal (eligibility / process)"]] },
+        { name: "note", label: "Request note", type: "textarea", required: true,
+          hint: "What should the reviewer answer? Becomes part of the review record." },
+      ] });
+    if (!v) return;
+    try { await Api.reviews.request(caseId, { discipline: v.discipline, note: v.note }); UI.toast("Review requested"); }
+    catch (e) { UI.toast(e.message, { kind: "warn" }); }
+  }
+
+  async function partyInviteForm(caseId) {
+    const v = await UI.modal({ title: "Invite party", submitLabel: "Create account and map",
+      body: "Creates (or reuses) a portal login for the party representative and maps it to this case. The temporary password is shown once in the response — copy it now; it is never emailed, logged, or shown again.",
+      fields: [
+        { name: "email", label: "Party email", type: "email", required: true },
+        { name: "party_id", label: "Side", type: "select", required: true,
+          options: [["INITIATING", "Initiating party"], ["RESPONDING", "Responding party"]] },
+      ] });
+    if (!v) return;
+    try {
+      const r = await Api.party.invite(caseId, { email: v.email, party_id: v.party_id });
+      await UI.modal({ title: "Party invited", submitLabel: "Done",
+        body: `<p>Mapped <strong>${esc(v.email)}</strong> as <strong>${esc(v.party_id)}</strong>.</p>
+          <p>Temporary password (shown once): <code class="mono">${esc(r.temp_password || "(existing account — no new password)")}</code></p>`,
+        fields: [] });
       App.rerender();
     } catch (e) { UI.toast(e.message, { kind: "warn" }); }
   }
@@ -923,12 +1120,18 @@ const Views = (() => {
       const acts = [];
       if (can("PARTY") && c.status === "INITIATED")
         acts.push(["Respond filed", () => Api.cases.signal(id, "RESPONSE_FILED", {})]);
-      if (can("PARTY") && ["OFFER_WINDOW_OPEN", "INITIATED"].includes(c.status))
+      if (can("PARTY") && c.status === "OFFER_WINDOW_OPEN")
         if (App.feature("sealed_offers")) acts.push(["Submit sealed offer", () => offerForm(id)]);
       if (can("PARTY"))
         acts.push(["Mark fees paid", () => Api.cases.signal(id, "FEES_PAID", { party_id: Auth.claims().sub })]);
+      if (can("ARBITRATOR", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+        acts.push(["Offers panel", () => { location.hash = `#/cases/${id}/offers`; }]);
       if (can("ARBITRATOR"))
         acts.push(["Issue determination", () => determinationForm(id)]);
+      if (can("CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+        acts.push(["Invite party", () => partyInviteForm(id)]);
+      if (can("CASE_MANAGER", "ARBITRATOR", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
+        acts.push(["Request specialty review", () => reviewRequestForm(id)]);
       if (can("CASE_MANAGER", "FEDERAL_ADMIN"))
         acts.push(["Finalize IDRE selection", () => Api.cases.signal(id, "SELECTION_FINALIZED", {})]);
       if (can("CASE_MANAGER", "FEDERAL_ADMIN"))
@@ -3853,5 +4056,5 @@ async function railAttachAuthFn(id) {
     } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
 })();

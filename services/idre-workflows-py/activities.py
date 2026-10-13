@@ -61,11 +61,22 @@ async def post_ledger_transfer(tenant: str, transfer: dict) -> None:
 
 
 @activity.defn
-async def request_lawful_reveal(case_id: str) -> None:
-    """Ask the vault to unlock the offer window (BOTH_SUBMITTED / WINDOW_EXPIRED)."""
-    async with httpx.AsyncClient(base_url=VAULT_URL, timeout=15, headers=VAULT_HEADERS) as client:
-        # The vault independently verifies workflow state before any decrypt.
-        resp = await client.post("/internal/mark-revealable", json={"case_id": case_id})
+async def request_lawful_reveal(tenant: str, case_id: str) -> None:
+    """Assert the reveal oracle agrees the offer window lawfully closed.
+
+    The vault decrypts offers only after independently confirming case state
+    through case-api's reveal-check endpoint. This activity pings that same
+    oracle from the workflow side: if case state and workflow state ever
+    diverge, the activity fails loudly here instead of at arbitrator reveal
+    time. (The vault has no /internal/mark-revealable route — the previous
+    call target never existed and every reveal-stage workflow would have
+    retried a 404 forever.)
+    """
+    # reveal-check is gated on the vault's internal token (X-Internal-Auth),
+    # which compose wires to this worker for exactly this call.
+    headers = {"X-Internal-Auth": os.environ.get("VAULT_INTERNAL_TOKEN", "")}
+    async with httpx.AsyncClient(base_url=CASE_API, timeout=15) as client:
+        resp = await client.get(f"/internal/reveal-check/{tenant}/{case_id}", headers=headers)
         resp.raise_for_status()
 
 

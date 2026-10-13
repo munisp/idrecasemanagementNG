@@ -283,6 +283,24 @@ const Api = (() => {
       submitDeliverable: (p) => req("POST", `${t()}/deliverables`, p),
       requestDeliverable: (name, contract_ref) => req("POST", `${t()}/deliverables/request`, { name, contract_ref }),
     },
+    offers: {
+      submit: (caseId, p) => req("POST", `${t()}/cases/${caseId}/offers`, p),
+      list: (caseId) => req("GET", `${t()}/cases/${caseId}/offers`),
+      reveal: (caseId) => req("POST", `${t()}/cases/${caseId}/offers/reveal`),
+      determine: (caseId, p) => req("POST", `${t()}/cases/${caseId}/determination`, p),
+    },
+    reviews: {
+      request: (caseId, p) => req("POST", `${t()}/cases/${caseId}/reviews`, p),
+      queue: (discipline, all) => req("GET", `${t()}/queues/${discipline}${all ? "?all=1" : ""}`),
+      claim: (id) => req("POST", `${t()}/reviews/${id}/claim`),
+      complete: (id, note) => req("POST", `${t()}/reviews/${id}/complete`, { note }),
+    },
+    party: {
+      cases: () => req("GET", `${t()}/party/cases`),
+      caseDetail: (id) => req("GET", `${t()}/party/cases/${id}`),
+      invite: (caseId, p) => req("POST", `${t()}/cases/${caseId}/party-invites`, p),
+      accounts: (caseId) => req("GET", `${t()}/cases/${caseId}/party-accounts`),
+    },
     fees: {
       transfer: (p) => req("POST", `${t()}/fees/transfer`, p),
     },

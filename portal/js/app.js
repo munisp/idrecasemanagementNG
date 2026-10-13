@@ -127,6 +127,12 @@
     ["#/dashboard", "▤", "Home"], ["#/cases", "▦", App.t("case_plural")], ["#/pipeline", "▥", "Pipeline"],
     ["#/crm/accounts", "◈", "Accounts"], ["#/crm/leads", "◎", "Leads"], ["#/crm/tasks", "☑", "Tasks"],
   ];
+  if (has("PARTY")) links.push(["#/party", "⚭", "My disputes"]);
+  if (has("DOCTOR", "NURSE", "ATTORNEY", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
+    links.push(["#/queues/CODING", "⌗", "Coding queue"]);
+    links.push(["#/queues/CLINICAL", "✚", "Clinical queue"]);
+    links.push(["#/queues/LEGAL", "§", "Legal queue"]);
+  }
   if (has("PARTY", "CASE_MANAGER")) links.push(["#/new", "＋", `New ${App.t("case_noun").toLowerCase()}`]);
   links.push(["#/ask", "✦", "Ask the graph"]);
   if (has("CASE_MANAGER", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/assistant", "❖", "Assistant"]);
@@ -229,6 +235,10 @@
     [/^#\/pipeline$/, CrmViews.pipeline],
     [/^#\/cases(\?.*)?$/, Views.cases],
     [/^#\/cases\/([\w-]+)$/, (m) => Views.caseDetail(m[1])],
+    [/^#\/cases\/([\w-]+)\/offers$/, (m) => Views.caseOffers(m[1])],
+    [/^#\/queues\/(CODING|CLINICAL|LEGAL)(\?.*)?$/, (m) => Views.queueView(m[1])],
+    [/^#\/party$/, Views.partyCases],
+    [/^#\/party\/cases\/([\w-]+)$/, (m) => Views.partyCaseDetail(m[1])],
     [/^#\/new$/, Views.newDispute],
     [/^#\/crm\/accounts$/, CrmViews.accounts],
     [/^#\/crm\/accounts\/new$/, CrmViews.accountNew],

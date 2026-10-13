@@ -151,9 +151,12 @@ async fn reveal(State(st): State<AppState>, Json(req): Json<RevealRequest>) -> i
         return (StatusCode::FORBIDDEN, "role may not reveal").into_response();
     }
 
-    // Reveal-state oracle: case-api checks Temporal workflow history for one of
-    // BOTH_SUBMITTED | WINDOW_EXPIRED | RULE_DEFAULT on this case.
-    let url = format!("{}/internal/reveal-check/{}", st.case_api, req.case_id);
+    // Reveal-state oracle: case-api confirms the case's workflow status is
+    // OFFERS_REVEALED (set by the Temporal workflow on BOTH_SUBMITTED |
+    // WINDOW_EXPIRED | RULE_DEFAULT). Tenant-scoped: the oracle resolves the
+    // case in the caller-asserted tenant schema, and AEAD AAD independently
+    // binds the ciphertext to that same tenant — cross-tenant replays fail.
+    let url = format!("{}/internal/reveal-check/{}/{}", st.case_api, req.tenant, req.case_id);
     let lawful = st
         .http
         .get(url)
