@@ -170,3 +170,12 @@ CREATE TABLE IF NOT EXISTS public.screening_checks (
     created_at        timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS screening_checks_tenant ON public.screening_checks (tenant, subject_type, created_at DESC);
+
+
+-- Proof-of-authorization artifact for ACH WEB debits (NACHA 2.5.1 / WEB
+-- authorization retention): the signed authorization (PDF/scan/text) is
+-- vault-sealed like the account number itself; only metadata is queryable.
+ALTER TABLE public.payment_accounts
+    ADD COLUMN IF NOT EXISTS ach_authorization_sealed bytea,
+    ADD COLUMN IF NOT EXISTS ach_authorization_name  text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS ach_authorization_at    timestamptz;

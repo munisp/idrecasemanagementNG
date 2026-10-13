@@ -3704,8 +3704,9 @@ const Views = (() => {
         ${accts.map(a => `<tr><td>${esc(a.owner_type)} ${esc(a.owner_ref)}<br /><span class="muted">${esc(a.label || "")}</span></td>
           <td>${esc(a.routing_number)} ${a.bank_name ? `<br /><span class="muted">${esc(a.bank_name)}</span>` : ""}</td>
           <td>••••${esc(a.account_last4)}</td><td>${esc(a.account_type)}</td>
-          <td>${a.ach_debit_authorized ? "✔" : "—"}</td>
-          <td>${can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<button class="mini bad" onclick="Views.railAccountDelFn('${a.id}')">remove</button>` : ""}</td></tr>`).join("")}
+          <td>${a.ach_debit_authorized ? "✔" : "—"}${a.ach_authorization_name ? `<br /><span class="muted">proof: ${esc(a.ach_authorization_name)}</span>` : (a.ach_debit_authorized ? '<br /><span class="error">proof missing</span>' : "")}</td>
+          <td>${can("FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<input type="file" id="auth-${a.id}" class="mini" title="signed ACH authorization (vault-sealed)" onchange="Views.railAttachAuthFn('${a.id}')" />
+            <button class="mini bad" onclick="Views.railAccountDelFn('${a.id}')">remove</button>` : ""}</td></tr>`).join("")}
         </tbody></table>` : '<p class="muted">No payment accounts yet.</p>';
     } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   }
@@ -3721,6 +3722,18 @@ const Views = (() => {
         account_type: f.account_type.value, ach_debit_authorized: f.ach_debit_authorized.checked,
       });
       f.reset(); railAccountsBox();
+    } catch (e) { alert(e.message); }
+  }
+
+async function railAttachAuthFn(id) {
+    const inp = document.getElementById("auth-" + id);
+    const file = inp && inp.files && inp.files[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { alert("authorization artifact must be ≤ 8 MiB"); return; }
+    try {
+      // ArrayBuffer, not text(): PDFs/scans are binary and must not round through UTF-8.
+      await Api.program.railAttachAuth(id, await file.arrayBuffer(), file.name);
+      railAccountsBox();
     } catch (e) { alert(e.message); }
   }
 
@@ -3840,5 +3853,5 @@ const Views = (() => {
     } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn };
 })();

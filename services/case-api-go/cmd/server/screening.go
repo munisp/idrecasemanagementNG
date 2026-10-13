@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -295,4 +296,53 @@ func (s *server) screenOnboardingSubject(r *http.Request, tenant, subjectType, s
 		s.notify(r, tenant, "*", "SCREENING_MATCH",
 			"OFAC screening hit on approved "+subjectType+" onboarding: "+name+" — compliance review required.", "")
 	}
+}
+
+// ---------- money-origination gate ----------
+
+// screenPaymentParty gates ACH/wire origination on OFAC. Onboarding screening
+// is warn-only by platform convention, but MOVING MONEY to or from a listed
+// party is strict-liability — a match here BLOCKS the file. Posture:
+//   - WATCHMAN_ENABLED=false  -> screening deliberately off; allow (the
+//     operator owns that decision; /screening/status shows it).
+//   - enabled but list empty  -> FAIL CLOSED (503): originating payments
+//     against no sanctions list is worse than a temporary halt.
+//   - match >= threshold      -> block (422); the screening_checks row, staff
+//     notification and (non-NG) audit event make the block examinable.
+// Returns (blocked, topScore, statusCode, clientMessage).
+func (s *server) screenPaymentParty(r *http.Request, tenant, subjectType, subjectRef, name string) (bool, float64, int, string) {
+	if strings.EqualFold(os.Getenv("WATCHMAN_ENABLED"), "false") {
+		return false, 0, 0, ""
+	}
+	sdnList.RLock()
+	loaded := len(sdnList.entities)
+	refreshed := sdnList.refreshedAt
+	sdnList.RUnlock()
+	if loaded == 0 {
+		return true, 0, http.StatusServiceUnavailable,
+			"sanctions list unavailable — payment origination is fail-closed until the OFAC list loads (see /screening/status)"
+	}
+	matched, top, matches := screenName(name)
+	if len(matches) > 10 {
+		matches = matches[:10]
+	}
+	mj, _ := json.Marshal(matches)
+	_, _ = s.db.Exec(r.Context(), `
+		INSERT INTO public.screening_checks
+		  (tenant, subject_type, subject_ref, query_name, matched, top_score, matches, list_entity_count, list_refreshed_at, screened_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'payment-gate')`,
+		tenant, subjectType, subjectRef, name, matched, top, mj, loaded, refreshed)
+	if !matched {
+		return false, top, 0, ""
+	}
+	s.notify(r, tenant, "*", "SCREENING_PAYMENT_BLOCK",
+		"OFAC match BLOCKED payment origination: "+name+" (score "+strconv.FormatFloat(top, 'f', 2, 64)+") — compliance review required.", "")
+	s.logScreeningBlock(r, tenant, name, subjectType, subjectRef, top, len(matches))
+	return true, top, http.StatusUnprocessableEntity,
+		fmt.Sprintf("OFAC screening match for %q (score %.2f) — payment blocked pending compliance review", name, top)
+}
+
+// logScreeningBlock: NG has no audit_log table — the screening_checks row
+// written by screenPaymentParty IS the record (append-only, examinable).
+func (s *server) logScreeningBlock(r *http.Request, tenant, name, subjectType, subjectRef string, top float64, matchCount int) {
 }

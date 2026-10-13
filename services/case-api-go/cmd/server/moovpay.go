@@ -184,7 +184,8 @@ func (s *server) listPaymentAccounts(w http.ResponseWriter, r *http.Request) {
 	// Never SELECT account_sealed here: list views see masked data only.
 	rows, _ := s.queryRows(r, `
 		SELECT id, owner_type, owner_ref, label, routing_number, bank_name,
-		       account_last4, account_type, ach_debit_authorized, created_at
+		       account_last4, account_type, ach_debit_authorized,
+		       ach_authorization_name, ach_authorization_at, created_at
 		FROM public.payment_accounts WHERE tenant=$1 ORDER BY created_at DESC LIMIT 500`, tenant)
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": rows})
 }
@@ -210,6 +211,7 @@ type paymentAccount struct {
 	ID, Routing, BankName, AcctType, OwnerRef string
 	Number                                    string // decrypted, in-memory only
 	DebitAuthorized                           bool
+	HasAuthorization                          bool // proof-of-authorization artifact sealed in vault
 }
 
 // loadPaymentAccount decrypts a stored account via the vault. Callers use the
@@ -219,9 +221,9 @@ func (s *server) loadPaymentAccount(r *http.Request, tenant, id string) (*paymen
 	var sealed []byte
 	err := s.db.QueryRow(r.Context(), `
 		SELECT id, routing_number, bank_name, account_type, owner_ref,
-		       account_sealed, ach_debit_authorized
+		       account_sealed, ach_debit_authorized, ach_authorization_sealed IS NOT NULL
 		FROM public.payment_accounts WHERE tenant=$1 AND id=$2`, tenant, id).
-		Scan(&a.ID, &a.Routing, &a.BankName, &a.AcctType, &a.OwnerRef, &sealed, &a.DebitAuthorized)
+		Scan(&a.ID, &a.Routing, &a.BankName, &a.AcctType, &a.OwnerRef, &sealed, &a.DebitAuthorized, &a.HasAuthorization)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +322,17 @@ func (s *server) createACHDebitBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		if !acct.DebitAuthorized {
 			http.Error(w, fmt.Sprintf(`{"error":"payment account %s has no ACH debit authorization on file"}`, it.PaymentAccountID), http.StatusConflict)
+			return
+		}
+		// NACHA WEB authorization-retention rule: the flag alone is not
+		// enough — the signed authorization artifact must be sealed on file.
+		if !acct.HasAuthorization {
+			http.Error(w, fmt.Sprintf(`{"error":"payment account %s has no proof-of-authorization artifact — POST /payments/accounts/{id}/authorization first (NACHA WEB retention rule)"}`, it.PaymentAccountID), http.StatusConflict)
+			return
+		}
+		// OFAC gate: strict-liability — a match blocks origination outright.
+		if blocked, _, code, msg := s.screenPaymentParty(r, tenant, "PARTY", it.InvoiceID, party); blocked {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), code)
 			return
 		}
 		tcode := ach.CheckingDebit
@@ -917,4 +930,48 @@ func (s *server) createMetro2File(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"file_id": fileID, "reference": ref, "records": count,
 		"total_cents": total, "filename": ref + ".dat", "file": f.String(false)})
+}
+
+
+// attachPaymentAuthorization: FINANCE seals the signed ACH authorization
+// (NACHA WEB retention) into the vault against an account. Raw body is the
+// artifact itself (PDF/scan/text), filename via ?name=. Uploading proof IS
+// the authorization: the debit-authorized flag sets here, not by checkbox.
+func (s *server) attachPaymentAuthorization(w http.ResponseWriter, r *http.Request) {
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, paymentAccountRoles...) {
+		http.Error(w, `{"error":"forbidden: requires FINANCE, FEDERAL_ADMIN, or PLATFORM_ADMIN"}`, http.StatusForbidden)
+		return
+	}
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	id := r.PathValue("accountId")
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	if err != nil || len(body) < 16 {
+		http.Error(w, `{"error":"artifact body required (raw file, max 8 MiB)"}`, http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if len(name) > 120 {
+		name = name[:120]
+	}
+	if name == "" {
+		name = "authorization.bin"
+	}
+	sealed, err := s.vaultSealDoc(r, tenant, "payment-account-auth:"+tenant+":"+id, body)
+	if err != nil {
+		http.Error(w, `{"error":"vault seal failed"}`, http.StatusBadGateway)
+		return
+	}
+	res, err := s.db.Exec(r.Context(), `
+		UPDATE public.payment_accounts
+		SET ach_authorization_sealed=$3, ach_authorization_name=$4,
+		    ach_authorization_at=now(), ach_debit_authorized=true
+		WHERE tenant=$1 AND id=$2`, tenant, id, sealed, name)
+	if err != nil || res.RowsAffected() == 0 {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	// NG: no audit_log — the payment_accounts row (ach_authorization_at) is the record.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"account_id": id, "authorization_name": name, "ach_debit_authorized": true})
 }

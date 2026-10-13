@@ -233,6 +233,7 @@ func (s *server) createNachaPayout(w http.ResponseWriter, r *http.Request) {
 	amounts := []int64{}
 	ids := []string{}
 	payableIDs := []string{}
+	blockedParties := []map[string]any{}
 	for i, row := range rows {
 		var dst nachaDestination
 		raw, _ := json.Marshal(row["destination"])
@@ -242,12 +243,30 @@ func (s *server) createNachaPayout(w http.ResponseWriter, r *http.Request) {
 		if dst.Name == "" {
 			dst.Name = fmt.Sprint(row["party"])
 		}
+		// OFAC gate: strict-liability. A matched party is EXCLUDED from the
+		// batch (its payable stays OPEN) and reported — blocking the whole
+		// batch would hold up legitimate payments to everyone else.
+		partyName := fmt.Sprint(row["party"])
+		if blocked, top, code, msg := s.screenPaymentParty(r, tenant, "PARTY", fmt.Sprint(row["id"]), partyName); blocked {
+			if code == http.StatusServiceUnavailable {
+				http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), code)
+				return
+			}
+			blockedParties = append(blockedParties, map[string]any{
+				"payable_id": fmt.Sprint(row["id"]), "party": partyName, "top_score": top})
+			continue
+		}
 		entries = append(entries, dst)
 		amounts = append(amounts, toInt64(row["amount_cents"]))
 		ids = append(ids, fmt.Sprintf("PAY%04d", i+1))
 		payableIDs = append(payableIDs, fmt.Sprint(row["id"]))
 	}
 	if len(entries) == 0 {
+		if len(blockedParties) > 0 {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error": "every payable was blocked by OFAC screening", "blocked": blockedParties})
+			return
+		}
 		http.Error(w, `{"error":"payables found but destinations are incomplete"}`, http.StatusUnprocessableEntity)
 		return
 	}
@@ -277,6 +296,7 @@ func (s *server) createNachaPayout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"batch_id": batchID, "file_reference": fileRef, "entry_count": len(entries),
 		"total_cents": total, "filename": "IDRE-PAYOUT-" + fileRef + ".ach", "file": fileBody,
+		"blocked": blockedParties,
 	})
 }
 

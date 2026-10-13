@@ -563,6 +563,7 @@ func main() {
 		r.Post("/payments/accounts", s.createPaymentAccount)
 		r.Get("/payments/accounts", s.listPaymentAccounts)
 		r.Delete("/payments/accounts/{accountId}", s.deletePaymentAccount)
+		r.Post("/payments/accounts/{accountId}/authorization", s.attachPaymentAuthorization) // vault-sealed NACHA proof-of-authorization
 		r.Get("/payments/routing/{routing}", s.lookupRoutingNumber)
 		r.Post("/payments/ach/debits", s.createACHDebitBatch)
 		r.Post("/payments/ach/returns", s.ingestACHReturns)

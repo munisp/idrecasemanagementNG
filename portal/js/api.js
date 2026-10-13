@@ -262,6 +262,8 @@ const Api = (() => {
       railRouting: (num) => req("GET", `${t()}/payments/routing/${encodeURIComponent(num)}`),
       railAchDebits: (body) => req("POST", `${t()}/payments/ach/debits`, body),
       railAchReturns: (raw) => reqRaw("POST", `${t()}/payments/ach/returns`, raw),
+      railAttachAuth: (id, raw, name) =>
+        reqRaw("POST", `${t()}/payments/accounts/${id}/authorization?name=${encodeURIComponent(name)}`, raw),
       railWire: (body) => req("POST", `${t()}/payments/wire`, body),
       railIcl: () => req("POST", `${t()}/payments/icl`, {}),
       railMetro2: (body) => req("POST", `${t()}/payments/metro2`, body),
