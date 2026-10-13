@@ -211,6 +211,26 @@ def subject(evt: dict) -> tuple[str, str]:
     return "application", evt["application_id"]
 
 
+def features_for(tenant: str) -> dict:
+    """Per-tenant feature toggles, read fresh per document. Orig platform
+    stores them at program_rules.config->'features'; NG inside the manifest
+    (config->'manifest'->'features'). Absent flag = ON, matching the case-api
+    gate semantics — a deploy with no flags configured changes nothing."""
+    try:
+        with psycopg.connect(DSN) as c:
+            row = c.execute(
+                "SELECT config FROM public.program_rules WHERE tenant=%s", (tenant,),
+            ).fetchone()
+    except Exception:
+        return {}
+    if not row:
+        return {}
+    cfg = row[0] or {}
+    flags = dict((cfg.get("manifest") or {}).get("features") or {})
+    flags.update(cfg.get("features") or {})
+    return flags
+
+
 def merge_case_codes(tenant: str, case_id: str, ex: dict) -> None:
     """Lift extracted clinical codes onto the case row so queue filters have
     structured data to work with. Until now ICD-10/CPT/HCPCS extraction was a
@@ -240,12 +260,128 @@ def merge_case_codes(tenant: str, case_id: str, ex: dict) -> None:
             if vals:
                 merged = sorted(set(details.get(key) or []) | vals)[:cap]
                 details[key] = merged
+        # claim_number is the join key for duplicate-claim detection — it has
+        # to live on the case row, not buried in doc_analysis.result.
+        claim_no = (ex.get("identifiers") or {}).get("claim_number")
+        if claim_no and not details.get("claim_number"):
+            details["claim_number"] = claim_no
         if bundling:
             details["bundling_suspected"] = True
         c.execute(
             f"UPDATE tenant_{tenant}.cases SET details=%s, updated_at=now() WHERE id=%s",
             (json.dumps(details), case_id),
         )
+
+
+def _case_activity(tenant: str, case_id: str, typ: str, body: str) -> None:
+    with psycopg.connect(DSN, autocommit=True) as c:
+        c.execute(
+            """INSERT INTO public.case_activities (tenant, case_id, type, body)
+               VALUES (%s,%s,%s,%s)""",
+            (tenant, case_id, typ, body[:2000]),
+        )
+
+
+def _set_details(tenant: str, case_id: str, patch: dict) -> None:
+    with psycopg.connect(DSN, autocommit=True) as c:
+        c.execute(
+            f"UPDATE tenant_{tenant}.cases SET details = details || %s::jsonb, updated_at=now() WHERE id=%s",
+            (json.dumps(patch), case_id),
+        )
+
+
+def necessity_screen(tenant: str, case_id: str, ex: dict) -> None:
+    """dx->CPT plausibility tripwire. Flags go onto the case and the activity
+    stream; the clinical queue's human reviewer adjudicates — this screen
+    never decides anything by itself."""
+    import necessity
+    flags = necessity.screen(ex.get("cpt_codes") or [], ex.get("diagnosis_codes") or [])
+    if not flags:
+        return
+    _set_details(tenant, case_id, {"necessity_flags": flags})
+    _case_activity(tenant, case_id, "NECESSITY_FLAG",
+                   "Automated dx/CPT plausibility screen flagged: " +
+                   "; ".join(f"{f['code']} — {f['reason']}" for f in flags[:3]))
+
+
+def deadline_verification(tenant: str, case_id: str, doc_type: str, ex: dict) -> None:
+    """Extract the EOB's denial/processed date and measure it against the
+    case's filing date. A large gap is a potential timely-filing defect — the
+    attorney's threshold question. Flagged for review, never auto-decided;
+    the program's own clock rules (NSA 4bd post-negotiation, AHCA petition
+    windows) govern the actual determination."""
+    if doc_type != "eob":
+        return
+    denial = None
+    for d in ex.get("dates") or []:
+        label = (d.get("label") or "").lower()
+        if any(k in label for k in ("denial", "denied", "process", "determin", "remit", "paid", "adjudicat")):
+            denial = d.get("iso")
+            break
+    if not denial:
+        return
+    with psycopg.connect(DSN) as c:
+        row = c.execute(
+            f"SELECT opened_at::date, details->>'eob_denial_date' FROM tenant_{tenant}.cases WHERE id=%s",
+            (case_id,),
+        ).fetchone()
+    if not row:
+        return
+    from datetime import date
+    try:
+        denial_date = date.fromisoformat(denial[:10])
+    except ValueError:
+        return
+    opened = row[0]
+    gap = (opened - denial_date).days
+    _set_details(tenant, case_id, {"eob_denial_date": denial_date.isoformat()})
+    if gap > 30 and not row[1]:
+        _set_details(tenant, case_id, {"filing_deadline_risk": True})
+        _case_activity(tenant, case_id, "TIMELY_FILING_RISK",
+                       f"EOB denial/processed date {denial_date.isoformat()} is {gap} days before this "
+                       "case opened — possible timely-filing defect. Attorney review recommended; the "
+                       "program's statutory clock rules govern the actual determination.")
+
+
+def duplicate_detection(tenant: str, case_id: str, ex: dict) -> None:
+    """Same claim number on two open cases in the same tenant = probable
+    duplicate filing (double-dip risk). Flags both cases for review."""
+    claim_no = (ex.get("identifiers") or {}).get("claim_number")
+    if not claim_no:
+        return
+    with psycopg.connect(DSN, autocommit=True) as c:
+        dupes = c.execute(
+            f"""SELECT id, case_number FROM tenant_{tenant}.cases
+                WHERE id <> %s AND details->>'claim_number' = %s
+                  AND status NOT LIKE 'CLOSED%%' LIMIT 10""",
+            (case_id, claim_no),
+        ).fetchall()
+        if not dupes:
+            return
+        nums = [d[1] for d in dupes]
+        _case_activity(tenant, case_id, "DUPLICATE_CLAIM_DETECTED",
+                       f"Claim {claim_no} also appears on open case(s): {', '.join(nums)}")
+        c.execute(
+            f"UPDATE tenant_{tenant}.cases SET details = details || %s::jsonb, updated_at=now() WHERE id=%s",
+            (json.dumps({"duplicate_claim_with": nums}), case_id),
+        )
+        # Mirror the flag onto each duplicate case so it surfaces from either side.
+        me = c.execute(
+            f"SELECT case_number FROM tenant_{tenant}.cases WHERE id=%s", (case_id,),
+        ).fetchone()
+        my_num = me[0] if me else str(case_id)
+        for dup_id, _ in dupes:
+            cur = c.execute(
+                f"SELECT details->'duplicate_claim_with' FROM tenant_{tenant}.cases WHERE id=%s",
+                (dup_id,),
+            ).fetchone()
+            lst = list(cur[0] or []) if cur else []
+            if my_num not in lst:
+                lst.append(my_num)
+                c.execute(
+                    f"UPDATE tenant_{tenant}.cases SET details = jsonb_set(details, '{{duplicate_claim_with}}', %s::jsonb), updated_at=now() WHERE id=%s",
+                    (json.dumps(lst), dup_id),
+                )
 
 
 def persist(evt: dict, ctx: dict) -> None:
@@ -281,7 +417,21 @@ def persist(evt: dict, ctx: dict) -> None:
     # doc_analysis row above is the forensic record; this is what the coding
     # queue's bundling filter and downstream reviews actually read.
     if kind == "case":
-        merge_case_codes(evt["tenant"], case_id, ctx.get("extracted_fields") or {})
+        ex = ctx.get("extracted_fields") or {}
+        merge_case_codes(evt["tenant"], case_id, ex)
+        # Downstream screens (each independently feature-toggled per tenant).
+        # Each is fail-open: a screen error must never block doc persistence.
+        fl = features_for(evt["tenant"])
+        for flag, fn in (
+            ("necessity_screen", lambda: necessity_screen(evt["tenant"], case_id, ex)),
+            ("deadline_verification", lambda: deadline_verification(evt["tenant"], case_id, ctx.get("doc_type", ""), ex)),
+            ("duplicate_detection", lambda: duplicate_detection(evt["tenant"], case_id, ex)),
+        ):
+            if fl.get(flag, True):
+                try:
+                    fn()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"doc-intel: {flag} failed (non-fatal): {exc}", file=sys.stderr, flush=True)
     # Best-effort, like the Temporal signal call below it: the Postgres
     # insert just above is the real system of record for analysis status.
     # A search-index outage should never cost the already-persisted result

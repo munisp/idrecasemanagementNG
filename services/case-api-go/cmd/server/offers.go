@@ -133,6 +133,9 @@ func (s *server) revealCheck(w http.ResponseWriter, r *http.Request) {
 // PARTY callers must hold a party_accounts mapping for this case; staff may
 // submit on a party's behalf (paper/fax offers happen in practice).
 func (s *server) submitOffer(w http.ResponseWriter, r *http.Request) {
+	if !s.featureGate(w, r, r.Context().Value(ctxTenant{}).(string), "sealed_offers") {
+		return
+	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	caseID := chi.URLParam(r, "caseId")
@@ -203,6 +206,9 @@ func (s *server) submitOffer(w http.ResponseWriter, r *http.Request) {
 // listOffers: GET /cases/{caseId}/offers — metadata for all; amounts only to
 // arbitrator/staff once the case is OFFERS_REVEALED or later.
 func (s *server) listOffers(w http.ResponseWriter, r *http.Request) {
+	if !s.featureGate(w, r, r.Context().Value(ctxTenant{}).(string), "sealed_offers") {
+		return
+	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	caseID := chi.URLParam(r, "caseId")
@@ -240,6 +246,9 @@ func (s *server) listOffers(w http.ResponseWriter, r *http.Request) {
 // Lawfulness is decided by the workflow (status OFFERS_REVEALED) and
 // independently re-verified by the vault through the reveal-check oracle.
 func (s *server) revealOffers(w http.ResponseWriter, r *http.Request) {
+	if !s.featureGate(w, r, r.Context().Value(ctxTenant{}).(string), "sealed_offers") {
+		return
+	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
 	if !hasAnyRole(p, "ARBITRATOR", "FEDERAL_ADMIN", "PLATFORM_ADMIN", serviceRole) {
 		http.Error(w, `{"error":"forbidden: requires ARBITRATOR"}`, http.StatusForbidden)
@@ -304,6 +313,9 @@ func (s *server) revealOffers(w http.ResponseWriter, r *http.Request) {
 // issueDetermination: POST /cases/{caseId}/determination — baseball-style:
 // the arbitrator selects exactly one sealed offer; no splitting the difference.
 func (s *server) issueDetermination(w http.ResponseWriter, r *http.Request) {
+	if !s.featureGate(w, r, r.Context().Value(ctxTenant{}).(string), "sealed_offers") {
+		return
+	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
 	if !hasAnyRole(p, "ARBITRATOR", "FEDERAL_ADMIN", "PLATFORM_ADMIN", serviceRole) {
 		http.Error(w, `{"error":"forbidden: requires ARBITRATOR"}`, http.StatusForbidden)

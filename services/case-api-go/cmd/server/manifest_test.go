@@ -62,3 +62,23 @@ func TestIntakeMachineFromManifest(t *testing.T) {
 		t.Fatal("nil manifest must yield nil machine (legacy fallback)")
 	}
 }
+
+// The newly registered platform-capability flags must validate; unknown keys
+// must still be rejected (a typo'd toggle that silently gates nothing is how
+// sector mechanics get mislabeled).
+func TestValidateManifestNewFeatureFlags(t *testing.T) {
+	for _, k := range []string{"review_queues", "party_workspace", "benchmarks",
+		"batch_suggestions", "bundling_filter", "necessity_screen",
+		"deadline_verification", "duplicate_detection"} {
+		m := validManifest()
+		m.Features = map[string]bool{k: false}
+		if err := validateManifest(m); err != nil {
+			t.Errorf("registered feature %q rejected: %v", k, err)
+		}
+	}
+	m := validManifest()
+	m.Features = map[string]bool{"blockchain_reconciliation": true}
+	if err := validateManifest(m); err == nil {
+		t.Error("unknown feature key accepted")
+	}
+}

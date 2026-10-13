@@ -1078,7 +1078,7 @@ const Views = (() => {
     let html = `<div class="view-head"><h1><span class="mono">${esc(c.case_number)}</span></h1>${badge(c.status)} ${badge(d.your_party)}</div>
       <p class="muted">${esc(c.service_line || "")} · disputed ${usd(c.disputed_amount_cents)} · opened ${fmtDate(c.opened_at)}</p>`;
     const acts = [];
-    if (["OFFER_WINDOW_OPEN"].includes(c.status)) acts.push(["Submit sealed offer", () => offerForm(c.id, d.your_party)]);
+    if (App.feature("sealed_offers") && ["OFFER_WINDOW_OPEN"].includes(c.status)) acts.push(["Submit sealed offer", () => offerForm(c.id, d.your_party)]);
     if (acts.length) html += `<div class="actions">` + acts.map((a, i) => `<button class="btn" data-act="${i}">${esc(a[0])}</button>`).join("") + `</div>`;
     if (d.determination)
       html += `<h2>Determination</h2><div class="card"><p><strong>${usd(d.determination.amount_cents)}</strong> — issued ${fmtDate(d.determination.issued_at)}</p>
@@ -1152,13 +1152,13 @@ const Views = (() => {
       if (can("PARTY"))
         acts.push(["Mark fees paid", () => Api.cases.signal(id, "FEES_PAID", { party_id: Auth.claims().sub })]);
       if (can("ARBITRATOR", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
-        acts.push(["Offers panel", () => { location.hash = `#/cases/${id}/offers`; }]);
+        if (App.feature("sealed_offers")) acts.push(["Offers panel", () => { location.hash = `#/cases/${id}/offers`; }]);
       if (can("ARBITRATOR"))
         acts.push(["Issue determination", () => determinationForm(id)]);
       if (can("CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
-        acts.push(["Invite party", () => partyInviteForm(id)]);
+        if (App.feature("party_workspace")) acts.push(["Invite party", () => partyInviteForm(id)]);
       if (can("CASE_MANAGER", "ARBITRATOR", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
-        acts.push(["Request specialty review", () => reviewRequestForm(id)]);
+        if (App.feature("review_queues")) acts.push(["Request specialty review", () => reviewRequestForm(id)]);
       if (can("CASE_MANAGER", "FEDERAL_ADMIN"))
         acts.push(["Finalize IDRE selection", () => Api.cases.signal(id, "SELECTION_FINALIZED", {})]);
       if (can("CASE_MANAGER", "FEDERAL_ADMIN"))
@@ -1166,7 +1166,7 @@ const Views = (() => {
       if (can("CASE_MANAGER", "FEDERAL_ADMIN"))
         acts.push(["Link related case", () => Views.relate(id)]);
       if (can("CASE_MANAGER", "ARBITRATOR", "PM", "FEDERAL_ADMIN", "PLATFORM_ADMIN"))
-        acts.push(["Batchable cases", () => batchableModal(id)]);
+        if (App.feature("batch_suggestions")) acts.push(["Batchable cases", () => batchableModal(id)]);
       if (can("FINANCE") && ["DETERMINED", "CLOSED_PAID"].includes(c.status))
         acts.push(["Record payment", () => Api.cases.signal(id, "PAYMENT_RECORDED", { amount_cents: c.qpa_cents })]);
       if (can("FINANCE"))

@@ -204,10 +204,13 @@ func validateManifest(m *ProgramManifest) error {
 	// Features (phase 6): unknown keys rejected — a typo'd toggle that silently
 	// did nothing would mislabel a sector's statutory mechanics.
 	knownFeatures := map[string]bool{"sealed_offers": true, "negotiation_window": true,
-		"medical_review": true, "escrow_fees": true, "voice_console": true, "crm": true}
+		"medical_review": true, "escrow_fees": true, "voice_console": true, "crm": true,
+		"review_queues": true, "party_workspace": true, "benchmarks": true,
+		"batch_suggestions": true, "bundling_filter": true, "necessity_screen": true,
+		"deadline_verification": true, "duplicate_detection": true}
 	for k := range m.Features {
 		if !knownFeatures[k] {
-			return fmt.Errorf("features.%s unknown (registered: sealed_offers, negotiation_window, medical_review, escrow_fees, voice_console, crm)", k)
+			return fmt.Errorf("features.%s unknown (registered: sealed_offers, negotiation_window, medical_review, escrow_fees, voice_console, crm, review_queues, party_workspace, benchmarks, batch_suggestions, bundling_filter, necessity_screen, deadline_verification, duplicate_detection)", k)
 		}
 	}
 	// Determination engine (phase 3): must be a registered implementation.

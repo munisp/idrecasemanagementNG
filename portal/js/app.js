@@ -116,6 +116,12 @@
       if (!App.manifest) return true; // legacy tenant: everything on (unchanged behavior)
       const f = App.manifest.features || {};
       if (name in f) return f[name];
+      // Platform capabilities (offers workspace additions, queues, analytics,
+      // doc-intel screens) default ON like the server gate; only the original
+      // sector mechanics keep their NSA-flavored defaults.
+      const on = ["review_queues", "party_workspace", "benchmarks", "batch_suggestions",
+        "bundling_filter", "necessity_screen", "deadline_verification", "duplicate_detection"];
+      if (on.includes(name)) return true;
       return name === "sealed_offers" || name === "negotiation_window"; // NSA defaults
     },
   };
@@ -127,8 +133,8 @@
     ["#/dashboard", "▤", "Home"], ["#/cases", "▦", App.t("case_plural")], ["#/pipeline", "▥", "Pipeline"],
     ["#/crm/accounts", "◈", "Accounts"], ["#/crm/leads", "◎", "Leads"], ["#/crm/tasks", "☑", "Tasks"],
   ];
-  if (has("PARTY")) links.push(["#/party", "⚭", "My disputes"]);
-  if (has("DOCTOR", "NURSE", "ATTORNEY", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
+  if (has("PARTY") && App.feature("party_workspace")) links.push(["#/party", "⚭", "My disputes"]);
+  if (App.feature("review_queues") && has("DOCTOR", "NURSE", "ATTORNEY", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
     links.push(["#/queues/CODING", "⌗", "Coding queue"]);
     links.push(["#/queues/CLINICAL", "✚", "Clinical queue"]);
     links.push(["#/queues/LEGAL", "§", "Legal queue"]);
