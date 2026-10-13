@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -402,9 +403,24 @@ func (s *server) submitDocFeedback(w http.ResponseWriter, r *http.Request) {
 
 // ---- vault helpers ---------------------------------------------------------
 
+// vaultPost posts to the vault with the caller's context and the internal
+// service token (when configured). The vault enforces this token on every
+// route whenever VAULT_INTERNAL_TOKEN is set, so the two sides must agree.
+func (s *server) vaultPost(r *http.Request, path string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(r.Context(), "POST", s.cfg.VaultURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if tok := os.Getenv("VAULT_INTERNAL_TOKEN"); tok != "" {
+		req.Header.Set("X-Internal-Auth", tok)
+	}
+	return http.DefaultClient.Do(req)
+}
+
 func (s *server) vaultSealDoc(r *http.Request, tenant, key string, pt []byte) ([]byte, error) {
 	body, _ := json.Marshal(vaultDocReq{Tenant: tenant, Key: key, DataB64: b64enc(pt)})
-	resp, err := http.Post(s.cfg.VaultURL+"/docs/seal", "application/json", bytes.NewReader(body))
+	resp, err := s.vaultPost(r, "/docs/seal", body)
 	if err != nil {
 		return nil, err
 	}
@@ -420,7 +436,7 @@ func (s *server) vaultSealDoc(r *http.Request, tenant, key string, pt []byte) ([
 
 func (s *server) vaultOpenDoc(r *http.Request, tenant, key string, ct []byte) ([]byte, error) {
 	body, _ := json.Marshal(vaultDocReq{Tenant: tenant, Key: key, DataB64: b64enc(ct)})
-	resp, err := http.Post(s.cfg.VaultURL+"/docs/open", "application/json", bytes.NewReader(body))
+	resp, err := s.vaultPost(r, "/docs/open", body)
 	if err != nil {
 		return nil, err
 	}

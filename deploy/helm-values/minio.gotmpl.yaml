@@ -1,7 +1,7 @@
 mode: distributed
 replicas: 4
 rootUser: idre
-rootPassword: idre-secret   # prod: from external secret
+rootPassword: {{ requiredEnv "MINIO_ROOT_PASSWORD" | quote }}   # no default — helmfile sync fails closed without the env var
 buckets:
   - name: lakehouse    # Delta/Parquet zones (bronze/silver/gold)
   - name: idre-docs    # encrypted documents (ciphertext only; vault holds keys)

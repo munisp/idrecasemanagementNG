@@ -82,7 +82,7 @@ releases:
   - name: minio
     namespace: idre-data
     chart: minio/minio
-    values: [helm-values/minio.yaml]
+    values: [helm-values/minio.gotmpl.yaml]
   - name: opensearch
     namespace: idre-data
     chart: opensearch/opensearch

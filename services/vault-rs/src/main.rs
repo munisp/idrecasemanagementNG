@@ -14,9 +14,10 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use axum::{
-    extract::State,
+    extract::{Request, State},
     http::StatusCode,
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
@@ -33,6 +34,9 @@ struct AppState {
     master: Arc<[u8; 32]>,
     case_api: String, // e.g. http://case-api:8080 — reveal-state oracle
     http: reqwest::Client,
+    // Shared internal service token. When set, EVERY vault route requires the
+    // X-Internal-Auth header — network placement alone is not an auth boundary.
+    internal_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +64,8 @@ struct RevealRequest {
     ciphertext_b64: String,
     wrapped_dek_b64: String,
     caller_role: String, // ARBITRATOR | CASE_MANAGER | SYSTEM
+    #[serde(default)]
+    party_id: String, // must match the AAD the offer was sealed with
 }
 
 #[derive(Serialize)]
@@ -183,7 +189,11 @@ async fn reveal(State(st): State<AppState>, Json(req): Json<RevealRequest>) -> i
         _ => return (StatusCode::BAD_REQUEST, "bad ciphertext").into_response(),
     };
     let cipher = Aes256Gcm::new_from_slice(&dek).expect("key");
-    let aad = format!("{}:{}:{}:", req.tenant, req.case_id, req.offer_id); // party validated upstream
+    // AAD must match seal() byte-for-byte (tenant:case:offer:party) or AEAD
+    // verification fails — an omitted party here both breaks lawful reveals
+    // and would let a ciphertext be replayed across parties. The caller must
+    // supply the same party_id the offer was sealed with.
+    let aad = format!("{}:{}:{}:{}", req.tenant, req.case_id, req.offer_id, req.party_id);
     let pt = match cipher.decrypt(
         Nonce::from_slice(&nonce),
         Payload { msg: &ct, aad: aad.as_bytes() },
@@ -241,6 +251,30 @@ async fn open_doc(State(st): State<AppState>, Json(req): Json<DocRequest>) -> im
     }
 }
 
+/// Internal-auth gate: when VAULT_INTERNAL_TOKEN is configured, every route
+/// requires a matching X-Internal-Auth header. Constant-time compare; a
+/// missing/empty token on either side fails closed (401), never open.
+async fn require_internal(
+    State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if let Some(expected) = &st.internal_token {
+        let given = req
+            .headers()
+            .get("X-Internal-Auth")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let (a, b) = (expected.as_bytes(), given.as_bytes());
+        let ok = a.len() == b.len()
+            && a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0;
+        if !ok {
+            return (StatusCode::UNAUTHORIZED, "internal auth required").into_response();
+        }
+    }
+    next.run(req).await
+}
+
 // Multi-thread runtime, one worker per core (explicit for auditability; the
 // vault is CPU-bound on AEAD seal/open, so worker count must equal cores).
 #[tokio::main(flavor = "multi_thread")]
@@ -253,11 +287,19 @@ async fn main() {
     let mut master = [0u8; 32];
     master.copy_from_slice(&raw);
 
+    let internal_token = std::env::var("VAULT_INTERNAL_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    if internal_token.is_none() {
+        tracing::warn!("VAULT_INTERNAL_TOKEN unset — vault routes are unauthenticated (dev only)");
+    }
+
     let st = AppState {
         master: Arc::new(master),
         case_api: std::env::var("CASE_API_URL")
             .unwrap_or_else(|_| "http://localhost:8080".into()),
         http: reqwest::Client::new(),
+        internal_token,
     };
 
     let app = Router::new()
@@ -265,6 +307,7 @@ async fn main() {
         .route("/reveal", post(reveal))
         .route("/docs/seal", post(seal_doc))
         .route("/docs/open", post(open_doc))
+        .layer(middleware::from_fn_with_state(st.clone(), require_internal))
         .with_state(st);
 
     let addr = std::env::var("ADDR").unwrap_or_else(|_| "0.0.0.0:8081".into());

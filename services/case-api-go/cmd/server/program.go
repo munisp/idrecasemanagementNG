@@ -263,7 +263,7 @@ func (s *server) checkEligibility(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"no program rules for tenant"}`, http.StatusBadRequest)
 		return
 	}
-	raw, _ := io.ReadAll(r.Body)
+	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	var in eligibilityInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)

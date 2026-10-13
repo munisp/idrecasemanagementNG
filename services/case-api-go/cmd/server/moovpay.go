@@ -570,6 +570,12 @@ func (s *server) createWireFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"payable is %s, not OPEN"}`, status), http.StatusConflict)
 		return
 	}
+	// OFAC strict-liability gate: a wire is an irreversible same-day settlement,
+	// so a matched payee must stop the file before any instruction is built.
+	if blocked, _, code, msg := s.screenPaymentParty(r, tenant, "PAYABLE", in.PayableID, payee); blocked {
+		http.Error(w, msg, code)
+		return
+	}
 	acct, err := s.loadPaymentAccount(r, tenant, in.PaymentAccountID)
 	if err != nil {
 		http.Error(w, `{"error":"payment account unavailable"}`, http.StatusNotFound)
