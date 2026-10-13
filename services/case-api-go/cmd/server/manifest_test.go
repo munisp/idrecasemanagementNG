@@ -69,7 +69,8 @@ func TestIntakeMachineFromManifest(t *testing.T) {
 func TestValidateManifestNewFeatureFlags(t *testing.T) {
 	for _, k := range []string{"review_queues", "party_workspace", "benchmarks",
 		"batch_suggestions", "bundling_filter", "necessity_screen",
-		"deadline_verification", "duplicate_detection"} {
+		"deadline_verification", "duplicate_detection", "win_probability",
+		"payer_analytics", "fraud_signals", "network_adequacy", "letter_citation"} {
 		m := validManifest()
 		m.Features = map[string]bool{k: false}
 		if err := validateManifest(m); err != nil {

@@ -120,7 +120,8 @@
       // doc-intel screens) default ON like the server gate; only the original
       // sector mechanics keep their NSA-flavored defaults.
       const on = ["review_queues", "party_workspace", "benchmarks", "batch_suggestions",
-        "bundling_filter", "necessity_screen", "deadline_verification", "duplicate_detection"];
+        "bundling_filter", "necessity_screen", "deadline_verification", "duplicate_detection",
+        "win_probability", "payer_analytics", "fraud_signals", "network_adequacy", "letter_citation"];
       if (on.includes(name)) return true;
       return name === "sealed_offers" || name === "negotiation_window"; // NSA defaults
     },
@@ -156,6 +157,7 @@
   if (has("FEDERAL_ADMIN", "STATE_AUDITOR", "PLATFORM_ADMIN")) links.push(["#/reports", "◫", "Reports"]);
   if (has("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) links.push(["#/time", "⏱", "Team time"]);
   if (has("CASE_MANAGER", "FINANCE", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR")) links.push(["#/mail", "✉", "Mail log"]); links.push(["#/payments", "🏦", "Payments"]);
+  if ((App.feature("payer_analytics") || App.feature("network_adequacy")) && has("CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "DOCTOR", "NURSE", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR", "CODER", "NURSE_PHYSICIAN", "PM")) links.push(["#/insights", "◈", "Insights"]);
   if (has("CASE_MANAGER", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
     links.push(["#/billing", "🧾", "Billing"]);
     links.push(["#/arap", "⚖️", "AR / AP"]);
@@ -243,6 +245,7 @@
     [/^#\/cases\/([\w-]+)$/, (m) => Views.caseDetail(m[1])],
     [/^#\/cases\/([\w-]+)\/offers$/, (m) => Views.caseOffers(m[1])],
     [/^#\/queues\/(CODING|CLINICAL|LEGAL)(\?.*)?$/, (m) => Views.queueView(m[1])],
+    [/^#\/insights$/, Views.insightsView],
     [/^#\/party$/, Views.partyCases],
     [/^#\/party\/cases\/([\w-]+)$/, (m) => Views.partyCaseDetail(m[1])],
     [/^#\/new$/, Views.newDispute],

@@ -954,9 +954,10 @@ const Views = (() => {
   async function caseOffers(caseId) {
     let c, offers, bench;
     try {
-      [c, offers, bench] = await Promise.all([
+      [c, offers, bench, winp] = await Promise.all([
         Api.cases.get(caseId), Api.offers.list(caseId),
-        Api.cases.benchmarks(caseId).catch(() => null)]);
+        Api.cases.benchmarks(caseId).catch(() => null),
+        Api.cases.winProbability(caseId).catch(() => null)]);
     } catch (e) { return `<div class="view-head"><h1>Offers</h1></div><p class="muted">${esc(e.message)}</p>`; }
     const usd = (c2) => "$" + ((Number(c2) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
     const rows = (offers.offers || offers || []);
@@ -980,6 +981,10 @@ const Views = (() => {
     if (can("ARBITRATOR") && ["OFFERS_REVEALED", "SELECTION_FINALIZED"].includes(c.status))
       acts.push(["Issue determination", () => determinationForm(caseId)]);
     const bl = (bench && bench.benchmarks) || [];
+    if (winp && winp.sufficient)
+      html += `<div class="card"><strong>Historical read:</strong> in ${winp.n} comparable determinations (${esc(winp.basis)}), the initiating party's offer prevailed ${winp.initiating_win_pct.toFixed(0)}% of the time.</div>`;
+    else if (winp && winp.note)
+      html += `<p class="muted">${esc(winp.note)}</p>`;
     if (bl.length)
       html += `<h2>QPA benchmarks — this tenant</h2>
         <p class="muted">Distribution of qualifying payment amounts on this tenant's cases carrying the same extracted procedure codes. The QPA is the primary statutory reasonableness factor (45 CFR 149.520(b)(2)(ii)).</p>
@@ -1089,6 +1094,34 @@ const Views = (() => {
     return { html, wire: () => {
       document.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => acts[Number(b.dataset.act)][1]()));
     } };
+  }
+
+  // ---- Insights: downstream analytics (oversight + staff) ---------------------
+  async function insightsView() {
+    const usd = (c) => (c == null ? "—" : "$" + ((Number(c) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 0 }));
+    let html = `<div class="view-head"><h1>Insights</h1></div>
+      <p class="muted">Patterns computed from extracted document data and the determination record. Tenant-isolated; parties never see any of this.</p>`;
+    if (App.feature("payer_analytics")) {
+      const payers = (await Api.analytics.payers().catch(() => ({ payers: [] }))).payers || [];
+      html += `<h2>Payer denial patterns</h2><table class="tbl"><thead><tr><th>Payer</th><th>Disputes</th><th>Resolved</th><th>Bundling</th><th>Necessity</th><th>Duplicates</th><th>Avg disputed</th><th>Avg denial→filing</th></tr></thead><tbody>` +
+        (payers.length ? payers.map((r) => `<tr><td class="mono">${esc(r.payer_id)}</td><td>${r.disputes}</td><td>${r.resolved}</td><td>${r.bundling_flags}</td><td>${r.necessity_flags}</td><td>${r.duplicate_flags}</td><td>${usd(r.avg_disputed_cents)}</td><td>${r.avg_denial_to_filing_days ?? "—"}d</td></tr>`).join("")
+          : `<tr><td colspan="8" class="muted">No payer data yet.</td></tr>`) + `</tbody></table>`;
+    }
+    if (App.feature("fraud_signals") && can("STATE_AUDITOR", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
+      const prov = (await Api.analytics.fraudSignals().catch(() => ({ providers: [] }))).providers || [];
+      html += `<h2>Provider tripwire clusters <span class="muted">(oversight surface — patterns for human review, not accusations)</span></h2>
+        <table class="tbl"><thead><tr><th>Provider</th><th>Disputes</th><th>Necessity flags</th><th>Duplicate claims</th><th>Bundling</th><th>Avg QPA</th></tr></thead><tbody>` +
+        (prov.length ? prov.map((r) => `<tr><td class="mono">${esc(r.provider_id)}</td><td>${r.disputes}</td><td>${r.necessity_flags}</td><td>${r.duplicate_claims}</td><td>${r.bundling_flags}</td><td>${usd(r.avg_qpa_cents)}</td></tr>`).join("")
+          : `<tr><td colspan="6" class="muted">No tripwires triggered.</td></tr>`) + `</tbody></table>`;
+    }
+    if (App.feature("network_adequacy")) {
+      const segs = (await Api.analytics.networkAdequacy().catch(() => ({ segments: [] }))).segments || [];
+      html += `<h2>Network-adequacy evidence <span class="muted">(OON dispute concentration)</span></h2>
+        <table class="tbl"><thead><tr><th>Service line</th><th>Payer</th><th>OON disputes</th><th>Avg disputed</th><th>Span</th></tr></thead><tbody>` +
+        (segs.length ? segs.map((r) => `<tr><td>${esc(r.service_line)}</td><td class="mono">${esc(r.payer_id)}</td><td>${r.oon_disputes}</td><td>${usd(r.avg_disputed_cents)}</td><td class="muted">${fmtDate(r.first_seen)} → ${fmtDate(r.latest)}</td></tr>`).join("")
+          : `<tr><td colspan="5" class="muted">No dispute segments yet.</td></tr>`) + `</tbody></table>`;
+    }
+    return html;
   }
 
   async function reviewRequestForm(caseId) {
@@ -4085,5 +4118,5 @@ async function railAttachAuthFn(id) {
     } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, insightsView, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
 })();

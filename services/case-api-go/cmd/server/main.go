@@ -641,6 +641,10 @@ func main() {
 		r.Post("/reviews/{reviewId}/complete", s.completeReview)      // fires the workflow signal
 		r.Get("/cases/{caseId}/benchmarks", s.caseBenchmarks)       // per-code QPA distribution (arbitrator/staff)
 		r.Get("/cases/{caseId}/batchable", s.batchableCases)        // 45 CFR 149.510(c) batching suggestions
+		r.Get("/cases/{caseId}/win-probability", s.winProbability)  // same-payer/code outcomes (n>=5)
+		r.Get("/analytics/payers", s.payerAnalytics)                // denial-pattern profile per payer
+		r.Get("/analytics/fraud-signals", s.fraudSignals)           // oversight: provider tripwire clusters
+		r.Get("/analytics/network-adequacy", s.networkAdequacy)     // OON concentration evidence
 		r.Post("/cases/{caseId}/party-invites", s.inviteParty)        // provision Keycloak party account
 		r.Get("/cases/{caseId}/party-accounts", s.listPartyAccounts)
 		r.Get("/party/cases", s.partyCases)                           // party workspace

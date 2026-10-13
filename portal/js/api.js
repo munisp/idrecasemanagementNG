@@ -71,6 +71,7 @@ const Api = (() => {
       initiate: (payload) => req("POST", `${t()}/cases/initiate`, payload),
       signal: (id, signal, data) => req("POST", `${t()}/cases/${id}/signal`, { signal, data }),
       benchmarks: (id) => req("GET", `${t()}/cases/${id}/benchmarks`),
+      winProbability: (id) => req("GET", `${t()}/cases/${id}/win-probability`),
       batchable: (id) => req("GET", `${t()}/cases/${id}/batchable`),
       upload: (id, file, sealed, folder) => {
         const fd = new FormData();
@@ -284,6 +285,11 @@ const Api = (() => {
       deliverables: () => req("GET", `${t()}/deliverables`),
       submitDeliverable: (p) => req("POST", `${t()}/deliverables`, p),
       requestDeliverable: (name, contract_ref) => req("POST", `${t()}/deliverables/request`, { name, contract_ref }),
+    },
+    analytics: {
+      payers: () => req("GET", `${t()}/analytics/payers`),
+      fraudSignals: () => req("GET", `${t()}/analytics/fraud-signals`),
+      networkAdequacy: () => req("GET", `${t()}/analytics/network-adequacy`),
     },
     offers: {
       submit: (caseId, p) => req("POST", `${t()}/cases/${caseId}/offers`, p),

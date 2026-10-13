@@ -53,6 +53,56 @@ TEMPLATE_BUCKET = "idre-templates"
 DOC_BUCKET = "idre-docs"
 
 
+def features_for(tenant: str) -> dict:
+    """Per-tenant feature toggles (orig: config->'features'; NG: manifest).
+    Absent = ON, matching case-api gate semantics."""
+    try:
+        with psycopg.connect(DSN) as c:
+            row = c.execute(
+                "SELECT config FROM public.program_rules WHERE tenant=%s", (tenant,),
+            ).fetchone()
+    except Exception:
+        return {}
+    if not row:
+        return {}
+    cfg = row[0] or {}
+    flags = dict((cfg.get("manifest") or {}).get("features") or {})
+    flags.update(cfg.get("features") or {})
+    return flags
+
+
+def load_citations(tenant: str, case_id: str) -> dict:
+    """Determination-letter auto-citation: the extracted codes, denial date,
+    determination amount and rationale the letter relies on, flattened to
+    {citation_*} placeholders. Templates that lack them render unchanged —
+    templates that include them make the certified letter self-documenting."""
+    out: dict = {}
+    with psycopg.connect(DSN) as c:
+        det = c.execute(
+            """SELECT d.amount_cents, d.rationale, d.issued_at, o.party_id
+               FROM public.determinations d JOIN public.offers o ON o.id = d.selected_offer_id
+               WHERE d.tenant=%s AND d.case_id=%s""",
+            (tenant, case_id),
+        ).fetchone()
+        row = c.execute(
+            f"SELECT details FROM tenant_{tenant}.cases WHERE id=%s", (case_id,),
+        ).fetchone()
+    details = (row[0] if row else {}) or {}
+    codes = sorted(set((details.get("cpt_codes") or []) + (details.get("hcpcs_codes") or [])))
+    if codes:
+        out["citation_codes"] = ", ".join(codes[:20])
+    if details.get("diagnosis_codes"):
+        out["citation_diagnoses"] = ", ".join(details["diagnosis_codes"][:20])
+    if details.get("eob_denial_date"):
+        out["citation_denial_date"] = str(details["eob_denial_date"])
+    if det:
+        out["citation_determination_amount"] = f"${(det[0] or 0) / 100:,.2f}"
+        out["citation_rationale"] = det[1] or ""
+        out["citation_prevailing_party"] = det[3] or ""
+        out["citation_issued_at"] = det[2].date().isoformat() if det[2] else ""
+    return out
+
+
 def load_case(tenant: str, case_id: str) -> dict:
     with psycopg.connect(DSN) as c:
         row = c.execute(
@@ -132,25 +182,14 @@ def vault_seal(tenant: str, key: str, pt: bytes) -> bytes:
 
 
 def template_config(tenant: str, key: str) -> dict:
-    """Resolve a letter template. Precedence:
-    1. config.letter_templates[] (tenant-specific overrides, as before)
-    2. the Program Manifest's letter pack (letters.templates + letters.pack) —
-       sector packs ship their statutory notice set; tenants override per key.
-    """
     with psycopg.connect(DSN) as c:
         row = c.execute(
-            "SELECT config->'letter_templates', config->'manifest'->'letters' "
-            "FROM public.program_rules WHERE tenant=%s",
+            "SELECT config->'letter_templates' FROM public.program_rules WHERE tenant=%s",
             (tenant,),
         ).fetchone()
-    for t in ((row[0] if row and row[0] else []) or []):
+    for t in (row[0] if row and row[0] else []):
         if t.get("key") == key:
             return t
-    letters = row[1] if row and row[1] else None
-    if letters and key in (letters.get("templates") or []):
-        # Pack entry: template object lives under the pack prefix.
-        return {"key": key, "pack": letters.get("pack", ""),
-                "filename": "{case_number}-" + key + ".pdf", "folder": "CORRESPONDENCE"}
     raise KeyError(f"no letter template {key} for tenant {tenant}")
 
 
@@ -159,13 +198,10 @@ def handle(evt: dict) -> None:
     requested_by = evt.get("requested_by", "system")
     tpl = template_config(tenant, key)
     fields = load_case(tenant, case_id)
+    if key == "determination_letter" and features_for(tenant).get("letter_citation", True):
+        fields.update(load_citations(tenant, case_id))
 
-    # Tenant override wins; otherwise the sector pack's copy (letters.pack prefix).
-    if tpl.get("pack"):
-        template_key = f"{tpl['pack']}/{key}.docx"
-    else:
-        template_key = f"{tenant}/{key}.docx"
-    obj = minio.get_object(TEMPLATE_BUCKET, template_key)
+    obj = minio.get_object(TEMPLATE_BUCKET, f"{tenant}/{key}.docx")
     merged = merge_docx(obj.read(), fields)
     pdf = to_pdf(merged)
 
