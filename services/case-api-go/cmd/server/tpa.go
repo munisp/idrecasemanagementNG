@@ -239,9 +239,10 @@ func (s *server) tpaIntake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		ClientID string         `json:"client_id"`
-		Notes    string         `json:"notes"`
-		Fields   map[string]any `json:"fields"` // manifest intake_fields
+		ClientID  string         `json:"client_id"`
+		PackageID string         `json:"package_id"` // READY onboarding package (required once the client is onboarded)
+		Notes     string         `json:"notes"`
+		Fields    map[string]any `json:"fields"` // manifest intake_fields
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ClientID == "" {
 		http.Error(w, `{"error":"client_id required"}`, http.StatusBadRequest)
@@ -259,6 +260,41 @@ func (s *server) tpaIntake(w http.ResponseWriter, r *http.Request) {
 	if clientStatus != "ACTIVE" {
 		http.Error(w, `{"error":"client relationship is SUSPENDED"}`, http.StatusConflict)
 		return
+	}
+	// Onboarding gate (tpa_onboarding): an onboarded client must file through
+	// its READY package — six ACCEPTED documents + a verified payment rail.
+	// Clients that never started onboarding keep the ungated path.
+	if s.featureEnabled(r, tenant, "tpa_onboarding") {
+		var onboarded int
+		_ = s.db.QueryRow(r.Context(), `
+			SELECT count(*) FROM public.tpa_clients
+			WHERE tenant=$1 AND id=$2 AND (npi IS NOT NULL OR
+			  EXISTS (SELECT 1 FROM public.tpa_packages p WHERE p.tenant=$1 AND p.client_id=$2))`,
+			tenant, in.ClientID).Scan(&onboarded)
+		if onboarded > 0 {
+			if in.PackageID == "" {
+				http.Error(w, `{"error":"this client is onboarded — filings must reference a READY package (package_id)"}`, http.StatusConflict)
+				return
+			}
+			var pkgStatus string
+			err = s.db.QueryRow(r.Context(), `
+				SELECT status FROM public.tpa_packages
+				WHERE tenant=$1 AND tpa_id=$2 AND client_id=$3 AND id=$4`,
+				tenant, org.ID, in.ClientID, in.PackageID).Scan(&pkgStatus)
+			if err != nil || pkgStatus != "READY" {
+				http.Error(w, `{"error":"package not found or not READY (all six documents must be ACCEPTED)"}`, http.StatusConflict)
+				return
+			}
+			var verified int
+			_ = s.db.QueryRow(r.Context(), `
+				SELECT count(*) FROM public.tpa_payment_methods
+				WHERE tenant=$1 AND client_id=$2 AND verified AND status='ACTIVE'`,
+				tenant, in.ClientID).Scan(&verified)
+			if verified == 0 {
+				http.Error(w, `{"error":"no verified payment method for this client"}`, http.StatusConflict)
+				return
+			}
+		}
 	}
 	// Same gate as createIntake: declared intake fields only, required
 	// enforced, from the tenant's manifest.
@@ -296,6 +332,12 @@ func (s *server) tpaIntake(w http.ResponseWriter, r *http.Request) {
 		  (tenant, intake_id, tpa_id, client_id, initiating_party_name, initiating_party_type, filed_by_email)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		tenant, intakeID, org.ID, in.ClientID, partyName, partyType, org.ContactEmail)
+	// Mark the validated package consumed by this filing.
+	if in.PackageID != "" {
+		_, _ = s.db.Exec(r.Context(), `
+			UPDATE public.tpa_packages SET status='FILED', updated_at=now()
+			WHERE tenant=$1 AND id=$2`, tenant, in.PackageID)
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"intake_id": intakeID, "status": "INSTRUCTED", "filing_party_type": partyType,
 		"initiating_party": partyName, "filed_by": org.Name,

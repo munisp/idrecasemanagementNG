@@ -682,6 +682,17 @@ func main() {
 		r.Get("/tpa/dashboard", s.tpaDashboard)             // all my clients' filings
 		r.Get("/admin/tpas", s.adminListTPAs)
 		r.Post("/admin/tpas/{tpaId}/status", s.adminSetTPAStatus) // suspend|reactivate
+		// TPA onboarding (tpa_onboarding.go): profile -> payment -> 6-doc package.
+		r.Put("/tpa/clients/{clientId}/profile", s.tpaUpdateClientProfile)
+		r.Post("/tpa/clients/import", s.tpaImportClientsCSV)
+		r.Post("/tpa/clients/{clientId}/payments", s.tpaAddPayment)
+		r.Get("/tpa/clients/{clientId}/payments", s.tpaListPayments)
+		r.Post("/tpa/clients/{clientId}/packages", s.tpaCreatePackage)
+		r.Post("/tpa/packages/{packageId}/docs", s.tpaAttachDoc)
+		r.Post("/tpa/packages/{packageId}/merged", s.tpaUploadMerged)
+		r.Get("/tpa/packages/{packageId}", s.tpaPackageStatus)
+		r.Post("/tpa/packages/bulk", s.tpaUploadBulkZip)
+		r.Get("/tpa/onboarding", s.tpaOnboardingBoard)
 
 		// Rule engine administration (admin roles only; every write audited).
 		r.Get("/rules", s.listRules)

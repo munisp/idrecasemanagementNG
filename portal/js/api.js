@@ -214,6 +214,33 @@ const Api = (() => {
       tpaDashboard: (tpaId) => req("GET", `${t()}/tpa/dashboard${qs(tpaId ? { tpa_id: tpaId } : {})}`),
       adminTpas: () => req("GET", `${t()}/admin/tpas`),
       adminTpaStatus: (id, status) => req("POST", `${t()}/admin/tpas/${id}/status`, { status }),
+      tpaOnboarding: () => req("GET", `${t()}/tpa/onboarding`),
+      tpaClientProfile: (clientId, body) => req("PUT", `${t()}/tpa/clients/${clientId}/profile`, body),
+      tpaImportClients: (file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        return req("POST", `${t()}/tpa/clients/import`, fd, true);
+      },
+      tpaPayments: (clientId) => req("GET", `${t()}/tpa/clients/${clientId}/payments`),
+      tpaAddPayment: (clientId, body) => req("POST", `${t()}/tpa/clients/${clientId}/payments`, body),
+      tpaCreatePackage: (clientId, mode) => req("POST", `${t()}/tpa/clients/${clientId}/packages`, { mode }),
+      tpaPackage: (packageId) => req("GET", `${t()}/tpa/packages/${packageId}`),
+      tpaAttachDoc: (packageId, slot, file) => {
+        const fd = new FormData();
+        fd.append("slot", slot);
+        fd.append("file", file);
+        return req("POST", `${t()}/tpa/packages/${packageId}/docs`, fd, true);
+      },
+      tpaUploadMerged: (packageId, file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        return req("POST", `${t()}/tpa/packages/${packageId}/merged`, fd, true);
+      },
+      tpaBulkPackages: (file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        return req("POST", `${t()}/tpa/packages/bulk`, fd, true);
+      },
 
       pingPresence: (name) => req("POST", `${t()}/presence/ping`, { name }),
       saveManifest: (manifest, note) => req("PUT", `${t()}/manifest`, { manifest, note }),

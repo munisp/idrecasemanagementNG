@@ -121,7 +121,8 @@
       // sector mechanics keep their NSA-flavored defaults.
       const on = ["review_queues", "party_workspace", "benchmarks", "batch_suggestions",
         "bundling_filter", "necessity_screen", "deadline_verification", "duplicate_detection",
-        "win_probability", "payer_analytics", "fraud_signals", "network_adequacy", "letter_citation"];
+        "win_probability", "payer_analytics", "fraud_signals", "network_adequacy", "letter_citation",
+        "tpa_onboarding"];
       if (on.includes(name)) return true;
       return name === "sealed_offers" || name === "negotiation_window"; // NSA defaults
     },
