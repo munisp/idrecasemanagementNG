@@ -282,7 +282,18 @@ async fn main() {
     tracing_subscriber::fmt::init();
     let master_hex = std::env::var("VAULT_MASTER_SECRET")
         .expect("VAULT_MASTER_SECRET (64 hex chars) required — inject via Dapr secret store");
-    let raw = hex::decode(master_hex).expect("hex");
+    // Production guard: refuse the well-known compose dev secret so a
+    // misconfigured prod deploy fails at boot, not at breach time.
+    let env = std::env::var("APP_ENV")
+        .or_else(|_| std::env::var("ENV"))
+        .unwrap_or_default()
+        .to_lowercase();
+    if (env == "production" || env == "prod")
+        && master_hex == "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    {
+        panic!("VAULT_MASTER_SECRET is the compose dev default — refusing to start in production");
+    }
+    let raw = hex::decode(&master_hex).expect("hex");
     assert_eq!(raw.len(), 32, "master must be 32 bytes");
     let mut master = [0u8; 32];
     master.copy_from_slice(&raw);

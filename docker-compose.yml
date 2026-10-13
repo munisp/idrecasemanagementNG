@@ -173,6 +173,7 @@ services:
       TEMPORAL_HOST: temporal:7233
       TIGERBEETLE_ADDRESSES: tigerbeetle:3000
       VAULT_URL: http://vault:8081
+      VAULT_INTERNAL_TOKEN: ${VAULT_INTERNAL_TOKEN:-dev-internal-token}  # must match the vault service
       REDIS_ADDR: redis:6379            # JWKS cache + initiate idempotency
       PERMIFY_URL: http://permify:3476  # ReBAC object-level authorization (unset = dev bypass)
       GRAPH_INTEL_URL: http://graph-intel:8082  # FalkorDB + GraphSAGE + EPR-KGQA proxy target
@@ -197,6 +198,7 @@ services:
       MINIO_USER: idre
       MINIO_PASSWORD: idre-secret
       VAULT_URL: http://vault:8081
+      VAULT_INTERNAL_TOKEN: ${VAULT_INTERNAL_TOKEN:-dev-internal-token}  # must match the vault service
     depends_on: [postgres, kafka, minio, vault]
 
   clamd:
@@ -210,7 +212,7 @@ services:
     environment:
       VAULT_MASTER_SECRET: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"  # dev only
       CASE_API_URL: http://case-api:8080
-      VAULT_INTERNAL_TOKEN: dev-internal-token
+      VAULT_INTERNAL_TOKEN: ${VAULT_INTERNAL_TOKEN:-dev-internal-token}  # dev default; set a real token (and ENV=production) in prod
     ports: ["8081:8081"]
 
   idre-workflows:
@@ -220,6 +222,7 @@ services:
       TEMPORAL_HOST: temporal:7233
       CASE_API_URL: http://case-api:8080
       VAULT_URL: http://vault:8081
+      VAULT_INTERNAL_TOKEN: ${VAULT_INTERNAL_TOKEN:-dev-internal-token}  # must match the vault service
       DAPR_APP_PORT: "9100"  # Dapr cron binding invokes POST /cms-monthly here
     ports: ["9100:9100"]
     depends_on: [temporal, case-api]
@@ -231,6 +234,7 @@ services:
       KAFKA_BROKERS: kafka:9092
       MINIO_ENDPOINT: minio:9000
       VAULT_URL: http://vault:8081
+      VAULT_INTERNAL_TOKEN: ${VAULT_INTERNAL_TOKEN:-dev-internal-token}  # must match the vault service
       CASE_API_URL: http://case-api:8080
       OPENSEARCH_URL: http://opensearch:9200
       VLM_ENDPOINT: ${VLM_ENDPOINT:-http://vllm:8000/v1}

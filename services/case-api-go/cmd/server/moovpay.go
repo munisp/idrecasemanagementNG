@@ -297,7 +297,10 @@ func (s *server) createACHDebitBatch(w http.ResponseWriter, r *http.Request) {
 	bh.ODFIIdentification = cfg.OriginatingDFI
 	batch := ach.NewBatchWEB(bh)
 
-	type itemRef struct{ invoiceID, acctID, trace string }
+	type itemRef struct {
+		invoiceID, acctID, trace string
+		attempt                  int
+	}
 	var refs []itemRef
 	var total int64
 	for i, it := range in.Items {
@@ -313,6 +316,23 @@ func (s *server) createACHDebitBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		if status != "OPEN" {
 			http.Error(w, fmt.Sprintf(`{"error":"invoice %s is %s, not OPEN"}`, invoiceNo, status), http.StatusConflict)
+			return
+		}
+		// NACHA reinitiation rules: only R01/R09 returns may be reinitiated,
+		// and at most twice beyond the original entry (3 originations total).
+		var attempts int
+		var hardReturn string
+		_ = s.db.QueryRow(r.Context(), `
+			SELECT count(*),
+			       coalesce(max(CASE WHEN status='RETURNED' AND return_code NOT IN ('R01','R09') THEN return_code END), '')
+			FROM public.payment_file_items
+			WHERE tenant=$1 AND invoice_id=$2`, tenant, it.InvoiceID).Scan(&attempts, &hardReturn)
+		if hardReturn != "" {
+			http.Error(w, fmt.Sprintf(`{"error":"invoice %s was returned %s — not reinitiable under NACHA (only R01/R09 may be reinitiated)"}`, invoiceNo, hardReturn), http.StatusUnprocessableEntity)
+			return
+		}
+		if attempts >= 3 {
+			http.Error(w, fmt.Sprintf(`{"error":"invoice %s reached the NACHA reinitiation cap (original entry + 2 reinitiations)"}`, invoiceNo), http.StatusUnprocessableEntity)
 			return
 		}
 		acct, err := s.loadPaymentAccount(r, tenant, it.PaymentAccountID)
@@ -351,7 +371,7 @@ func (s *server) createACHDebitBatch(w http.ResponseWriter, r *http.Request) {
 		trace := cfg.OriginatingDFI + numeric(strconv.Itoa(i+1), 7)
 		entry.TraceNumber = trace
 		batch.AddEntry(entry)
-		refs = append(refs, itemRef{it.InvoiceID, it.PaymentAccountID, trace})
+		refs = append(refs, itemRef{it.InvoiceID, it.PaymentAccountID, trace, attempts + 1})
 		total += amount
 	}
 	if err := batch.Create(); err != nil {
@@ -384,9 +404,9 @@ func (s *server) createACHDebitBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, rf := range refs {
 		_, _ = s.db.Exec(r.Context(), `
-			INSERT INTO public.payment_file_items (tenant, file_id, invoice_id, amount_cents, trace_number, status)
-			SELECT $1,$2,$3, amount_cents, $4, 'SENT' FROM public.invoices WHERE id=$3 AND tenant=$1`,
-			tenant, fileID, rf.invoiceID, rf.trace)
+			INSERT INTO public.payment_file_items (tenant, file_id, invoice_id, amount_cents, trace_number, status, attempt_count)
+			SELECT $1,$2,$3, amount_cents, $4, 'SENT', $5 FROM public.invoices WHERE id=$3 AND tenant=$1`,
+			tenant, fileID, rf.invoiceID, rf.trace, rf.attempt)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"file_id": fileID, "reference": ref, "entry_count": len(refs),
@@ -427,17 +447,34 @@ func (s *server) ingestACHReturns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"file parsed but contains no return entries (Addenda99)"}`, http.StatusUnprocessableEntity)
 		return
 	}
-	applied, unmatched := 0, 0
+	applied, unmatched, reinitiable := 0, 0, 0
 	for _, rt := range returns {
-		res, err := s.db.Exec(r.Context(), `
+		var invoiceID string
+		err := s.db.QueryRow(r.Context(), `
 			UPDATE public.payment_file_items
 			SET status='RETURNED', return_code=$3, return_reason=$4, updated_at=now()
-			WHERE tenant=$1 AND trace_number=$2 AND status <> 'RETURNED'`,
-			tenant, rt.Trace, rt.Code, rt.Reason)
-		if err == nil && res.RowsAffected() > 0 {
-			applied++
-		} else {
+			WHERE tenant=$1 AND trace_number=$2 AND status <> 'RETURNED'
+			RETURNING invoice_id`,
+			tenant, rt.Trace, rt.Code, rt.Reason).Scan(&invoiceID)
+		if err != nil {
 			unmatched++
+			continue
+		}
+		applied++
+		// NACHA reinitiation: R01/R09 may be reinitiated up to twice. Mark the
+		// item RETRY_ELIGIBLE (invoice stays OPEN) while under the cap; the
+		// debit-batch endpoint enforces the cap and the R-code whitelist.
+		if rt.Code == "R01" || rt.Code == "R09" {
+			var attempts int
+			_ = s.db.QueryRow(r.Context(), `
+				SELECT count(*) FROM public.payment_file_items
+				WHERE tenant=$1 AND invoice_id=$2`, tenant, invoiceID).Scan(&attempts)
+			if attempts < 3 {
+				_, _ = s.db.Exec(r.Context(), `
+					UPDATE public.payment_file_items SET status='RETRY_ELIGIBLE', updated_at=now()
+					WHERE tenant=$1 AND trace_number=$2`, tenant, rt.Trace)
+				reinitiable++
+			}
 		}
 	}
 	ref := "RETURN-" + time.Now().Format("060102-150405")
@@ -446,13 +483,24 @@ func (s *server) ingestACHReturns(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO public.payment_files (tenant, kind, reference, item_count, status, file_body, detail, created_by)
 		VALUES ($1,'ACH_RETURN',$2,$3,'GENERATED',$4,$5,$6) RETURNING id`,
 		tenant, ref, len(returns), string(body),
-		json.RawMessage(fmt.Sprintf(`{"applied":%d,"unmatched":%d}`, applied, unmatched)), p.Subject).Scan(&fileID)
+		json.RawMessage(fmt.Sprintf(`{"applied":%d,"unmatched":%d,"reinitiable":%d}`, applied, unmatched, reinitiable)), p.Subject).Scan(&fileID)
 	if applied > 0 {
 		s.notify(r, tenant, "*", "ACH_RETURN",
-			fmt.Sprintf("%d ACH return(s) matched to payment items; %d unmatched.", applied, unmatched), "")
+			fmt.Sprintf("%d ACH return(s) matched to payment items; %d unmatched; %d eligible for reinitiation (R01/R09, under NACHA cap).", applied, unmatched, reinitiable), "")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"file_id": fileID, "returns": len(returns), "applied": applied, "unmatched": unmatched})
+		"file_id": fileID, "returns": len(returns), "applied": applied, "unmatched": unmatched, "reinitiable": reinitiable})
+}
+
+// settleACHWindow lazily flips SENT debit items to SETTLED once the NACHA
+// return window (two banking days, approximated as 48 hours) has passed with
+// no return ingested. A late return can still flip a SETTLED item back —
+// ingestACHReturns accepts any non-RETURNED prior status.
+func (s *server) settleACHWindow(r *http.Request, tenant string) {
+	_, _ = s.db.Exec(r.Context(), `
+		UPDATE public.payment_file_items
+		SET status='SETTLED', updated_at=now()
+		WHERE tenant=$1 AND status='SENT' AND updated_at < now() - interval '2 days'`, tenant)
 }
 
 // listPaymentFiles / paymentFileBody: staff visibility over generated and
@@ -464,6 +512,7 @@ func (s *server) listPaymentFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant := r.Context().Value(ctxTenant{}).(string)
+	s.settleACHWindow(r, tenant)
 	kind := strings.ToUpper(r.URL.Query().Get("kind"))
 	q := `
 		SELECT f.id, f.kind, f.reference, f.item_count, f.total_cents, f.status, f.created_at, f.detail
@@ -485,6 +534,7 @@ func (s *server) paymentFileItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant := r.Context().Value(ctxTenant{}).(string)
+	s.settleACHWindow(r, tenant)
 	rows, _ := s.queryRows(r, `
 		SELECT i.id, i.invoice_id, i.payable_id, i.check_id, i.amount_cents,
 		       i.trace_number, i.status, i.return_code, i.return_reason

@@ -356,8 +356,37 @@ func resolveTBAddresses(addrs []string) ([]string, error) {
 	return out, nil
 }
 
+// enforceProductionSecrets refuses to boot with any known development-default
+// secret when ENV/APP_ENV=production. Compose ships dev defaults for laptop
+// parity; this guard makes a misconfigured prod deploy fail loudly at startup
+// instead of silently serving with credentials an attacker can guess.
+func enforceProductionSecrets(cfg Config) {
+	env := strings.ToLower(os.Getenv("ENV"))
+	if v := os.Getenv("APP_ENV"); v != "" {
+		env = strings.ToLower(v)
+	}
+	if env != "production" && env != "prod" {
+		return
+	}
+	var bad []string
+	if strings.Contains(cfg.DatabaseURL, "idre:idre@") {
+		bad = append(bad, "DATABASE_URL uses the dev idre:idre credentials")
+	}
+	if cfg.WorkerToken == "" || cfg.WorkerToken == "dev-worker-token" {
+		bad = append(bad, "WORKER_TOKEN is unset or the dev default")
+	}
+	if t := os.Getenv("VAULT_INTERNAL_TOKEN"); t == "" || t == "dev-internal-token" {
+		bad = append(bad, "VAULT_INTERNAL_TOKEN is unset or the dev default")
+	}
+	if len(bad) > 0 {
+		slog.Error("refusing to start in production with development-default secrets", "findings", bad)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	cfg := configFromEnv()
+	enforceProductionSecrets(cfg)
 	ctx := context.Background()
 
 	// Connection pool sized for throughput: 50 in-flight queries per replica

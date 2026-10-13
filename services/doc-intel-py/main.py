@@ -109,6 +109,10 @@ def fire_doc_rules(evt: dict, kind: str, subj_id: str, ctx: dict) -> None:
 
 DSN = os.environ.get("DATABASE_URL", "postgres://idre:idre@localhost:5432/idre")
 VAULT = os.environ.get("VAULT_URL", "http://localhost:8081")
+# Vault enforces X-Internal-Auth on every route when VAULT_INTERNAL_TOKEN is
+# set on its side — both sides must agree (compose wires one shared value).
+VAULT_TOKEN = os.environ.get("VAULT_INTERNAL_TOKEN", "")
+VAULT_HEADERS = {"X-Internal-Auth": VAULT_TOKEN} if VAULT_TOKEN else {}
 TEMPORAL_SIGNAL_URL = os.environ.get("CASE_API_URL", "http://localhost:8080")
 # The signal call below sent no Authorization header at all, wrapped in a
 # silent except -- it has always 401'd (case-api's /signal routes require
@@ -140,7 +144,7 @@ search = OpenSearch(
 def fetch_and_decrypt(tenant: str, object_key: str) -> bytes:
     import base64
     ct = minio.get_object("idre-docs", object_key).read()
-    resp = httpx.post(f"{VAULT}/docs/open", timeout=60, json={
+    resp = httpx.post(f"{VAULT}/docs/open", timeout=60, headers=VAULT_HEADERS, json={
         "tenant": tenant, "key": object_key, "data_b64": base64.b64encode(ct).decode(),
     })
     resp.raise_for_status()

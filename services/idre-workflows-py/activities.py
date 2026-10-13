@@ -12,6 +12,13 @@ from temporalio import activity
 DSN = os.environ.get("DATABASE_URL", "postgres://idre:idre@localhost:5432/idre")
 CASE_API = os.environ.get("CASE_API_URL", "http://localhost:8080")
 VAULT_URL = os.environ.get("VAULT_URL", "http://localhost:8081")
+# Vault enforces X-Internal-Auth on every route when VAULT_INTERNAL_TOKEN is
+# set on its side — both sides must agree (compose wires one shared value).
+VAULT_HEADERS = (
+    {"X-Internal-Auth": os.environ["VAULT_INTERNAL_TOKEN"]}
+    if os.environ.get("VAULT_INTERNAL_TOKEN")
+    else {}
+)
 NOTIFY_URL = os.environ.get("NOTIFY_URL", "http://localhost:8090")
 
 
@@ -56,7 +63,7 @@ async def post_ledger_transfer(tenant: str, transfer: dict) -> None:
 @activity.defn
 async def request_lawful_reveal(case_id: str) -> None:
     """Ask the vault to unlock the offer window (BOTH_SUBMITTED / WINDOW_EXPIRED)."""
-    async with httpx.AsyncClient(base_url=VAULT_URL, timeout=15) as client:
+    async with httpx.AsyncClient(base_url=VAULT_URL, timeout=15, headers=VAULT_HEADERS) as client:
         # The vault independently verifies workflow state before any decrypt.
         resp = await client.post("/internal/mark-revealable", json={"case_id": case_id})
         resp.raise_for_status()
