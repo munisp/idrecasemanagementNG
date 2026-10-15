@@ -204,8 +204,9 @@
     const linkFor = (h) => h.kind === "case" ? `#/cases/${h.id}`
       : h.kind === "document" ? `#/cases/${h.case_id || ""}`
       : h.kind === "account" ? `#/crm/accounts/${h.id}`
+      : h.kind === "entity" ? `#/crm/360/${h.id}`
       : h.kind === "lead" ? "#/crm/leads" : "#/crm/accounts";
-    const iconFor = (h) => h.kind === "case" ? "▦" : h.kind === "document" ? "🗎" : "◈";
+    const iconFor = (h) => h.kind === "case" ? "▦" : h.kind === "document" ? "🗎" : h.kind === "entity" ? "◉" : "◈";
     let timer = 0, items = [], sel = -1;
     const closeDrop = () => { drop.hidden = true; items = []; sel = -1; };
     async function refresh() {

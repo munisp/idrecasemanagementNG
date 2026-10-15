@@ -118,6 +118,9 @@ func (s *server) registerHealthPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"registration failed — an organization with this email may already exist for this program"}`, http.StatusConflict)
 		return
 	}
+	if s.featureEnabled(r, strings.ToLower(in.Tenant), "entity360") {
+		s.ensureEntityQuiet(r.Context(), strings.ToLower(in.Tenant), "health_plans", id, "HEALTH_PLAN", in.Name, "", strings.TrimSpace(in.FEIN), in.NAIC, strings.TrimSpace(in.FEIN))
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"plan_id": id, "status": "ACTIVE", "claim_code": code,
 		"next": "Sign in to the portal with a health plan account and enter this claim code to link your organization. Then roster your parties, set up payment per party, and assemble validated document packages.",
@@ -222,6 +225,9 @@ func (s *server) hpAddParty(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, `{"error":"save failed"}`, http.StatusInternalServerError)
 		return
+	}
+	if s.featureEnabled(r, tenant, "entity360") {
+		s.ensureEntityQuiet(r.Context(), tenant, "hp_parties", id, ptype, strings.TrimSpace(in.PartyName), "", "", "", "")
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"party_id": id, "onboarding_status": "PROFILE_INCOMPLETE"})
 }
@@ -410,6 +416,9 @@ func (s *server) hpImportPartiesCSV(w http.ResponseWriter, r *http.Request) {
 				res.OK, res.PartyID = true, id
 				imported++
 				s.recomputeHpPartyStatus(r, tenant, id)
+				if s.featureEnabled(r, tenant, "entity360") {
+					s.ensureEntityQuiet(r.Context(), tenant, "hp_parties", id, ptype, name, npi, tin, "", "")
+				}
 			}
 		}
 		report = append(report, res)

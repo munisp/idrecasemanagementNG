@@ -510,10 +510,15 @@ func main() {
 		r.Post("/entities", s.entityCreate)
 		r.Post("/entities/{entityId}/links", s.entityConfirmLink)
 		r.Delete("/entities/{entityId}/links/{linkId}", s.entityUnlink)
+		r.Get("/entities/sources/search", s.entitySourceSearch)
+		r.Post("/entities/{entityId}/merge", s.entityMerge)
 		r.Get("/entity360/lookup", s.entityLookupRef)
+		r.Get("/entity360/outreach", s.entityOutreach)
+		r.Get("/entity360/{entityId}/graph", s.entityGraph)
 		r.Get("/entity360/{entityId}", s.entity360View)
 		r.Post("/contacts", s.createContact)
 		r.Get("/leads", s.listLeads)
+		r.Post("/leads", s.createLead)
 		r.Post("/leads/{leadId}/convert", s.convertLead)
 		r.Get("/tasks", s.listTasks)
 		r.Post("/tasks", s.createTask)
@@ -526,6 +531,7 @@ func main() {
 		r.Post("/cases/{caseId}/assign", s.assignCase)
 		r.Post("/cases/{caseId}/escalate", s.escalateCase)
 		r.Get("/internal/ledger/balances", s.ledgerBalances)            // worker-token: reconciliation job
+		r.Post("/internal/entities/backfill", s.entityBackfill)          // worker-token: link pre-registry CRM records to entities
 		r.Post("/checks", s.uploadCheck)                                // physical check photo/scan intake
 		r.Get("/checks", s.listChecks)                                  // review queue
 		r.Post("/checks/{checkId}/clear", s.clearCheck)                 // funds-cleared settlement

@@ -78,6 +78,9 @@ func (s *server) registerTPA(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"registration failed — an organization with this email may already exist for this program"}`, http.StatusConflict)
 		return
 	}
+	if s.featureEnabled(r, strings.ToLower(in.Tenant), "entity360") {
+		s.ensureEntityQuiet(r.Context(), strings.ToLower(in.Tenant), "tpas", id, "TPA", in.Name, "", "", "", "")
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"tpa_id": id, "status": "ACTIVE", "claim_code": code,
 		"next": "Sign in to the portal with a TPA account and enter this claim code (TPA → Claim) to link your organization. Then add your initiating parties and file on their behalf.",
@@ -167,6 +170,9 @@ func (s *server) tpaAddClient(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, `{"error":"client already exists for this TPA"}`, http.StatusConflict)
 		return
+	}
+	if s.featureEnabled(r, tenant, "entity360") {
+		s.ensureEntityQuiet(r.Context(), tenant, "tpa_clients", id, pt, in.PartyName, "", "", "", "")
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"client_id": id, "party_type": pt, "status": "ACTIVE"})
 }

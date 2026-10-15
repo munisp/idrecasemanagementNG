@@ -3706,7 +3706,8 @@ const Views = (() => {
     try {
       const r = await Api.program.tpaMe();
       orgBox.innerHTML = `<div class="stat-grid"><div class="stat"><div class="stat-num">${esc(r.tpa.name)}</div>
-        <div class="muted">${esc(r.tpa.contact_email)} · ${badge(r.tpa.status)}</div></div></div>`;
+        <div class="muted">${esc(r.tpa.contact_email)} · ${badge(r.tpa.status)}</div>
+        ${App.feature("entity360") && can("CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<button class="mini" style="margin-top:8px" onclick="CrmViews.openEntity360('tpas','${r.tpa.id}')">Entity 360</button>` : ""}</div></div>`;
       document.getElementById("tpa-body").style.display = "";
       tpaClientsBox(); tpaDashBox(); tpaBatchesBox();
       if (App.feature("tpa_onboarding")) tpaOnboardingBox();
@@ -3926,7 +3927,8 @@ const Views = (() => {
     try {
       const r = await Api.program.hpMe();
       orgBox.innerHTML = `<div class="stat-grid"><div class="stat"><div class="stat-num">${esc(r.health_plan.name)}</div>
-        <div class="muted">${esc(r.health_plan.contact_email)} · ${r.health_plan.naic ? "NAIC " + esc(r.health_plan.naic) + " · " : ""}${esc(r.health_plan.line_of_business || "")} ${badge(r.health_plan.status)}</div></div></div>`;
+        <div class="muted">${esc(r.health_plan.contact_email)} · ${r.health_plan.naic ? "NAIC " + esc(r.health_plan.naic) + " · " : ""}${esc(r.health_plan.line_of_business || "")} ${badge(r.health_plan.status)}</div>
+        ${App.feature("entity360") && can("CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN") ? `<button class="mini" style="margin-top:8px" onclick="CrmViews.openEntity360('health_plans','${r.health_plan.id}')">Entity 360</button>` : ""}</div></div>`;
       document.getElementById("hp-body").style.display = "";
       hpOnboardingBox();
     } catch (e) {

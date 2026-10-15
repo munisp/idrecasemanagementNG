@@ -318,6 +318,9 @@ func (s *server) tpaImportClientsCSV(w http.ResponseWriter, r *http.Request) {
 				res.OK, res.ClientID = true, id
 				imported++
 				s.recomputeClientStatus(r, tenant, id)
+				if s.featureEnabled(r, tenant, "entity360") {
+					s.ensureEntityQuiet(r.Context(), tenant, "tpa_clients", id, ptype, name, npi, tin, "", "")
+				}
 			}
 		}
 		report = append(report, res)

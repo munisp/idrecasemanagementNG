@@ -130,6 +130,11 @@ const Api = (() => {
       entity360: (id) => req("GET", `${t()}/entity360/${id}`),
       entityLink: (id, body) => req("POST", `${t()}/entities/${id}/links`, body),
       entityUnlink: (id, linkId) => req("DELETE", `${t()}/entities/${id}/links/${linkId}`),
+      entitySourceSearch: (q) => req("GET", `${t()}/entities/sources/search?q=${encodeURIComponent(q)}`),
+      entityMerge: (id, intoId) => req("POST", `${t()}/entities/${id}/merge`, { into_id: intoId }),
+      entityOutreach: (minCases, quietDays) => req("GET", `${t()}/entity360/outreach?min_cases=${minCases || 3}&quiet_days=${quietDays || 90}`),
+      entityGraph: (id) => req("GET", `${t()}/entity360/${id}/graph`),
+      createLead: (body) => req("POST", `${t()}/leads`, body),
       createContact: (p) => req("POST", `${t()}/contacts`, p),
       leads: (params = {}) => {
         const qs = new URLSearchParams(params).toString();

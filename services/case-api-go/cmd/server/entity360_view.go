@@ -155,6 +155,131 @@ func (s *server) entityCaseIDs(ctx context.Context, tenant string, byTable map[s
 	return out
 }
 
+// entityCaseSides: the same case universe split by which side of the dispute
+// the entity sat on. Initiating = filed through one of its org rows
+// (case_origin) or as the CRM provider account; responding = named as the
+// payer account. A case can be on both sides for a self-funded TPA entity.
+func (s *server) entityCaseSides(ctx context.Context, tenant string, byTable map[string][]string) (initiating, responding []string) {
+	iSet, rSet := map[string]bool{}, map[string]bool{}
+	cond := []string{}
+	args := []any{tenant}
+	addIn := func(col string, ids []string) {
+		if len(ids) == 0 {
+			return
+		}
+		args = append(args, ids)
+		cond = append(cond, fmt.Sprintf("%s = ANY($%d)", col, len(args)))
+	}
+	addIn("tpa_id", byTable["tpas"])
+	addIn("client_id", byTable["tpa_clients"])
+	addIn("health_plan_id", byTable["health_plans"])
+	addIn("hp_party_id", byTable["hp_parties"])
+	if len(cond) > 0 {
+		rows, err := s.db.Query(ctx, fmt.Sprintf(
+			`SELECT case_id::text FROM public.case_origin WHERE tenant=$1 AND case_id IS NOT NULL AND (%s)`,
+			strings.Join(cond, " OR ")), args...)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil {
+					iSet[id] = true
+				}
+			}
+		}
+	}
+	if accts := byTable["accounts"]; len(accts) > 0 {
+		tcase := fmt.Sprintf("tenant_%s.cases", sanitizeTenant(tenant))
+		rows, err := s.db.Query(ctx, fmt.Sprintf(
+			`SELECT id::text, (payer_id = ANY($1)) AS responding FROM %s
+			 WHERE provider_id = ANY($1) OR payer_id = ANY($1)`, tcase), accts)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id string
+				var resp bool
+				if rows.Scan(&id, &resp) == nil {
+					if resp {
+						rSet[id] = true
+					} else {
+						iSet[id] = true
+					}
+				}
+			}
+		}
+	}
+	for id := range iSet {
+		initiating = append(initiating, id)
+	}
+	for id := range rSet {
+		responding = append(responding, id)
+	}
+	return initiating, responding
+}
+
+// caseStage: ordered pipeline stage for any status vocabulary the platform
+// carries — federal IDRE, FL AHCA CDR, and the CRM lifecycle. Stages:
+// 0 FILED, 1 NEGOTIATION, 2 IDRE, 3 DETERMINED, 4 PAID, 5 CLOSED_OTHER.
+// Terminal-but-unpaid outcomes (Dismissed/Withdrawn/Ineligible/…) sit in
+// CLOSED_OTHER so the funnel's conversion to PAID stays honest.
+func caseStage(status string) int {
+	s := strings.ToUpper(status)
+	switch {
+	case strings.Contains(s, "PAID"):
+		return 4
+	case strings.HasPrefix(s, "DECIDED") || strings.Contains(s, "DETERMIN"):
+		return 3
+	case strings.Contains(s, "IDRE") || strings.Contains(s, "SELECTED") ||
+		strings.Contains(s, "DISPUTE_REVIEW") || strings.Contains(s, "UNDER_REVIEW"):
+		return 2
+	case strings.Contains(s, "NEGOTIATION") || strings.Contains(s, "SETTLED"):
+		return 1
+	case strings.HasPrefix(s, "CLOSED") || strings.Contains(s, "DISMISS") ||
+		strings.Contains(s, "WITHDRAW") || strings.Contains(s, "INELIGIBLE") ||
+		strings.Contains(s, "OPT-OUT") || strings.Contains(s, "OPT_OUT"):
+		return 5
+	default:
+		return 0
+	}
+}
+
+var caseStageNames = []string{"FILED", "NEGOTIATION", "IDRE", "DETERMINED", "PAID", "CLOSED_OTHER"}
+
+// caseFunnel: ordered stages with counts currently at each stage, the number
+// that reached each stage (this stage or beyond, CLOSED_OTHER excluded from
+// "beyond PAID" so terminal unpaid outcomes don't inflate conversion), and
+// stage-to-stage conversion percentages.
+func caseFunnel(byStatus []map[string]any) []map[string]any {
+	at := make([]int, 6)
+	for _, row := range byStatus {
+		st, _ := row["status"].(string)
+		n := 0
+		switch v := row["count"].(type) {
+		case int:
+			n = v
+		case int64:
+			n = int(v)
+		}
+		at[caseStage(st)] += n
+	}
+	reached := make([]int, 6)
+	reached[5] = at[5] // terminal-unpaid: its own stage only, never "beyond PAID"
+	run := 0
+	for i := 4; i >= 0; i-- {
+		run += at[i]
+		reached[i] = run
+	}
+	funnel := make([]map[string]any, 0, 6)
+	for i, name := range caseStageNames {
+		stage := map[string]any{"stage": name, "count": at[i], "reached": reached[i]}
+		if i > 0 && reached[i-1] > 0 {
+			stage["conversion_pct"] = float64(reached[i]) * 100.0 / float64(reached[i-1])
+		}
+		funnel = append(funnel, stage)
+	}
+	return funnel
+}
+
 func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	if _, ok := s.entity360Gate(w, r, tenant, entity360ReadRoles); !ok {
@@ -172,6 +297,7 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 	}
 	links, byTable := s.entityLinks(ctx, tenant, entityID)
 	caseIDs := s.entityCaseIDs(ctx, tenant, byTable)
+	initiating, responding := s.entityCaseSides(ctx, tenant, byTable)
 	tcase := fmt.Sprintf("tenant_%s.cases", sanitizeTenant(tenant))
 	hasCases := len(caseIDs) > 0
 	resp := map[string]any{"entity": entity, "links": links}
@@ -205,7 +331,12 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 			FROM %s WHERE id = ANY($1) ORDER BY opened_at DESC LIMIT 25`, tcase), caseIDs); qerr == nil {
 			pipeline["recent"] = recent
 		}
+		pipeline["funnel"] = caseFunnel(pipeline["by_status"].([]map[string]any))
 	}
+	// Initiator vs respondent split (#11): counts per side, so the portal can
+	// render "filed N / answered M" and flip panels per side.
+	pipeline["initiating"] = len(initiating)
+	pipeline["responding"] = len(responding)
 	resp["pipeline"] = pipeline
 
 	// ── Panel: financials ───────────────────────────────────────────────
@@ -238,6 +369,19 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 			for k, v := range m {
 				financials["billing_"+k] = v
 			}
+		}
+		// Aging buckets on OPEN fee invoices (#8): what is owed, aged from
+		// the invoice date, plus the oldest unpaid invoice in days.
+		if m, qerr := s.queryRowMap(ctx, `
+			SELECT coalesce(sum(amount_cents) FILTER (WHERE age <= 30),0) AS bucket_0_30,
+			       coalesce(sum(amount_cents) FILTER (WHERE age BETWEEN 31 AND 60),0) AS bucket_31_60,
+			       coalesce(sum(amount_cents) FILTER (WHERE age BETWEEN 61 AND 90),0) AS bucket_61_90,
+			       coalesce(sum(amount_cents) FILTER (WHERE age > 90),0) AS bucket_90_plus,
+			       coalesce(max(age),0)::bigint AS oldest_open_days
+			FROM (SELECT amount_cents, extract(day FROM now() - created_at)::int AS age
+			      FROM public.invoices
+			      WHERE tenant=$1 AND status='OPEN' AND case_id = ANY($2)) open_inv`, tenant, caseIDs); qerr == nil {
+			financials["aging"] = m
 		}
 	}
 	// Checkout history scoped to the org itself (not just its cases): a
@@ -300,6 +444,53 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 			performance[k] = v
 		}
 	}
+	// Tenant-wide benchmark (#9): the entity's numbers against the whole
+	// program — tenant avg/median days to close, above-QPA rate, and the
+	// share of tenant cases that closed slower than this entity's average
+	// (a percentile-style comparison without a cross-entity scan).
+	benchmark := map[string]any{}
+	if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
+		SELECT round(avg(days),1) AS tenant_avg_days_to_close,
+		       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY days)::numeric,1) AS tenant_median_days_to_close,
+		       count(*) AS tenant_closed_cases
+		FROM (SELECT extract(epoch FROM (updated_at - opened_at))/86400.0 AS days
+		      FROM %s
+		      WHERE status LIKE 'CLOSED%%%%' OR status IN
+		      ('SETTLED_IN_NEGOTIATION','Decided - Invoice Paid','Invoice Paid','Dismissed','Withdrawn','Ineligible','Plan Opt-Out')) closed`, tcase)); qerr == nil {
+		for k, v := range m {
+			benchmark[k] = v
+		}
+	}
+	if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
+		SELECT round(100.0 * count(*) FILTER (WHERE d.amount_cents > c.qpa_cents)
+		             / nullif(count(*) FILTER (WHERE c.qpa_cents IS NOT NULL),0), 1) AS tenant_above_qpa_pct
+		FROM public.determinations d JOIN %s c ON c.id::text = d.case_id
+		WHERE d.tenant=$1`, tcase), tenant); qerr == nil {
+		for k, v := range m {
+			benchmark[k] = v
+		}
+	}
+	if avgDays, ok := performance["avg_days_to_close"]; ok && avgDays != nil {
+		if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
+			SELECT round(100.0 * count(*) FILTER (WHERE days > $1)
+			             / nullif(count(*),0), 1) AS faster_than_pct
+			FROM (SELECT extract(epoch FROM (updated_at - opened_at))/86400.0 AS days
+			      FROM %s
+			      WHERE status LIKE 'CLOSED%%%%' OR status IN
+			      ('SETTLED_IN_NEGOTIATION','Decided - Invoice Paid','Invoice Paid','Dismissed','Withdrawn','Ineligible','Plan Opt-Out')) closed`, tcase), avgDays); qerr == nil {
+			for k, v := range m {
+				benchmark[k] = v
+			}
+		}
+	}
+	if dets, ok := performance["determinations"]; ok {
+		if n, isNum := dets.(int64); isNum && n > 0 {
+			if above, ok2 := performance["above_qpa"].(int64); ok2 {
+				benchmark["entity_above_qpa_pct"] = float64(above) * 100.0 / float64(n)
+			}
+		}
+	}
+	performance["benchmark"] = benchmark
 	resp["performance"] = performance
 
 	// ── Panel: compliance & risk ────────────────────────────────────────
@@ -393,7 +584,86 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 			engagement["audit"] = acts
 		}
 	}
+	// Unified timeline (#12): one reverse-chronological stream across notes,
+	// correspondence, case audit, and payments — the portal renders a single
+	// feed instead of four tabs. Each leg is optional (a tenant missing one
+	// table still gets the rest).
+	tlParts := []string{}
+	tlArgs := []any{}
+	if accts := byTable["accounts"]; len(accts) > 0 {
+		tlArgs = append(tlArgs, accts)
+		tlParts = append(tlParts, fmt.Sprintf(`
+			SELECT created_at AS at, 'NOTE' AS kind, left(body,160) AS summary, record_id AS case_id
+			FROM public.notes WHERE tenant='%s' AND record_type='ACCOUNT' AND record_id = ANY($%d)`,
+			sanitizeTenant(tenant), len(tlArgs)))
+	}
+	if hasCases {
+		tlArgs = append(tlArgs, caseIDs)
+		n := len(tlArgs)
+		tlParts = append(tlParts, fmt.Sprintf(`
+			SELECT created_at, 'CORRESPONDENCE', direction||' '||channel||': '||coalesce(subject,''), case_id
+			FROM public.correspondence_log WHERE tenant='%s' AND case_id = ANY($%d)`, sanitizeTenant(tenant), n))
+		// NG: the activity stream stands in for an audit log in the timeline too.
+		tlParts = append(tlParts, fmt.Sprintf(`
+			SELECT created_at, 'ACTIVITY', type||': '||left(coalesce(body,''),80), case_id
+			FROM public.case_activities WHERE tenant='%s' AND case_id = ANY($%d)`, sanitizeTenant(tenant), n))
+		tlParts = append(tlParts, fmt.Sprintf(`
+			SELECT created_at, 'PAYMENT', status||' '||(amount_cents/100.0)::text, case_id
+			FROM public.payments WHERE tenant='%s' AND case_id = ANY($%d)`, sanitizeTenant(tenant), n))
+	}
+	if len(tlParts) > 0 {
+		if tl, qerr := s.queryRows(r, `
+			SELECT at, kind, summary, case_id FROM (`+strings.Join(tlParts, " UNION ALL ")+`) t
+			ORDER BY at DESC LIMIT 50`, tlArgs...); qerr == nil {
+			engagement["timeline"] = tl
+		}
+	}
 	resp["engagement"] = engagement
+
+	// ── Panel: composite risk score (#13) ─────────────────────────────────
+	// A 0–100 rollup of the signals already gathered above, so staff can
+	// triage entities without reading every panel: NPI registry flags (20
+	// each), rejected/needs-review package documents (10 each), SLA breach
+	// rate against the entity's cases (up to 15), and a fee invoice unpaid
+	// for 90+ days (10). Bands: <25 clear, <60 watch, otherwise review.
+	riskFactors := []map[string]any{}
+	risk := 0
+	if n := len(npiFlags); n > 0 {
+		riskFactors = append(riskFactors, map[string]any{"factor": "npi_registry_flags", "count": n, "points": n * 20})
+		risk += n * 20
+	}
+	badDocs := docVerdicts["REJECTED"] + docVerdicts["NEEDS_REVIEW"]
+	if badDocs > 0 {
+		riskFactors = append(riskFactors, map[string]any{"factor": "failed_package_documents", "count": badDocs, "points": badDocs * 10})
+		risk += badDocs * 10
+	}
+	if breaches, ok := performance["sla_breaches"].(int64); ok && breaches > 0 && len(caseIDs) > 0 {
+		rate := float64(breaches) / float64(len(caseIDs))
+		pts := int(rate * 15)
+		if pts > 15 {
+			pts = 15
+		}
+		if pts > 0 {
+			riskFactors = append(riskFactors, map[string]any{"factor": "sla_breach_rate", "breaches": breaches, "points": pts})
+			risk += pts
+		}
+	}
+	if aging, ok := financials["aging"].(map[string]any); ok {
+		if oldest, ok2 := aging["oldest_open_days"].(int64); ok2 && oldest > 90 {
+			riskFactors = append(riskFactors, map[string]any{"factor": "fee_invoice_unpaid_90_plus", "days": oldest, "points": 10})
+			risk += 10
+		}
+	}
+	if risk > 100 {
+		risk = 100
+	}
+	band := "clear"
+	if risk >= 60 {
+		band = "review"
+	} else if risk >= 25 {
+		band = "watch"
+	}
+	resp["risk"] = map[string]any{"score": risk, "band": band, "factors": riskFactors}
 
 	writeJSON(w, http.StatusOK, resp)
 }

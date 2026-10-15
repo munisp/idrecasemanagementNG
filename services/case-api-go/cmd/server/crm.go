@@ -458,6 +458,12 @@ func (s *server) globalSearch(w http.ResponseWriter, r *http.Request) {
 		{"lead", `SELECT id::text, COALESCE(name,organization,'(unnamed)'), status FROM public.leads
 			WHERE tenant=$1 AND (name ILIKE $2 OR organization ILIKE $2 OR summary ILIKE $2) LIMIT 10`},
 	}
+	// Entity 360 hits: an organization name lands on the cross-rail view.
+	if s.featureEnabled(r, tenant, "entity360") {
+		queries = append(queries, struct{ kind, sql string }{
+			"entity", `SELECT id::text, canonical_name, entity_type FROM public.entities
+			WHERE tenant=$1 AND status='ACTIVE' AND canonical_name ILIKE $2 LIMIT 10`})
+	}
 	for _, qd := range queries {
 		var rows interface {
 			Next() bool

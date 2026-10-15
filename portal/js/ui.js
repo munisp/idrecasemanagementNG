@@ -90,7 +90,10 @@ const UI = (() => {
 
   // ---- Modal (focus-trapped, Esc closes, returns a promise) ----
   // fields: [{name, label, type, value, placeholder, required, options, hint}]
-  function modal({ title, body = "", fields = [], submitLabel = "Save", danger = false, wide = false }) {
+  // onRefresh(vals, setOptions): optional live hook — fires (debounced) as
+  // the user types so a modal can offer search-as-you-type selects;
+  // setOptions(name, [[value,label],...]) re-renders one select's options.
+  function modal({ title, body = "", fields = [], submitLabel = "Save", danger = false, wide = false, onRefresh = null }) {
     return new Promise((resolve) => {
       const prev = document.activeElement;
       const scrim = document.createElement("div");
@@ -132,6 +135,18 @@ const UI = (() => {
           else if (!e.shiftKey && document.activeElement === last) { first.focus(); e.preventDefault(); }
         }
       });
+      if (onRefresh) {
+        const form = scrim.querySelector("form");
+        const setOptions = (name, opts) => {
+          const sel = form.querySelector(`select[name="${name}"]`);
+          if (sel) sel.innerHTML = opts.map((o) => `<option value="${o[0]}">${o[1]}</option>`).join("");
+        };
+        let tmr;
+        form.addEventListener("input", () => {
+          clearTimeout(tmr);
+          tmr = setTimeout(() => onRefresh(Object.fromEntries(new FormData(form)), setOptions), 300);
+        });
+      }
       scrim.querySelector("form").onsubmit = (e) => {
         e.preventDefault();
         const data = Object.fromEntries(new FormData(e.target));

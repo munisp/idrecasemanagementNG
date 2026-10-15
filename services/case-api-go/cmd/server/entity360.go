@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -79,8 +80,50 @@ func (s *server) findEntityByIdentity(ctx context.Context, tenant, npi, tin, nai
 	return id
 }
 
+// entityNameNoise: words that say what kind of organization a name is, not
+// which one — stripped before token comparison. (NG has no NPPES registry
+// cache, so this lives here instead of an npi_registry.go.)
+var entityNameNoise = map[string]bool{
+	"THE": true, "OF": true, "AND": true, "DBA": true, "A": true,
+	"LLC": true, "L": true, "C": true, "INC": true, "INCORPORATED": true, "CORP": true, "CORPORATION": true,
+	"CO": true, "COMPANY": true, "LTD": true, "LIMITED": true, "LP": true, "LLP": true, "PLLC": true,
+	"PA": true, "PC": true, "P": true, "MD": true, "DO": true, "PLC": true,
+}
+
+var entityNameTokenRe = regexp.MustCompile(`[A-Z0-9]+`)
+
+func entityNameTokens(name string) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range entityNameTokenRe.FindAllString(strings.ToUpper(strings.ReplaceAll(name, "&", " AND ")), -1) {
+		if !entityNameNoise[t] {
+			out[t] = true
+		}
+	}
+	return out
+}
+
+// tokenJaccard: |A∩B| / |A∪B| over noise-stripped name token sets. 0 when
+// either side has no usable tokens.
+func tokenJaccard(a, b map[string]bool) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	inter := 0
+	for t := range a {
+		if b[t] {
+			inter++
+		}
+	}
+	union := len(a) + len(b) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
 // suggestEntities: name-normalized candidates for human confirmation —
-// never auto-linked.
+// never auto-linked. Each candidate carries a strength score (token Jaccard
+// against the queried name, 0–1) and results are sorted by it.
 func (s *server) suggestEntities(ctx context.Context, tenant, name string) []map[string]any {
 	norm := normEntityName(name)
 	if norm == "" {
@@ -97,13 +140,21 @@ func (s *server) suggestEntities(ctx context.Context, tenant, name string) []map
 		return nil
 	}
 	defer rows.Close()
+	qTokens := entityNameTokens(name)
 	out := []map[string]any{}
 	for rows.Next() {
-		var id, typ, name, npi, naic string
-		if rows.Scan(&id, &typ, &name, &npi, &naic) == nil {
-			out = append(out, map[string]any{"id": id, "entity_type": typ, "canonical_name": name, "npi": npi, "naic": naic})
+		var id, typ, cname, npi, naic string
+		if rows.Scan(&id, &typ, &cname, &npi, &naic) == nil {
+			score := tokenJaccard(qTokens, entityNameTokens(cname))
+			out = append(out, map[string]any{"id": id, "entity_type": typ, "canonical_name": cname,
+				"npi": npi, "naic": naic, "score": float64(int(score*100+0.5)) / 100})
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		si, _ := out[i]["score"].(float64)
+		sj, _ := out[j]["score"].(float64)
+		return si > sj
+	})
 	return out
 }
 
