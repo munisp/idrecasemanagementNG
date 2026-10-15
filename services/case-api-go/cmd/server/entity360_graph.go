@@ -74,9 +74,12 @@ func (s *server) entityGraphNeighbors(ctx context.Context, tenant, entityID stri
 	return out, nil
 }
 
-// entityGraph: GET /entity360/{entityId}/graph — the ego network of one
-// entity: itself plus every entity it has faced in a dispute, edges weighted
-// by shared cases. Capped at 60 neighbors by weight.
+// entityGraph: GET /entity360/{entityId}/graph?depth=1|2 — the ego network
+// of one entity: itself plus every entity it has faced in a dispute
+// (OPPOSES, weighted by shared cases) or that sits in its org chart
+// (REPRESENTS: TPA→client, plan→party, when both sides resolved to
+// entities). depth=2 adds one hop beyond the seed's direct neighbors.
+// Nodes capped at 60 by edge weight.
 func (s *server) entityGraph(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	if _, ok := s.entity360Gate(w, r, tenant, entity360ReadRoles); !ok {
@@ -84,6 +87,10 @@ func (s *server) entityGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	entityID := chi.URLParam(r, "entityId")
 	ctx := r.Context()
+	depth := 1
+	if r.URL.Query().Get("depth") == "2" {
+		depth = 2
+	}
 	seed, err := s.queryRowMap(ctx, `
 		SELECT id::text, entity_type, canonical_name
 		FROM public.entities WHERE tenant=$1 AND id=$2 AND status='ACTIVE'`, tenant, entityID)
@@ -109,18 +116,97 @@ func (s *server) entityGraph(w http.ResponseWriter, r *http.Request) {
 	if len(neighbors) > 60 {
 		neighbors = neighbors[:60]
 	}
-	// Node details for the neighbors.
 	nodes := []map[string]any{{"id": seed["id"], "name": seed["canonical_name"], "type": seed["entity_type"], "seed": true}}
 	edges := []map[string]any{}
-	for _, nb := range neighbors {
-		nid := nb["entity_id"].(string)
+	seenNode := map[string]bool{entityID: true}
+	seenEdge := map[string]bool{}
+	addNode := func(id string) {
+		if seenNode[id] || len(nodes) > 60 {
+			return
+		}
 		if row, qerr := s.queryRowMap(ctx, `
 			SELECT canonical_name, entity_type FROM public.entities
-			WHERE tenant=$1 AND id=$2 AND status='ACTIVE'`, tenant, nid); qerr == nil {
-			nodes = append(nodes, map[string]any{"id": nid, "name": row["canonical_name"], "type": row["entity_type"]})
-			edges = append(edges, map[string]any{
-				"from": entityID, "to": nid, "kind": "OPPOSES", "cases": nb["shared_cases"]})
+			WHERE tenant=$1 AND id=$2 AND status='ACTIVE'`, tenant, id); qerr == nil {
+			nodes = append(nodes, map[string]any{"id": id, "name": row["canonical_name"], "type": row["entity_type"]})
+			seenNode[id] = true
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges})
+	addEdge := func(from, to, kind string, cases any) {
+		key := from + "|" + to + "|" + kind
+		if seenEdge[key] || from == to {
+			return
+		}
+		seenEdge[key] = true
+		e := map[string]any{"from": from, "to": to, "kind": kind}
+		if cases != nil {
+			e["cases"] = cases
+		}
+		edges = append(edges, e)
+	}
+	for _, nb := range neighbors {
+		nid := nb["entity_id"].(string)
+		addNode(nid)
+		if seenNode[nid] {
+			addEdge(entityID, nid, "OPPOSES", nb["shared_cases"])
+		}
+	}
+	// Org-chart edges (#10 follow-up): TPA↔client and plan↔party pairs where
+	// both sides resolved to entities.
+	for _, q := range []string{
+		`SELECT l1.entity_id::text, l2.entity_id::text FROM public.tpa_clients tc
+		 JOIN public.entity_links l1 ON l1.tenant=tc.tenant AND l1.source_table='tpas' AND l1.source_id=tc.tpa_id::text
+		 JOIN public.entity_links l2 ON l2.tenant=tc.tenant AND l2.source_table='tpa_clients' AND l2.source_id=tc.id::text
+		 WHERE tc.tenant=$1 AND (l1.entity_id=$2 OR l2.entity_id=$2) AND l1.entity_id<>l2.entity_id`,
+		`SELECT l1.entity_id::text, l2.entity_id::text FROM public.hp_parties hp
+		 JOIN public.entity_links l1 ON l1.tenant=hp.tenant AND l1.source_table='health_plans' AND l1.source_id=hp.plan_id::text
+		 JOIN public.entity_links l2 ON l2.tenant=hp.tenant AND l2.source_table='hp_parties' AND l2.source_id=hp.id::text
+		 WHERE hp.tenant=$1 AND (l1.entity_id=$2 OR l2.entity_id=$2) AND l1.entity_id<>l2.entity_id`,
+	} {
+		rows, qerr := s.db.Query(ctx, q, tenant, entityID)
+		if qerr != nil {
+			continue
+		}
+		type pair struct{ a, b string }
+		var pairs []pair
+		for rows.Next() {
+			var pr pair
+			if rows.Scan(&pr.a, &pr.b) == nil {
+				pairs = append(pairs, pr)
+			}
+		}
+		rows.Close()
+		for _, pr := range pairs {
+			addNode(pr.a)
+			addNode(pr.b)
+			addEdge(pr.a, pr.b, "REPRESENTS", nil)
+		}
+	}
+	// depth=2: one hop beyond the direct neighbors (bounded fan-out).
+	if depth == 2 {
+		ring := []string{}
+		for _, nb := range neighbors {
+			if len(ring) < 12 {
+				ring = append(ring, nb["entity_id"].(string))
+			}
+		}
+		for _, nid := range ring {
+			_, nbt := s.entityLinks(ctx, tenant, nid)
+			nCases := s.entityCaseIDs(ctx, tenant, nbt)
+			second, qerr := s.entityGraphNeighbors(ctx, tenant, nid, nCases)
+			if qerr != nil {
+				continue
+			}
+			for _, nb := range second {
+				sid := nb["entity_id"].(string)
+				if sid == entityID {
+					continue
+				}
+				addNode(sid)
+				if seenNode[sid] {
+					addEdge(nid, sid, "OPPOSES", nb["shared_cases"])
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges, "depth": depth})
 }

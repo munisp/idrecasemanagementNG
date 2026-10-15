@@ -397,6 +397,11 @@ const CrmViews = (() => {
   async function entity360(id) {
     try {
       const d = await Api.crm.entity360(id);
+      if (d.merged_into) {
+        UI.toast(`“${d.merged_name || "This entity"}” was merged — opening the surviving record`);
+        location.hash = `#/crm/360/${d.merged_into}`;
+        return `<h1>Entity 360</h1><p class="muted">Redirecting…</p>`;
+      }
       const e = d.entity;
       Palette.remember("entity", e.id, e.canonical_name);
       const srcLink = (l) => l.source_table === "accounts" ? `#/crm/accounts/${l.source_id}`
@@ -422,11 +427,15 @@ const CrmViews = (() => {
       // ego network, edges weighted by shared cases. SVG radial, no library.
       let g = { nodes: [], edges: [] };
       try { g = await Api.crm.entityGraph(id); } catch (e2) { /* graph panel optional */ }
+      // Normalize to seed-relative edges (a REPRESENTS edge may point either
+      // way) and keep only edges touching this entity for the radial.
+      g.edges = (g.edges || []).filter((x) => x.from === id || x.to === id)
+        .map((x) => ({ ...x, other: x.from === id ? x.to : x.from }));
       if ((g.nodes || []).length > 1) {
         const cx = 340, cy = 190, R = 140;
-        const maxW = Math.max(...g.edges.map((x) => x.cases), 1);
+        const maxW = Math.max(...g.edges.map((x) => x.cases || 0), 1);
         const seed = g.nodes.find((n) => n.seed);
-        const ring = g.nodes.filter((n) => !n.seed);
+        const ring = g.nodes.filter((n) => !n.seed && g.edges.some((x) => x.other === n.id));
         const pos = {};
         ring.forEach((n, i) => {
           const a = (2 * Math.PI * i) / ring.length - Math.PI / 2;
@@ -434,8 +443,10 @@ const CrmViews = (() => {
         });
         html += `<h2>Relationship graph — who it faces in disputes (${ring.length})</h2>
           <svg viewBox="0 0 680 380" style="width:100%;max-width:680px;display:block" role="img" aria-label="Entity relationship graph">` +
-          g.edges.map((x) => { const [x1, y1] = pos[x.to] || [cx, cy];
-            return `<line x1="${cx}" y1="${cy}" x2="${x1}" y2="${y1}" stroke="var(--line,#888)" stroke-width="${1 + 3 * x.cases / maxW}" opacity="0.55"/>`; }).join("") +
+          g.edges.map((x) => { const [x1, y1] = pos[x.other] || [cx, cy];
+            const rep = x.kind === "REPRESENTS";
+            return `<line x1="${cx}" y1="${cy}" x2="${x1}" y2="${y1}" stroke="var(--line,#888)"
+              stroke-width="${rep ? 1.5 : 1 + 3 * (x.cases || 0) / maxW}" opacity="0.55"${rep ? ` stroke-dasharray="5 4"` : ""}/>`; }).join("") +
           ring.map((n) => { const [nx, ny] = pos[n.id];
             const lbl = String(n.name || "").length > 22 ? String(n.name).slice(0, 21) + "…" : String(n.name || "");
             return `<g style="cursor:pointer" onclick="location.hash='#/crm/360/${n.id}'">
@@ -443,10 +454,11 @@ const CrmViews = (() => {
               <text x="${nx}" y="${ny + 22}" text-anchor="middle" font-size="10" fill="currentColor">${esc(lbl)}</text></g>`; }).join("") +
           `<circle cx="${cx}" cy="${cy}" r="16" fill="var(--brass,#a83)"/><title>${esc(seed?.name || "")}</title>
            <text x="${cx}" y="${cy + 32}" text-anchor="middle" font-size="11" font-weight="600" fill="currentColor">${esc(String(seed?.name || "").slice(0, 26))}</text></svg>` +
-          `<table><thead><tr><th>Counterparty</th><th>Type</th><th>Shared disputes</th></tr></thead><tbody>` +
-          g.edges.slice(0, 15).map((x) => { const n = g.nodes.find((y) => y.id === x.to);
-            return `<tr class="click" onclick="location.hash='#/crm/360/${x.to}'"><td>${esc(n?.name || "")}</td>
-              <td>${badge(n?.type || "")}</td><td class="num">${x.cases}</td></tr>`; }).join("") + `</tbody></table>`;
+          `<table><thead><tr><th>Related organization</th><th>Relationship</th><th>Type</th><th>Shared disputes</th></tr></thead><tbody>` +
+          g.edges.slice(0, 15).map((x) => { const n = g.nodes.find((y) => y.id === x.other);
+            return `<tr class="click" onclick="location.hash='#/crm/360/${x.other}'"><td>${esc(n?.name || "")}</td>
+              <td>${x.kind === "REPRESENTS" ? "org chart" : "opposes in disputes"}</td>
+              <td>${badge(n?.type || "")}</td><td class="num">${x.cases ?? "—"}</td></tr>`; }).join("") + `</tbody></table>`;
       }
 
       // Panel 1: where the platform knows this organization (#3 deep links).

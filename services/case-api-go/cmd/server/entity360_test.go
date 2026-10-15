@@ -78,12 +78,12 @@ func TestCaseFunnel(t *testing.T) {
 	if len(funnel) != 6 {
 		t.Fatalf("funnel stages = %d, want 6", len(funnel))
 	}
-	if funnel[0]["reached"] != 19 || funnel[4]["reached"] != 2 || funnel[5]["reached"] != 1 {
-		t.Errorf("reached = %v/%v/%v, want 19/2/1", funnel[0]["reached"], funnel[4]["reached"], funnel[5]["reached"])
+	if funnel[0]["reached"] != 20 || funnel[4]["reached"] != 2 || funnel[5]["reached"] != 1 {
+		t.Errorf("reached = %v/%v/%v, want 20/2/1", funnel[0]["reached"], funnel[4]["reached"], funnel[5]["reached"])
 	}
 	conv, ok := funnel[1]["conversion_pct"].(float64)
-	if !ok || conv < 47.3 || conv > 47.4 {
-		t.Errorf("conversion_pct = %v, want ~47.37", funnel[1]["conversion_pct"])
+	if !ok || conv < 44.9 || conv > 45.1 {
+		t.Errorf("conversion_pct = %v, want 45.0", funnel[1]["conversion_pct"])
 	}
 }
 

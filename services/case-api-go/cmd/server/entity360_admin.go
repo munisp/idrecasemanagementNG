@@ -184,6 +184,7 @@ func (s *server) entityBackfill(w http.ResponseWriter, r *http.Request) {
 		}[src.table], tenant).Scan(&left)
 		remaining += left
 	}
+	s.refreshTenantCaseStats(r.Context(), tenant)
 	writeJSON(w, http.StatusOK, map[string]any{"linked": linked, "failed": failed, "remaining": remaining})
 }
 
@@ -293,11 +294,19 @@ func (s *server) entityOutreach(w http.ResponseWriter, r *http.Request) {
 			JOIN LATERAL (
 				SELECT n.created_at AS at FROM public.notes n
 				WHERE n.tenant=l.tenant AND n.record_type='ACCOUNT'
-				  AND l.source_table='accounts' AND n.record_id=l.source_id::uuid
+				  AND l.source_table='accounts' AND n.record_id=l.source_id
 				UNION ALL
 				SELECT cl.created_at FROM public.correspondence_log cl
 				JOIN ent_cases ec ON ec.entity_id=l.entity_id AND ec.case_id=cl.case_id
 				WHERE cl.tenant=l.tenant
+				UNION ALL
+				SELECT pm.created_at FROM public.payments pm
+				JOIN ent_cases ec ON ec.entity_id=l.entity_id AND ec.case_id=pm.case_id
+				WHERE pm.tenant=l.tenant AND pm.status='PAID'
+				UNION ALL
+				SELECT ca.created_at FROM public.case_activities ca
+				JOIN ent_cases ec ON ec.entity_id=l.entity_id AND ec.case_id=ca.case_id
+				WHERE ca.tenant=l.tenant
 			) x ON true
 			WHERE l.tenant=$1 GROUP BY l.entity_id
 		)
@@ -363,4 +372,29 @@ func (s *server) createLead(w http.ResponseWriter, r *http.Request) {
 	}
 	// NG: no audit_log — the lead row itself (source OUTREACH, created_at) is the record.
 	writeJSON(w, http.StatusCreated, map[string]any{"lead_id": id})
+}
+
+// refreshTenantCaseStats: recompute the tenant-wide benchmark row the 360
+// performance panel reads (#9 follow-up). Best-effort: the panel falls back
+// to a live compute when no fresh row exists. Called by the backfill job
+// and opportunistically after a live compute.
+func (s *server) refreshTenantCaseStats(ctx context.Context, tenant string) {
+	tcase := fmt.Sprintf("tenant_%s.cases", sanitizeTenant(tenant))
+	_, _ = s.db.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO public.tenant_case_stats (tenant, closed_cases, avg_days, median_days, computed_at)
+		SELECT $1, count(*), round(avg(days),1),
+		       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY days)::numeric,1), now()
+		FROM (SELECT extract(epoch FROM (updated_at - opened_at))/86400.0 AS days
+		      FROM %s
+		      WHERE status LIKE 'CLOSED%%%%' OR status IN
+		      ('SETTLED_IN_NEGOTIATION','Decided - Invoice Paid','Invoice Paid','Dismissed','Withdrawn','Ineligible','Plan Opt-Out')) closed
+		ON CONFLICT (tenant) DO UPDATE SET closed_cases=excluded.closed_cases,
+		  avg_days=excluded.avg_days, median_days=excluded.median_days, computed_at=now()`, tcase), tenant)
+	_, _ = s.db.Exec(ctx, fmt.Sprintf(`
+		UPDATE public.tenant_case_stats st SET above_qpa_pct = (
+			SELECT round(100.0 * count(*) FILTER (WHERE d.amount_cents > c.qpa_cents)
+			             / nullif(count(*) FILTER (WHERE c.qpa_cents IS NOT NULL),0), 1)
+			FROM public.determinations d JOIN %s c ON c.id::text = d.case_id
+			WHERE d.tenant=$1)
+		WHERE st.tenant=$1`, tcase), tenant)
 }

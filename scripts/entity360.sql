@@ -59,3 +59,21 @@ CREATE INDEX IF NOT EXISTS accounts_entity ON public.accounts (tenant, entity_id
 -- Merge (#1): a retired entity points at the survivor.
 ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS merged_into uuid REFERENCES public.entities(id);
 CREATE INDEX IF NOT EXISTS entities_merged ON public.entities (tenant, merged_into) WHERE merged_into IS NOT NULL;
+
+-- Trigram similarity: suggestion candidates come from similarity() when a
+-- plain substring match finds too little — "Gulf Coast ER Physicians"
+-- shares no substring with the canonical row.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS entities_name_trgm ON public.entities USING gin (canonical_name gin_trgm_ops);
+
+-- Tenant-wide case statistics: the 360 benchmark reads this cache
+-- (refreshed by the entity backfill job and opportunistically on a live
+-- compute) instead of scanning every closed case per view.
+CREATE TABLE IF NOT EXISTS public.tenant_case_stats (
+    tenant         text PRIMARY KEY,
+    closed_cases   bigint NOT NULL DEFAULT 0,
+    avg_days       numeric,
+    median_days    numeric,
+    above_qpa_pct  numeric,
+    computed_at    timestamptz NOT NULL DEFAULT now()
+);

@@ -27,12 +27,12 @@ func (s *server) entityLinks(ctx context.Context, tenant, entityID string) ([]ma
 	}
 	defer rows.Close()
 	type link struct {
-		id     int64
-		table  string
-		srcID  string
-		kind   string
-		by     string
-		at     any
+		id    int64
+		table string
+		srcID string
+		kind  string
+		by    string
+		at    any
 	}
 	var links []link
 	byTable := map[string][]string{}
@@ -269,6 +269,9 @@ func caseFunnel(byStatus []map[string]any) []map[string]any {
 		run += at[i]
 		reached[i] = run
 	}
+	// Every case was filed, whatever happened later — terminal-unpaid cases
+	// count toward FILED reach so the first conversion bar is honest.
+	reached[0] += at[5]
 	funnel := make([]map[string]any, 0, 6)
 	for i, name := range caseStageNames {
 		stage := map[string]any{"stage": name, "count": at[i], "reached": reached[i]}
@@ -292,6 +295,14 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 		SELECT id::text, entity_type, canonical_name, npi, tin, naic, fein, status, created_at
 		FROM public.entities WHERE tenant=$1 AND id=$2 AND status='ACTIVE'`, tenant, entityID)
 	if err != nil {
+		// A merged entity is not "not found" — tell the caller where its
+		// records went so the portal can follow (#1 follow-up).
+		if row, qerr := s.queryRowMap(ctx, `
+			SELECT merged_into::text, canonical_name FROM public.entities
+			WHERE tenant=$1 AND id=$2 AND status='MERGED' AND merged_into IS NOT NULL`, tenant, entityID); qerr == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"merged_into": row["merged_into"], "merged_name": row["canonical_name"]})
+			return
+		}
 		http.Error(w, `{"error":"entity not found"}`, http.StatusNotFound)
 		return
 	}
@@ -402,7 +413,7 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 	if len(pgCond) > 0 {
 		if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
 			SELECT count(*) AS checkouts,
-			       coalesce(sum(total_cents) FILTER (WHERE status='PAID'),0) AS paid_cents
+			       coalesce(sum(amount_cents) FILTER (WHERE status='PAID'),0) AS paid_cents
 			FROM public.payment_groups WHERE tenant=$1 AND (%s)`, strings.Join(pgCond, " OR ")), pgArgs...); qerr == nil {
 			for k, v := range m {
 				financials["checkout_"+k] = v
@@ -449,7 +460,25 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 	// share of tenant cases that closed slower than this entity's average
 	// (a percentile-style comparison without a cross-entity scan).
 	benchmark := map[string]any{}
-	if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
+	// Cache first (#9 follow-up): a fresh tenant_case_stats row (written by
+	// the backfill job or a previous live compute) skips the full-scan
+	// percentile; otherwise compute live below and cache the result.
+	cached := false
+	if m, qerr := s.queryRowMap(ctx, `
+		SELECT closed_cases AS tenant_closed_cases, avg_days AS tenant_avg_days_to_close,
+		       median_days AS tenant_median_days_to_close, above_qpa_pct AS tenant_above_qpa_pct
+		FROM public.tenant_case_stats
+		WHERE tenant=$1 AND computed_at > now() - interval '24 hours'`, tenant); qerr == nil {
+		for k, v := range m {
+			benchmark[k] = v
+		}
+		cached = true
+	}
+	if !cached {
+		defer s.refreshTenantCaseStats(context.Background(), tenant)
+	}
+	if !cached {
+		if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
 		SELECT round(avg(days),1) AS tenant_avg_days_to_close,
 		       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY days)::numeric,1) AS tenant_median_days_to_close,
 		       count(*) AS tenant_closed_cases
@@ -457,29 +486,30 @@ func (s *server) entity360View(w http.ResponseWriter, r *http.Request) {
 		      FROM %s
 		      WHERE status LIKE 'CLOSED%%%%' OR status IN
 		      ('SETTLED_IN_NEGOTIATION','Decided - Invoice Paid','Invoice Paid','Dismissed','Withdrawn','Ineligible','Plan Opt-Out')) closed`, tcase)); qerr == nil {
-		for k, v := range m {
-			benchmark[k] = v
+			for k, v := range m {
+				benchmark[k] = v
+			}
 		}
-	}
-	if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
+		if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
 		SELECT round(100.0 * count(*) FILTER (WHERE d.amount_cents > c.qpa_cents)
 		             / nullif(count(*) FILTER (WHERE c.qpa_cents IS NOT NULL),0), 1) AS tenant_above_qpa_pct
 		FROM public.determinations d JOIN %s c ON c.id::text = d.case_id
 		WHERE d.tenant=$1`, tcase), tenant); qerr == nil {
-		for k, v := range m {
-			benchmark[k] = v
+			for k, v := range m {
+				benchmark[k] = v
+			}
 		}
-	}
-	if avgDays, ok := performance["avg_days_to_close"]; ok && avgDays != nil {
-		if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
+		if avgDays, ok := performance["avg_days_to_close"]; ok && avgDays != nil {
+			if m, qerr := s.queryRowMap(ctx, fmt.Sprintf(`
 			SELECT round(100.0 * count(*) FILTER (WHERE days > $1)
 			             / nullif(count(*),0), 1) AS faster_than_pct
 			FROM (SELECT extract(epoch FROM (updated_at - opened_at))/86400.0 AS days
 			      FROM %s
 			      WHERE status LIKE 'CLOSED%%%%' OR status IN
 			      ('SETTLED_IN_NEGOTIATION','Decided - Invoice Paid','Invoice Paid','Dismissed','Withdrawn','Ineligible','Plan Opt-Out')) closed`, tcase), avgDays); qerr == nil {
-			for k, v := range m {
-				benchmark[k] = v
+				for k, v := range m {
+					benchmark[k] = v
+				}
 			}
 		}
 	}
