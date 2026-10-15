@@ -109,6 +109,12 @@ func (s *server) entityMerge(w http.ResponseWriter, r *http.Request) {
 // Idempotent: ensureEntity is a no-op for already-linked rows. ?limit=
 // bounds one run; the job is re-runnable until "remaining" returns 0.
 func (s *server) entityBackfill(w http.ResponseWriter, r *http.Request) {
+	// Same gate as ledgerBackfill: admins and worker tokens only — it writes
+	// entity/link rows tenant-wide.
+	if p := r.Context().Value(ctxPrincipal{}).(principal); !hasAnyRole(p, "FEDERAL_ADMIN", "PLATFORM_ADMIN", serviceRole) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	limit := 500
 	if n := r.URL.Query().Get("limit"); n != "" {
