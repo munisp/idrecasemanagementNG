@@ -505,6 +505,13 @@ func main() {
 		r.Get("/accounts", s.listAccounts)
 		r.Post("/accounts", s.createAccount)
 		r.Get("/accounts/{accountId}/360", s.account360)
+		// Entity 360: cross-rail organization aggregate (entity360.go).
+		r.Get("/entities", s.entitySearch)
+		r.Post("/entities", s.entityCreate)
+		r.Post("/entities/{entityId}/links", s.entityConfirmLink)
+		r.Delete("/entities/{entityId}/links/{linkId}", s.entityUnlink)
+		r.Get("/entity360/lookup", s.entityLookupRef)
+		r.Get("/entity360/{entityId}", s.entity360View)
 		r.Post("/contacts", s.createContact)
 		r.Get("/leads", s.listLeads)
 		r.Post("/leads/{leadId}/convert", s.convertLead)

@@ -90,6 +90,8 @@ const CrmViews = (() => {
       const a = d.account;
       Palette.remember("account", a.id, a.legal_name);
       let html = `<h1>${esc(a.legal_name)}</h1><p>${badge(a.type)} · NPI ${esc(a.npi) || "—"} · ${esc(a.phone) || "—"}</p>`;
+      if (App.feature("entity360"))
+        html += `<div class="actions"><button class="mini" onclick="CrmViews.openEntity360('accounts','${esc(a.id)}')">Entity 360 — every rail this organization appears on</button></div>`;
       if (d.health)
         html += `<div class="cards"><div class="card health-${esc(d.health.band)}">
           <div class="num">${d.health.score}</div><div class="lbl">Relationship health — ${esc(d.health.band)}</div>
@@ -307,5 +309,149 @@ const CrmViews = (() => {
     } catch (e) { return `<h1>Calendar</h1>` + err(e); }
   }
 
-  return { pipeline, accounts, account360, accountNew, leads, convert, tasks, done, search, calendar };
+  // ---- Entity 360 ------------------------------------------------------------
+  // One organization across every rail that collects data on it: CRM account,
+  // TPA registry/clients, health plan registry/parties, cases, invoices,
+  // payments, correspondence. Identity keys (NPI/TIN/NAIC/FEIN) link
+  // automatically; name-only matches need a person's confirmation.
+  const $ = (sel) => document.querySelector(sel);
+  const money = (c) => c == null ? "—" : "$" + (Number(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2 });
+
+  // From any screen that knows a source row: resolve to the entity, offer
+  // same-name entities for a human-confirmed merge when there are no
+  // identity keys to settle it, then open the 360.
+  async function openEntity360(sourceTable, sourceId) {
+    try {
+      const r = await Api.crm.entityLookup(sourceTable, sourceId);
+      if (r.suggestions && r.suggestions.length) {
+        const v = await UI.modal({
+          title: "Same-name organizations found",
+          body: "No identity key (NPI / TIN / NAIC) settles which organization this is. Link it to an existing entity only if you know they are the same organization — otherwise it keeps its own.",
+          submitLabel: "Link",
+          fields: [{ name: "entity_id", label: "Link to", options: [["", "Keep separate — none of these"]] .concat(
+            r.suggestions.map((s) => [s.id, `${s.canonical_name} — ${s.entity_type}${s.npi ? " · NPI " + s.npi : ""}${s.naic ? " · NAIC " + s.naic : ""}`])) }],
+        });
+        if (v && v.entity_id) {
+          await Api.crm.entityLink(v.entity_id, { source_table: sourceTable, source_id: sourceId });
+          UI.toast("Linked — opening that entity's 360");
+          location.hash = `#/crm/360/${v.entity_id}`;
+          return;
+        }
+      }
+      location.hash = `#/crm/360/${r.entity_id}`;
+    } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+  }
+
+  function entitySearchPage() {
+    afterRender(() => {
+      $("#ent-q")?.addEventListener("input", async (e) => {
+        const q = e.target.value.trim();
+        const box = $("#ent-results");
+        if (q.length < 2) { box.innerHTML = ""; return; }
+        try {
+          const list = (await Api.crm.entitySearch(q)).entities || [];
+          box.innerHTML = list.length ? `<table><thead><tr><th>Name</th><th>Type</th><th>NPI</th><th>NAIC</th><th>Linked records</th><th></th></tr></thead><tbody>` +
+            list.map((x) => `<tr class="click" onclick="location.hash='#/crm/360/${x.id}'"><td>${esc(x.canonical_name)}</td>
+              <td>${badge(x.entity_type)}</td><td class="mono">${esc(x.npi) || "—"}</td><td class="mono">${esc(x.naic) || "—"}</td>
+              <td class="num">${x.links}</td><td>›</td></tr>`).join("") + `</tbody></table>`
+            : `<p class="muted">No entities match. Entities are created automatically as organizations register, onboard, or get CRM accounts.</p>`;
+        } catch (e2) { box.innerHTML = err(e2); }
+      });
+      $("#ent-q")?.focus();
+    });
+    return `<div class="view-head"><h1>Entity 360</h1></div>
+      <p class="muted">One organization across every rail — TPA filings, health plan submissions, CRM accounts, disputes, invoices. Search by name, NPI, TIN or NAIC.</p>
+      <div class="kgqa-bar"><input id="ent-q" placeholder="Search organizations…" autocomplete="off" /></div>
+      <div id="ent-results"></div>`;
+  }
+
+  async function entity360(id) {
+    try {
+      const d = await Api.crm.entity360(id);
+      const e = d.entity;
+      Palette.remember("entity", e.id, e.canonical_name);
+      let html = `<div class="view-head"><h1>${esc(e.canonical_name)}</h1>${badge(e.entity_type)}
+          <a class="button mini" href="#/crm/360">Search</a></div>
+        <p class="muted">${[e.npi && "NPI " + esc(e.npi), e.naic && "NAIC " + esc(e.naic),
+          e.tin && "TIN " + esc(e.tin), e.fein && "FEIN " + esc(e.fein)].filter(Boolean).join(" · ") || "No identity keys on file"}
+          · since ${fmtDate(e.created_at)}</p>`;
+
+      // Panel 1: where the platform knows this organization.
+      html += `<h2>Identity &amp; onboarding — where this organization appears (${d.links.length})</h2>` +
+        (d.links.length ? `<table><thead><tr><th>Record</th><th>Name</th><th>Kind</th><th>Status</th><th>Link</th><th></th></tr></thead><tbody>` +
+          d.links.map((l) => `<tr><td>${esc(l.source_label)}</td>
+            <td>${esc(l.detail?.name || l.source_id)}</td><td>${esc(l.detail?.kind || "")}</td>
+            <td>${l.detail?.status ? badge(l.detail.status) : "—"}${l.detail?.npi_status && l.detail.npi_status !== "VERIFIED" ? " " + badge(l.detail.npi_status) : ""}</td>
+            <td>${l.link_kind === "CONFIRMED" ? `confirmed by ${esc(l.linked_by)}` : "identity-key match"}</td>
+            <td><button class="mini danger" onclick="CrmViews.entityUnlinkFn('${id}',${l.link_id})" title="Remove this link">Unlink</button></td></tr>`).join("") +
+          `</tbody></table>` : `<p class="muted">No linked records.</p>`);
+
+      // Panel 2: pipeline funnel.
+      const pl = d.pipeline || {};
+      html += `<h2>Pipeline</h2><div class="cards">
+        <div class="card"><div class="num">${pl.total ?? 0}</div><div class="lbl">Disputes</div></div>
+        <div class="card"><div class="num">${pl.open ?? 0}</div><div class="lbl">Open</div></div>
+        <div class="card"><div class="num">${pl.closed ?? 0}</div><div class="lbl">Closed</div></div></div>` +
+        ((pl.by_status || []).length ? `<table><thead><tr><th>Status</th><th>Disputes</th></tr></thead><tbody>` +
+          pl.by_status.map((s) => `<tr><td>${badge(s.status)}</td><td class="num">${s.count}</td></tr>`).join("") + `</tbody></table>` : "") +
+        ((pl.recent || []).length ? `<h3>Most recent</h3><table><thead><tr><th>Case</th><th>Status</th><th>Service line</th><th>Opened</th></tr></thead><tbody>` +
+          pl.recent.map((c) => `<tr class="click" onclick="location.hash='#/cases/${c.id}'"><td class="mono">${esc(c.case_number)}</td>
+            <td>${badge(c.status)}</td><td>${esc(c.service_line)}</td><td>${fmtDate(c.opened_at)}</td></tr>`).join("") + `</tbody></table>` : "");
+
+      // Panel 3: financials.
+      const f = d.financials || {};
+      html += `<h2>Financials</h2><div class="cards">
+        <div class="card"><div class="num">${money(f.fee_invoiced_cents)}</div><div class="lbl">Dispute fees invoiced (${f.fee_invoices ?? 0})</div></div>
+        <div class="card"><div class="num">${money(f.fee_collected_cents)}</div><div class="lbl">Fees collected</div></div>
+        <div class="card"><div class="num">${money(f.fee_open_cents)}</div><div class="lbl">Fees open</div></div>
+        <div class="card"><div class="num">${money(f.paid_cents)}</div><div class="lbl">Card/ACH payments (${f.payments ?? 0})</div></div>
+        ${f.billing_invoices != null ? `<div class="card"><div class="num">${money(f.billing_collected_cents)}</div><div class="lbl">Service billing collected (${f.billing_invoices})</div></div>
+        <div class="card"><div class="num">${money(f.billing_outstanding_cents)}</div><div class="lbl">Service billing outstanding</div></div>` : ""}
+        ${f.checkout_checkouts != null ? `<div class="card"><div class="num">${money(f.checkout_paid_cents)}</div><div class="lbl">Fee checkouts paid (${f.checkout_checkouts})</div></div>` : ""}</div>`;
+
+      // Panel 4: performance.
+      const pf = d.performance || {};
+      html += `<h2>Performance</h2><div class="cards">
+        <div class="card"><div class="num">${pf.closed ?? 0}</div><div class="lbl">Disputes closed</div></div>
+        <div class="card"><div class="num">${pf.avg_days_to_close ?? "—"}</div><div class="lbl">Avg days to close</div></div>
+        <div class="card"><div class="num">${pf.determinations ?? 0}</div><div class="lbl">Determinations</div></div>
+        <div class="card"><div class="num">${money(pf.avg_award_cents)}</div><div class="lbl">Avg award</div></div>
+        <div class="card"><div class="num">${pf.above_qpa ?? 0}</div><div class="lbl">Awards above QPA</div></div>
+        <div class="card"><div class="num">${pf.sla_breaches ?? 0}</div><div class="lbl">SLA breaches</div></div></div>`;
+
+      // Panel 5: compliance & risk.
+      const cp = d.compliance || {};
+      const dv = cp.doc_verdicts || {};
+      html += `<h2>Compliance &amp; risk</h2>` +
+        (Object.keys(dv).length ? `<div class="cards">` + Object.entries(dv).map(([st, n]) =>
+          `<div class="card"><div class="num">${n}</div><div class="lbl">Package documents ${esc(st.toLowerCase().replace(/_/g, " "))}</div></div>`).join("") + `</div>`
+          : `<p class="muted">No onboarding package documents on the linked records.</p>`) +
+        ((cp.npi_flags || []).length ? `<h3>NPI registry flags</h3><table><thead><tr><th>Record</th><th>Name</th><th>Status</th><th>Registry name</th></tr></thead><tbody>` +
+          cp.npi_flags.map((x) => `<tr><td>${esc(x.source)}</td><td>${esc(x.name)}</td><td>${badge(x.npi_status)}</td><td>${esc(x.npi_registry_name || "—")}</td></tr>`).join("") + `</tbody></table>` : "") +
+        ((cp.breach_clocks || []).length ? `<h3>SLA breaches by clock</h3><table><thead><tr><th>Clock</th><th>Breaches</th></tr></thead><tbody>` +
+          cp.breach_clocks.map((x) => `<tr><td class="mono">${esc(x.clock)}</td><td class="num">${x.count}</td></tr>`).join("") + `</tbody></table>` : "");
+
+      // Panel 6: engagement timeline.
+      const en = d.engagement || {};
+      html += `<h2>Engagement</h2>` +
+        ((en.notes || []).length ? `<h3>Notes</h3><table><tbody>` + en.notes.map((n) =>
+          `<tr><td>${badge(n.stream)}</td><td>${esc((n.body || "").slice(0, 160))}</td><td>${esc(n.author)}</td><td class="mono">${fmtDate(n.created_at)}</td></tr>`).join("") + `</tbody></table>` : "") +
+        ((en.correspondence || []).length ? `<h3>Correspondence</h3><table><thead><tr><th>Dir</th><th>Channel</th><th>Subject</th><th>By</th><th>At</th></tr></thead><tbody>` +
+          en.correspondence.map((c) => `<tr><td>${esc(c.direction)}</td><td>${esc(c.channel)}</td><td>${esc(c.subject || "")}</td>
+            <td>${esc(c.sent_by || "")}</td><td class="mono">${fmtDate(c.created_at)}</td></tr>`).join("") + `</tbody></table>` : "") +
+        ((en.audit || []).length ? `<h3>Recent record activity</h3><table><thead><tr><th>Action</th><th>At</th></tr></thead><tbody>` +
+          en.audit.map((a) => `<tr><td class="mono">${esc(a.action)}</td><td class="mono">${fmtDate(a.created_at)}</td></tr>`).join("") + `</tbody></table>` : "") +
+        (!(en.notes || []).length && !(en.correspondence || []).length && !(en.audit || []).length ? `<p class="muted">No engagement recorded yet.</p>` : "");
+      return html;
+    } catch (e) { return `<h1>Entity 360</h1>` + err(e); }
+  }
+
+  async function entityUnlinkFn(entityId, linkId) {
+    if (!(await UI.confirm("Unlink this record?", "The source record keeps its data; it just stops counting toward this entity's 360.", "Unlink", true))) return;
+    try { await Api.crm.entityUnlink(entityId, linkId); UI.toast("Unlinked"); App.rerender(); }
+    catch (e) { UI.toast(e.message, { kind: "warn" }); }
+  }
+
+  return { pipeline, accounts, account360, accountNew, leads, convert, tasks, done, search, calendar,
+    entity360, entitySearchPage, openEntity360, entityUnlinkFn };
 })();

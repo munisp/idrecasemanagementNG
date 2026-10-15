@@ -123,6 +123,13 @@ const Api = (() => {
       },
       createAccount: (p) => req("POST", `${t()}/accounts`, p),
       account360: (id) => req("GET", `${t()}/accounts/${id}/360`),
+      // Entity 360: cross-rail organization aggregate (TPA / provider / health plan).
+      entitySearch: (q) => req("GET", `${t()}/entities?q=${encodeURIComponent(q)}`),
+      entityCreate: (body) => req("POST", `${t()}/entities`, body),
+      entityLookup: (source_table, source_id) => req("GET", `${t()}/entity360/lookup?source_table=${encodeURIComponent(source_table)}&source_id=${encodeURIComponent(source_id)}`),
+      entity360: (id) => req("GET", `${t()}/entity360/${id}`),
+      entityLink: (id, body) => req("POST", `${t()}/entities/${id}/links`, body),
+      entityUnlink: (id, linkId) => req("DELETE", `${t()}/entities/${id}/links/${linkId}`),
       createContact: (p) => req("POST", `${t()}/contacts`, p),
       leads: (params = {}) => {
         const qs = new URLSearchParams(params).toString();

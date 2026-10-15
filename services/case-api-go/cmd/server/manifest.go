@@ -210,10 +210,10 @@ func validateManifest(m *ProgramManifest) error {
 		"deadline_verification": true, "duplicate_detection": true,
 		"win_probability": true, "payer_analytics": true, "fraud_signals": true,
 		"network_adequacy": true, "letter_citation": true, "tpa_onboarding": true,
-		"healthplan_onboarding": true}
+		"healthplan_onboarding": true, "entity360": true}
 	for k := range m.Features {
 		if !knownFeatures[k] {
-			return fmt.Errorf("features.%s unknown (registered: sealed_offers, negotiation_window, medical_review, escrow_fees, voice_console, crm, review_queues, party_workspace, benchmarks, batch_suggestions, bundling_filter, necessity_screen, deadline_verification, duplicate_detection, win_probability, payer_analytics, fraud_signals, network_adequacy, letter_citation, tpa_onboarding, healthplan_onboarding)", k)
+			return fmt.Errorf("features.%s unknown (registered: sealed_offers, negotiation_window, medical_review, escrow_fees, voice_console, crm, review_queues, party_workspace, benchmarks, batch_suggestions, bundling_filter, necessity_screen, deadline_verification, duplicate_detection, win_probability, payer_analytics, fraud_signals, network_adequacy, letter_citation, tpa_onboarding, healthplan_onboarding, entity360)", k)
 		}
 	}
 	// Determination engine (phase 3): must be a registered implementation.

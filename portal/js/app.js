@@ -122,7 +122,7 @@
       const on = ["review_queues", "party_workspace", "benchmarks", "batch_suggestions",
         "bundling_filter", "necessity_screen", "deadline_verification", "duplicate_detection",
         "win_probability", "payer_analytics", "fraud_signals", "network_adequacy", "letter_citation",
-        "tpa_onboarding", "healthplan_onboarding"];
+        "tpa_onboarding", "healthplan_onboarding", "entity360"];
       if (on.includes(name)) return true;
       return name === "sealed_offers" || name === "negotiation_window"; // NSA defaults
     },
@@ -135,6 +135,7 @@
     ["#/dashboard", "▤", "Home"], ["#/cases", "▦", App.t("case_plural")], ["#/pipeline", "▥", "Pipeline"],
     ["#/crm/accounts", "◈", "Accounts"], ["#/crm/leads", "◎", "Leads"], ["#/crm/tasks", "☑", "Tasks"],
   ];
+  if (App.feature("entity360") && has("CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "DOCTOR", "NURSE", "FINANCE", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "STATE_AUDITOR")) links.push(["#/crm/360", "◉", "Entities 360"]);
   if (has("PARTY") && App.feature("party_workspace")) links.push(["#/party", "⚭", "My disputes"]);
   if (App.feature("review_queues") && has("DOCTOR", "NURSE", "ATTORNEY", "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
     links.push(["#/queues/CODING", "⌗", "Coding queue"]);
@@ -254,6 +255,8 @@
     [/^#\/crm\/accounts$/, CrmViews.accounts],
     [/^#\/crm\/accounts\/new$/, CrmViews.accountNew],
     [/^#\/crm\/accounts\/([\w-]+)$/, (m) => CrmViews.account360(m[1])],
+    [/^#\/crm\/360$/, CrmViews.entitySearchPage],
+    [/^#\/crm\/360\/([\w-]+)$/, (m) => CrmViews.entity360(m[1])],
     [/^#\/crm\/leads$/, CrmViews.leads],
     [/^#\/crm\/tasks$/, CrmViews.tasks],
     [/^#\/search\/(.+)$/, (m) => CrmViews.search(decodeURIComponent(m[1]))],
