@@ -318,6 +318,10 @@ type server struct {
 	docs    *docStore
 	rds     *redisClient // cache + idempotency (fail-open)
 	permify string       // Permify base URL ("" = ReBAC check disabled, dev mode)
+	// graphBackends: the Entity 360 relationship-graph provider chain
+	// (GRAPH_BACKENDS — sql | age | falkordb; sql always last). See
+	// graph_provider.go.
+	graphBackends []graphProvider
 }
 
 func envOr(k, d string) string {
@@ -461,6 +465,7 @@ func main() {
 
 	s := &server{cfg: cfg, db: pool, tc: tc, tb: tbc, docs: docs, rds: rds,
 		permify: envOr("PERMIFY_URL", "")}
+	s.graphBackends = buildGraphBackends(pool, s)
 
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID, chimw.RealIP, chimw.Logger, chimw.Recoverer)
@@ -532,6 +537,7 @@ func main() {
 		r.Post("/cases/{caseId}/escalate", s.escalateCase)
 		r.Get("/internal/ledger/balances", s.ledgerBalances)            // worker-token: reconciliation job
 		r.Post("/internal/entities/backfill", s.entityBackfill)          // worker-token: link pre-registry CRM records to entities
+		r.Post("/internal/entities/graph/sync", s.entityGraphSync)       // rebuild AGE/FalkorDB entity-graph projections
 		r.Post("/checks", s.uploadCheck)                                // physical check photo/scan intake
 		r.Get("/checks", s.listChecks)                                  // review queue
 		r.Post("/checks/{checkId}/clear", s.clearCheck)                 // funds-cleared settlement

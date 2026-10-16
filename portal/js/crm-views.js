@@ -441,7 +441,7 @@ const CrmViews = (() => {
           const a = (2 * Math.PI * i) / ring.length - Math.PI / 2;
           pos[n.id] = [cx + R * Math.cos(a), cy + R * Math.sin(a)];
         });
-        html += `<h2>Relationship graph — who it faces in disputes (${ring.length})</h2>
+        html += `<h2>Relationship graph — who it faces in disputes (${ring.length})${g.backend && g.backend !== "sql" ? ` <span class="muted" style="font-size:.75em">via ${esc(g.backend)}</span>` : ""}</h2>
           <svg viewBox="0 0 680 380" style="width:100%;max-width:680px;display:block" role="img" aria-label="Entity relationship graph">` +
           g.edges.map((x) => { const [x1, y1] = pos[x.other] || [cx, cy];
             const rep = x.kind === "REPRESENTS";

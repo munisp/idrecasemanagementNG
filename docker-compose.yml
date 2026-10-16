@@ -4,6 +4,8 @@ name: nsa-idre-platform
 
 services:
   postgres:
+    # For GRAPH_BACKENDS=age (Entity 360 graph via Apache AGE), swap to
+    # image: apache/age:PG16_latest and apply scripts/graph-age.sql.
     image: postgres:16
     environment:
       POSTGRES_USER: idre
@@ -281,6 +283,9 @@ services:
           devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
 
   falkordb:  # dispute graph — one graph per tenant (idre_<st>), Cypher over RESP
+    # Shared with the Entity 360 backend when GRAPH_BACKENDS=falkordb — the
+    # case-api keeps its projections in separate keys (e360_<tenant>), so both
+    # workloads coexist on one instance (FALKORDB_ADDR=falkordb:6379).
     image: falkordb/falkordb:latest
     ports: ["6397:6379"]
 

@@ -185,6 +185,10 @@ func (s *server) entityBackfill(w http.ResponseWriter, r *http.Request) {
 		remaining += left
 	}
 	s.refreshTenantCaseStats(r.Context(), tenant)
+	// Refresh the graph projections too (no-op when GRAPH_BACKENDS=sql).
+	// Async: sync is batched but can take seconds on large tenants, and the
+	// backfill response shouldn't wait on an optional backend.
+	go s.syncGraphBackends(context.Background(), tenant)
 	writeJSON(w, http.StatusOK, map[string]any{"linked": linked, "failed": failed, "remaining": remaining})
 }
 
