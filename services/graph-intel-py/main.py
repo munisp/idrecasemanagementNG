@@ -31,6 +31,106 @@ import lakehouse_io
 
 DSN = os.environ.get("DATABASE_URL", "postgres://idre:idre@localhost:5432/idre")
 
+# Lakehouse de-identification (deid-py): when DEID_URL is set, text fields
+# are scrubbed BEFORE bronze/silver parquet writes and the audit report is
+# posted back to case-api — the analytics tier stays PHI-free by
+# construction. Unset = legacy behavior (pre-deid deployments). A deid
+# outage fails the sync: unscrubbed PHI in the lakehouse is worse than a
+# delayed sync.
+DEID_URL = os.environ.get("DEID_URL", "")
+CASE_API = os.environ.get("CASE_API_URL", "http://localhost:8080")
+WORKER_TOKEN = os.environ.get("WORKER_TOKEN", "")
+
+
+def _deid_rows(tenant: str, rows: list[dict]) -> list[dict]:
+    """Scrub free-text fields through deid-py; report the decision."""
+    if not DEID_URL:
+        return rows
+    import hashlib
+    import httpx
+    fields = ["provider_name", "payer_name", "provider_org", "health_plan",
+              "requester_org", "service_line"]
+    findings_total, detectors, policy = 0, [], "safe-harbor-18/v1"
+    out = []
+    joined = []
+    for d in rows:
+        d = dict(d)
+        for f in fields:
+            v = d.get(f)
+            if v:
+                joined.append(v)
+        out.append(d)
+    blob = "\n".join(joined)
+    if blob.strip():
+        resp = httpx.post(f"{DEID_URL}/v1/deidentify", timeout=60, json={
+            "tenant": tenant, "artifact": "lakehouse", "text": blob})
+        resp.raise_for_status()
+        body = resp.json()
+        redacted = body["text"].split("\n")
+        audit = body["audit"]
+        findings_total = sum(audit.get("counts", {}).values())
+        detectors = audit.get("detectors", [])
+        policy = audit.get("policy", policy)
+        it = iter(redacted)
+        for d in out:
+            for f in fields:
+                if d.get(f):
+                    d[f] = next(it, d[f])
+        # One report per sync run: input hash covers the joined blob.
+        try:
+            httpx.post(
+                f"{CASE_API}/v1/tenants/{tenant}/internal/deid/reports",
+                headers={"Authorization": f"Bearer {WORKER_TOKEN}"}, timeout=10,
+                json={"artifact": "lakehouse",
+                      "ref_id": hashlib.sha256(blob.encode()).hexdigest()[:16],
+                      "action": "DEIDENTIFY", "audit": audit})
+        except httpx.HTTPError:
+            pass  # report persistence is best-effort; the scrub itself is not
+    if findings_total:
+        print(f"lakehouse deid: {findings_total} identifier(s) scrubbed "
+              f"for {tenant} ({', '.join(detectors)}, {policy})", flush=True)
+    return out
+
+app = FastAPI(title="idre-graph-intel", version="1.0.0")
+otel_setup.init("idre-graph-intel")
+otel_setup.instrument_fastapi(app)
+
+
+def _load_cases(tenant: str) -> list[dict]:
+    t = "".join(c for c in tenant.lower() if c.isalnum())
+    cols = ["id", "case_number", "status", "service_line", "plan_type",
+            "qpa_cents", "provider_id", "payer_id", "opened_at"]
+    # The parties as people know them. A program tenant records the filer's
+    # organization and, once read from the documents, the provider's and the
+    # plan's names; provider_id/payer_id there are internal ids nobody can
+    # ask about by name. Names are used where they exist, ids otherwise.
+    named = cols + ["provider_org", "health_plan", "requester_org", "filing_party_type"]
+    with psycopg.connect(DSN, autocommit=True) as c:
+        try:
+            rows = c.execute(
+                f"SELECT id, case_number, status, service_line, plan_type, qpa_cents,"
+                f" provider_id, payer_id, opened_at, details->>'provider_org', details->>'health_plan',"
+                f" details->>'requester_org', details->>'filing_party_type' FROM tenant_{t}.cases"
+            ).fetchall()
+            use = named
+        except Exception:  # a tenant whose cases table has no details column
+            rows = c.execute(
+                f"SELECT id, case_number, status, service_line, plan_type, qpa_cents,"
+                f" provider_id, payer_id, opened_at FROM tenant_{t}.cases"
+            ).fetchall()
+            use = cols
+    out = []
+    for r in rows:
+        d = dict(zip(use, (str(v) if v is not None else None for v in r)))
+        filer, by_plan = (d.get("requester_org") or "").strip(), d.get("filing_party_type") == "HEALTH_PLAN"
+        d["provider_name"] = (d.get("provider_org") or "").strip() or ("" if by_plan else filer) or d.get("provider_id")
+        d["payer_name"] = (d.get("health_plan") or "").strip() or (filer if by_plan else "") or d.get("payer_id")
+        out.append(d)
+    return out
+
+
+
+
 app = FastAPI(title="idre-graph-intel", version="1.0.0")
 
 
@@ -62,8 +162,12 @@ def sync_from_db(tenant: str = Query(...)):
     cases = _load_cases(tenant)
     for c in cases:
         graphdb.upsert_case(tenant, c)
-    bronze = lakehouse_io.append_bronze(f"cases-{tenant}", cases)
-    silver = lakehouse_io.write_silver_cases(tenant, cases)
+    # FalkorDB gets the operational graph unscrubbed (it is a transactional
+    # system, tenant-isolated); the lakehouse tiers get the de-identified
+    # projection — analytics must never hold raw PHI.
+    scrubbed = _deid_rows(tenant, cases)
+    bronze = lakehouse_io.append_bronze(f"cases-{tenant}", scrubbed)
+    silver = lakehouse_io.write_silver_cases(tenant, scrubbed)
     return {"tenant": tenant, "cases": len(cases), "bronze": bronze, "silver": silver}
 
 

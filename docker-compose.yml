@@ -179,6 +179,7 @@ services:
       REDIS_ADDR: redis:6379            # JWKS cache + initiate idempotency
       PERMIFY_URL: http://permify:3476  # ReBAC object-level authorization (unset = dev bypass)
       GRAPH_INTEL_URL: http://graph-intel:8082  # FalkorDB + GraphSAGE + EPR-KGQA proxy target
+      DEID_URL: http://deid:8083                # PHI de-identification + clinical NER ("" = disabled)
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}    # sk_live_…/sk_test_…; unset = card payments disabled
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}  # whsec_… from `stripe listen` / dashboard endpoint
       PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:8080}  # Stripe success/cancel return
@@ -241,7 +242,8 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       VLM_ENDPOINT: ${VLM_ENDPOINT:-http://vllm:8000/v1}
       VLM_MODEL: ${VLM_MODEL:-paddleocr-vl}
-    depends_on: [kafka, minio, vault, opensearch]
+      DEID_URL: http://deid:8083                # Phase 2 clinical NER per analyzed document
+    depends_on: [kafka, minio, vault, opensearch, deid]
 
   outbox-relay:  # Postgres outbox -> Kafka; without it the event backbone is silent
     build: ./services/outbox-relay-py
@@ -295,6 +297,16 @@ services:
     volumes: ["ollamadata:/root/.ollama"]
     # first boot: docker exec <ollama> ollama pull qwen2.5:3b
 
+  deid:  # PHI de-identification (Safe Harbor) + clinical NER; regex+lexicon
+    # floor always on, OpenMed transformer recall when models are staged into
+    # the volume (air-gap friendly — it never downloads at runtime).
+    build: ./services/deid-py
+    environment:
+      OPENMED_MODEL_DIR: /models
+      DEID_DATE_SHIFT_SEED: ${DEID_DATE_SHIFT_SEED:-change-me-in-prod}
+    volumes: ["deidmodels:/models"]
+    ports: ["8083:8083"]
+
   graph-intel:  # FalkorDB sync + numpy GraphSAGE + EPR-KGQA + lakehouse bridge
     build: ./services/graph-intel-py
     environment:
@@ -304,12 +316,15 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
       LAKEHOUSE_DIR: /lakehouse
+      DEID_URL: http://deid:8083                # scrub text before bronze/silver writes
+      WORKER_TOKEN: ${WORKER_TOKEN:-}           # posts deid audit reports back to case-api
     volumes: ["lakehouse:/lakehouse"]
     ports: ["8082:8082"]
-    depends_on: [postgres, falkordb, ollama]
+    depends_on: [postgres, falkordb, ollama, deid]
 
 volumes:
   pgdata:
+  deidmodels:
   tbdata:
   miniodata:
   ollamadata:

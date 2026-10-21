@@ -58,6 +58,7 @@ type Config struct {
 	DaprHTTP        string // http://localhost:3500
 	VaultURL        string // http://vault:8081 (mTLS via Dapr in k8s)
 	GraphIntelURL   string // http://graph-intel:8082 ("" = graph features disabled)
+	DeidURL         string // http://deid:8083 ("" = de-identification disabled)
 	CopilotEndpoint string // local Ollama OpenAI-compatible /v1 base ("" = copilot disabled)
 	OpenSearchURL   string // http://opensearch:9200 ("" = document full-text search disabled)
 	OpenSearchUser  string // basic-auth user ("" = no auth, dev only)
@@ -111,6 +112,7 @@ func configFromEnv() Config {
 		DaprHTTP:        get("DAPR_HTTP_ENDPOINT", "http://localhost:3500"),
 		VaultURL:        get("VAULT_URL", "http://localhost:8081"),
 		GraphIntelURL:   get("GRAPH_INTEL_URL", "http://localhost:8082"),
+		DeidURL:         get("DEID_URL", ""),
 		CopilotEndpoint: get("COPILOT_ENDPOINT", get("VLM_ENDPOINT", "http://ollama.ollama.svc.cluster.local:11434/v1")),
 		OpenSearchURL:   get("OPENSEARCH_URL", ""),
 		OpenSearchUser:  get("OPENSEARCH_USER", ""),
@@ -520,6 +522,14 @@ func main() {
 		r.Get("/entity360/lookup", s.entityLookupRef)
 		r.Get("/entity360/outreach", s.entityOutreach)
 		r.Get("/entity360/{entityId}/graph", s.entityGraph)
+		// De-identification (services/deid-py): audit trail, clinical layer,
+		// duplicate signal, redaction preview. Gated by DEID_URL + "deid" flag.
+		r.Get("/cases/{caseId}/deid-reports", s.deidReports)
+		r.Get("/cases/{caseId}/clinical", s.caseClinical)
+		r.Get("/cases/{caseId}/clinical/overlaps", s.clinicalOverlaps)
+		r.Post("/deid/deidentify", s.deidProxy)
+		r.Post("/internal/documents/{docId}/clinical", s.deidClinicalIngest) // worker-token: doc-intel
+		r.Post("/internal/deid/reports", s.deidInternalReport)               // worker-token: graph-intel lakehouse
 		r.Get("/entity360/{entityId}", s.entity360View)
 		r.Post("/contacts", s.createContact)
 		r.Get("/leads", s.listLeads)
@@ -536,8 +546,8 @@ func main() {
 		r.Post("/cases/{caseId}/assign", s.assignCase)
 		r.Post("/cases/{caseId}/escalate", s.escalateCase)
 		r.Get("/internal/ledger/balances", s.ledgerBalances)            // worker-token: reconciliation job
-		r.Post("/internal/entities/backfill", s.entityBackfill)          // worker-token: link pre-registry CRM records to entities
-		r.Post("/internal/entities/graph/sync", s.entityGraphSync)       // rebuild AGE/FalkorDB entity-graph projections
+		r.Post("/internal/entities/backfill", s.entityBackfill)         // worker-token: link pre-registry CRM records to entities
+		r.Post("/internal/entities/graph/sync", s.entityGraphSync)      // rebuild AGE/FalkorDB entity-graph projections
 		r.Post("/checks", s.uploadCheck)                                // physical check photo/scan intake
 		r.Get("/checks", s.listChecks)                                  // review queue
 		r.Post("/checks/{checkId}/clear", s.clearCheck)                 // funds-cleared settlement
@@ -578,39 +588,39 @@ func main() {
 
 		// Program rules (per-state customization; federal NSA is the no-config default).
 		r.Get("/program", s.getProgram)
-		r.Post("/cases/{caseId}/program-date", s.setProgramDate)      // record clock-basis events
-		r.Post("/cases/{caseId}/status", s.setDualStatus)             // dual internal/agency status (G5)
-		r.Post("/cases/{caseId}/time", s.addTimeEntry)               // per-role effort on the dispute
+		r.Post("/cases/{caseId}/program-date", s.setProgramDate) // record clock-basis events
+		r.Post("/cases/{caseId}/status", s.setDualStatus)        // dual internal/agency status (G5)
+		r.Post("/cases/{caseId}/time", s.addTimeEntry)           // per-role effort on the dispute
 		r.Get("/cases/{caseId}/time", s.listTimeEntries)
-		r.Get("/time/mine", s.myTimeEntries)              // personal timesheet (all disputes)
-		r.Get("/time/summary", s.myTimeSummary)           // today / this week / this month totals
-		r.Put("/time/{entryId}", s.updateTimeEntry)       // editable; prior version snapshotted
-		r.Delete("/time/{entryId}", s.deleteTimeEntry)    // deletion snapshot preserved
-		r.Get("/reports/time", s.timeReport)                          // weekly per-dispute + monthly team rollup
-		r.Post("/time/report/send", s.timeReportSend)              // email the team-hours report out (CASE_MANAGER/FINANCE/admin)
-		r.Get("/reports/time/rates", s.getTimeRates)                  // role billable rates (view: CASE_MANAGER/FINANCE/admin)
-		r.Put("/reports/time/rates", s.putTimeRate)                   // set rates (CASE_MANAGER/admin only)
+		r.Get("/time/mine", s.myTimeEntries)           // personal timesheet (all disputes)
+		r.Get("/time/summary", s.myTimeSummary)        // today / this week / this month totals
+		r.Put("/time/{entryId}", s.updateTimeEntry)    // editable; prior version snapshotted
+		r.Delete("/time/{entryId}", s.deleteTimeEntry) // deletion snapshot preserved
+		r.Get("/reports/time", s.timeReport)           // weekly per-dispute + monthly team rollup
+		r.Post("/time/report/send", s.timeReportSend)  // email the team-hours report out (CASE_MANAGER/FINANCE/admin)
+		r.Get("/reports/time/rates", s.getTimeRates)   // role billable rates (view: CASE_MANAGER/FINANCE/admin)
+		r.Put("/reports/time/rates", s.putTimeRate)    // set rates (CASE_MANAGER/admin only)
 		// Service-fee invoicing engine (time ledger x rates -> invoices)
-		r.Post("/billing/invoices", s.generateInvoice)                // generate DRAFT for week/month/custom range
+		r.Post("/billing/invoices", s.generateInvoice) // generate DRAFT for week/month/custom range
 		r.Get("/billing/invoices", s.listBillingInvoices)
 		r.Get("/billing/invoices/{invoiceId}", s.getBillingInvoice)
-		r.Post("/billing/invoices/{invoiceId}/{action}", s.transitionInvoice) // approve|issue|void
+		r.Post("/billing/invoices/{invoiceId}/{action}", s.transitionInvoice)    // approve|issue|void
 		r.Post("/billing/invoices/{invoiceId}/payments", s.recordInvoicePayment) // FINANCE
 		r.Get("/billing/invoices/{invoiceId}/export", s.exportInvoiceCSV)        // accounting import CSV
 		// Reconciliation engine + accounting adapters
-		r.Post("/recon/import", s.reconImport)                        // CSV upload / configured http_json feed
-		r.Post("/recon/batches/{batchId}/match", s.reconRunMatch)     // deterministic auto-match
+		r.Post("/recon/import", s.reconImport)                    // CSV upload / configured http_json feed
+		r.Post("/recon/batches/{batchId}/match", s.reconRunMatch) // deterministic auto-match
 		r.Get("/recon/batches", s.reconListBatches)
 		r.Get("/recon/batches/{batchId}", s.reconGetBatch)
-		r.Post("/recon/items/{itemId}/resolve", s.reconResolveItem)   // manual match|exception|ignore|unmatch
-		r.Get("/recon/summary", s.reconSummary)                       // platform vs external drift for a period
+		r.Post("/recon/items/{itemId}/resolve", s.reconResolveItem) // manual match|exception|ignore|unmatch
+		r.Get("/recon/summary", s.reconSummary)                     // platform vs external drift for a period
 		// AR/AP subledger (arap.go)
 		r.Get("/arap/receivables", s.listReceivables)
 		r.Get("/arap/payables", s.listPayables)
 		r.Post("/arap/payables", s.createPayable)
 		r.Post("/arap/payables/{payableId}/{action}", s.settlePayable)
 		r.Get("/arap/summary", s.arapSummary)
-		r.Post("/arap/payouts/nacha", s.createNachaPayout)     // FINANCE: ACH file from open payables
+		r.Post("/arap/payouts/nacha", s.createNachaPayout) // FINANCE: ACH file from open payables
 		r.Get("/arap/payouts", s.listPayoutBatches)
 		r.Get("/arap/payouts/{batchId}/file", s.payoutBatchFile)
 		// Payment rails (moov-io stack): vault-sealed accounts, ACH debits/returns,
@@ -645,7 +655,7 @@ func main() {
 		r.Post("/cases/{caseId}/copilot/actions/{batchId}/decision", s.copilotDecideActions) // human gate -> Temporal signal
 		r.Post("/cases/{caseId}/correspondence", s.draftCorrespondence)                      // template draft / send (G3)
 		r.Get("/cases/{caseId}/correspondence", s.listCorrespondence)
-		r.Get("/correspondence", s.listMailJournal)                          // tenant-wide mail journal (IN+OUT, incl. pre-case and unmatched)
+		r.Get("/correspondence", s.listMailJournal)              // tenant-wide mail journal (IN+OUT, incl. pre-case and unmatched)
 		r.Post("/cases/{caseId}/share-links", s.createShareLink) // tokenized upload/download (G9)
 
 		// Double-blind offers (45 CFR 149.520(b)) + specialty review queues +
@@ -657,18 +667,18 @@ func main() {
 		r.Post("/cases/{caseId}/reviews", s.requestReview)            // CODING|CLINICAL|LEGAL worklist entry
 		r.Get("/queues/{discipline}", s.reviewQueue)                  // specialist worklist
 		r.Post("/reviews/{reviewId}/claim", s.claimReview)
-		r.Post("/reviews/{reviewId}/complete", s.completeReview)      // fires the workflow signal
-		r.Get("/cases/{caseId}/benchmarks", s.caseBenchmarks)       // per-code QPA distribution (arbitrator/staff)
-		r.Get("/cases/{caseId}/batchable", s.batchableCases)        // 45 CFR 149.510(c) batching suggestions
-		r.Get("/cases/{caseId}/win-probability", s.winProbability)  // same-payer/code outcomes (n>=5)
-		r.Get("/analytics/payers", s.payerAnalytics)                // denial-pattern profile per payer
-		r.Get("/analytics/fraud-signals", s.fraudSignals)           // oversight: provider tripwire clusters
-		r.Get("/analytics/network-adequacy", s.networkAdequacy)     // OON concentration evidence
-		r.Post("/cases/{caseId}/party-invites", s.inviteParty)        // provision Keycloak party account
+		r.Post("/reviews/{reviewId}/complete", s.completeReview)   // fires the workflow signal
+		r.Get("/cases/{caseId}/benchmarks", s.caseBenchmarks)      // per-code QPA distribution (arbitrator/staff)
+		r.Get("/cases/{caseId}/batchable", s.batchableCases)       // 45 CFR 149.510(c) batching suggestions
+		r.Get("/cases/{caseId}/win-probability", s.winProbability) // same-payer/code outcomes (n>=5)
+		r.Get("/analytics/payers", s.payerAnalytics)               // denial-pattern profile per payer
+		r.Get("/analytics/fraud-signals", s.fraudSignals)          // oversight: provider tripwire clusters
+		r.Get("/analytics/network-adequacy", s.networkAdequacy)    // OON concentration evidence
+		r.Post("/cases/{caseId}/party-invites", s.inviteParty)     // provision Keycloak party account
 		r.Get("/cases/{caseId}/party-accounts", s.listPartyAccounts)
-		r.Get("/party/cases", s.partyCases)                           // party workspace
+		r.Get("/party/cases", s.partyCases) // party workspace
 		r.Get("/party/cases/{caseId}", s.partyCaseDetail)
-		r.Get("/qa", s.qaQueue)                                  // QA gate queue (G4)
+		r.Get("/qa", s.qaQueue) // QA gate queue (G4)
 		r.Get("/qa/{qaId}", s.qaGet)
 		r.Post("/qa/{qaId}/decision", s.qaDecision)
 		r.Post("/cases/{caseId}/invoices", s.issueInvoice) // dual-party receivables (G8)
@@ -685,7 +695,7 @@ func main() {
 		r.Post("/intake/converse", s.intakeConverse)      // conversational intake (step 5): extraction only — filing stays on /intake
 		r.Post("/intake", s.createIntake)                 // pre-case intake (G12)
 		r.Post("/intake/bulk", s.bulkIntake)              // third-party batch filing (idempotent by batch_ref)
-		r.Get("/intake/bulk", s.listIntakeBatches)          // filer status board (own batches; staff may filter)
+		r.Get("/intake/bulk", s.listIntakeBatches)        // filer status board (own batches; staff may filter)
 		r.Get("/intake/bulk/{batchId}", s.getIntakeBatch) // batch receipt / reconciliation
 		r.Get("/intake", s.listIntake)
 		r.Post("/intake/{intakeId}/advance", s.advanceIntake) // refund window enforced
@@ -697,8 +707,8 @@ func main() {
 		r.Post("/tpa/clients", s.tpaAddClient)
 		r.Get("/tpa/clients", s.tpaListClients)
 		r.Post("/tpa/clients/{clientId}/status", s.tpaSetClientStatus)
-		r.Post("/tpa/intake", s.tpaIntake)                  // file on behalf of a client (staff-driven intake)
-		r.Get("/tpa/dashboard", s.tpaDashboard)             // all my clients' filings
+		r.Post("/tpa/intake", s.tpaIntake)      // file on behalf of a client (staff-driven intake)
+		r.Get("/tpa/dashboard", s.tpaDashboard) // all my clients' filings
 		r.Get("/admin/tpas", s.adminListTPAs)
 		r.Post("/admin/tpas/{tpaId}/status", s.adminSetTPAStatus) // suspend|reactivate
 		// TPA onboarding (tpa_onboarding.go): profile -> payment -> 6-doc package.
@@ -1206,7 +1216,7 @@ const (
 	acctOperatingCash    uint32 = 7002 // invoice payments received (operating, not escrow)
 	acctAccountsPayable  uint32 = 7003 // open obligations (awards, vendor, refunds)
 	acctProgramExpense   uint32 = 7004 // expense recognition when a payable is recorded
-	ledgerCodeIDRE       uint16 = 700 // platform code; ledger id = tenantLedgerID(tenant)
+	ledgerCodeIDRE       uint16 = 700  // platform code; ledger id = tenantLedgerID(tenant)
 )
 
 func tenantLedgerID(tenant string) uint32 {

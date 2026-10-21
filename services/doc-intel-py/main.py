@@ -525,6 +525,11 @@ def process(evt: dict) -> None:
         ctx["status"] = "ANALYZED_WITH_FINDINGS"
         ctx["result_truncated"] = True
     persist(evt, ctx)
+    # Phase 2 clinical NER (deid-py): drugs/conditions/anatomy/procedures
+    # land in public.document_clinical via case-api and feed the screening
+    # context + clinical-overlap duplicate signal. Best-effort like the
+    # rules above — analysis delivery never waits on it.
+    clinical_extract(evt, kind, subj_id, ctx)
     # doc.analyzed program rules (notify/flag/detail side effects, audited).
     try:
         fire_doc_rules(evt, kind, subj_id, ctx)
@@ -546,6 +551,44 @@ def process(evt: dict) -> None:
         httpx.post(url, json=payload, headers=AUTH_HEADERS, timeout=10)
     except httpx.HTTPError:
         pass  # signal is best-effort; analysis is already persisted
+
+
+DEID_URL = os.environ.get("DEID_URL", "")
+
+
+def clinical_extract(evt: dict, kind: str, subj_id: str, ctx: dict) -> None:
+    """Send document text to deid-py's clinical layer and hand the entities
+    to case-api. Skips silently when the service isn't configured or the
+    tenant turned the feature off; failures are logged, never raised."""
+    if not DEID_URL:
+        return
+    try:
+        if not features_for(evt["tenant"]).get("deid", True):
+            return
+    except Exception:
+        pass  # flag lookup failure must not suppress the extraction
+    text = (ctx.get("text") or ctx.get("markdown") or "")[:100000]
+    if len(text.strip()) < 40:
+        return
+    try:
+        resp = httpx.post(f"{DEID_URL}/v1/clinical", timeout=60, json={
+            "tenant": evt["tenant"],
+            "case_id": subj_id if kind == "case" else None,
+            "artifact": "document", "text": text})
+        resp.raise_for_status()
+        body = resp.json()
+        if not body.get("entities"):
+            return
+        httpx.post(
+            f"{TEMPORAL_SIGNAL_URL}/v1/tenants/{evt['tenant']}/internal/documents/{evt['doc_id']}/clinical",
+            headers=AUTH_HEADERS, timeout=10, json={
+                "case_id": subj_id if kind == "case" else "",
+                "entities": body["entities"],
+                "summary": body.get("summary", {}),
+                "detectors": body.get("detectors", [])})
+    except Exception as exc:  # noqa: BLE001 -- clinical enrichment is best-effort
+        print(f"doc-intel: clinical extraction failed for {evt.get('doc_id')}: {exc}",
+              file=sys.stderr, flush=True)
 
 
 def mark(evt: dict, status: str) -> None:

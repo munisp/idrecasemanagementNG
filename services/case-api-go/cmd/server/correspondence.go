@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -308,6 +309,16 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Decision == "APPROVE" {
+		// De-identification gate: nothing with direct identifiers leaves the
+		// building by mail. Fail-closed when deid is down (DEID_FAIL_OPEN=1
+		// downgrades to a logged release). The decision is always persisted
+		// to public.deid_reports.
+		if block := s.deidGateOutbound(r, tenant, caseID, "email", qid, subject+"\n"+body); block != "" {
+			s.logActivity(r.Context(), tenant, caseID, "EMAIL_HELD_DEID",
+				fmt.Sprintf("Outbound %q held at QA-approve: %s", subject, block))
+			http.Error(w, `{"error":`+strconv.Quote(block)+`}`, http.StatusConflict)
+			return
+		}
 		// The narrative's send-safety rule (drafts saved without addresses) ends
 		// here: addresses enter only at QA-approved send time, and delivery goes
 		// through the configured SMTP relay. Failure keeps status APPROVED (not
