@@ -68,6 +68,9 @@ const Api = (() => {
           .then((r) => (Array.isArray(r) ? { cases: r, next_cursor: "", total: r.length } : r));
       },
       get: (id) => req("GET", `${t()}/cases/${id}`),
+      prefill: (docId) => req("GET", `${t()}/cases/prefill${docId ? `?doc_id=${encodeURIComponent(docId)}` : ""}`),
+      nextAction: (id) => req("GET", `${t()}/cases/${id}/next-action`),
+      telemetryMetrics: (days = 30) => req("GET", `${t()}/telemetry/metrics?days=${days}`),
       initiate: (payload) => req("POST", `${t()}/cases/initiate`, payload),
       signal: (id, signal, data) => req("POST", `${t()}/cases/${id}/signal`, { signal, data }),
       benchmarks: (id) => req("GET", `${t()}/cases/${id}/benchmarks`),

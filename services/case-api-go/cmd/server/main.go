@@ -478,8 +478,12 @@ func main() {
 	r.Route("/v1/tenants/{tenant}", func(r chi.Router) {
 		r.Use(a.middleware, tenancy)
 		r.Post("/cases/initiate", s.initiateCase)
+		r.Get("/cases/prefill", s.casePrefill) // prefill suggestions for the initiation form
 		r.Get("/cases", s.listCases)
 		r.Get("/cases/{caseId}", s.getCase)
+		r.Get("/cases/{caseId}/next-action", s.caseNextAction) // rule-based next best action
+		r.Post("/telemetry/events", s.telemetryIngest)       // portal interaction baseline
+		r.Get("/telemetry/metrics", s.telemetryMetrics)
 		r.Post("/fees/transfer", s.postFeeTransfer)    // escrow/admin/IDRE fee double-entry
 		r.Post("/cases/{caseId}/signal", s.signalCase) // e.g. response filed, fees paid
 

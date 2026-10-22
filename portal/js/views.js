@@ -1167,6 +1167,22 @@ const Views = (() => {
       Palette.remember("case", c.id, c.case_number);
       let html = `<div class="view-head"><h1><span class="mono">${esc(c.case_number)}</span></h1>
         ${badge(c.status)}</div>
+        <div id="next-action"></div>`;
+      // Phase 2 next-action: one recommended primary action, with its reason.
+      // Advisory — the regular action rows below are untouched.
+      afterRender(() => Api.cases.nextAction(id).then((na) => {
+        const a = na && na.next_action;
+        const box = document.getElementById("next-action");
+        if (!a || !box) return;
+        box.innerHTML = `<div class="sla-cluster"><div class="sla-card" style="border-left:3px solid var(--accent,#3b82f6)">
+          <button id="na-go" class="primary">${esc(a.label)}</button>
+          <span class="lbl">Suggested next step · ${esc(a.reason)}</span></div></div>`;
+        document.getElementById("na-go").addEventListener("click", () => {
+          if (window.Telemetry) Telemetry.track("next_action_accept", a.action_id, { confidence: a.confidence });
+          location.hash = a.href;
+        });
+      }).catch(() => {}));
+      html += `
         <p class="muted">${esc(c.service_line)} · ${esc(App.t("amount_label"))} $${(c.qpa_cents / 100).toLocaleString()} · opened ${fmtDate(c.opened_at)}</p>`;
 
       // Statutory clock cluster (server-projected)
@@ -1406,9 +1422,57 @@ const Views = (() => {
 
   // ---- New dispute -------------------------------------------------------------
   function newDispute() {
-    afterRender(() => $("#nd").addEventListener("submit", async (ev) => {
+    // Phase 2 prefill: suggestions arrive as {value, confidence, source,
+    // evidence} per field. Applying one fills the input and shows a "why"
+    // badge; on submit, final values are compared against every suggestion
+    // shown and prefill_accept / prefill_override telemetry is emitted.
+    const suggested = {}; // field -> suggested value actually shown
+    const applyPrefill = (fields) => {
+      for (const [name, s2] of Object.entries(fields || {})) {
+        const input = document.querySelector(`#nd [name="${name}"]`);
+        if (!input || !s2 || !s2.value) continue;
+        // Never clobber something the user already typed.
+        if (input.value && input.value !== suggested[name]) continue;
+        input.value = s2.value;
+        suggested[name] = s2.value;
+        let badge2 = input.parentElement.querySelector(".pf-badge");
+        if (!badge2) {
+          badge2 = document.createElement("span");
+          badge2.className = "pf-badge muted";
+          badge2.style.cssText = "font-size:.8em;margin-left:.5em";
+          input.parentElement.appendChild(badge2);
+        }
+        badge2.textContent = `suggested (${s2.source === "doc" ? "from document" : "from history"}, ${s2.confidence} confidence): ${s2.evidence}`;
+      }
+    };
+    afterRender(async () => {
+      try {
+        const base = await Api.cases.prefill();
+        applyPrefill(base.fields);
+        const sel = $("#pf-doc");
+        if (sel && base.recent_docs && base.recent_docs.length) {
+          sel.closest("label").style.display = "";
+          sel.innerHTML = `<option value="">— prefill from a recently analyzed document —</option>` +
+            base.recent_docs.map((d) => `<option value="${esc(d.doc_id)}">${esc(d.doc_type || "document")} · ${esc((d.analyzed_at || "").slice(0, 10))} · case ${esc((d.case_id || "").slice(0, 8))}</option>`).join("");
+          sel.addEventListener("change", async () => {
+            if (!sel.value) return;
+            try { applyPrefill((await Api.cases.prefill(sel.value)).fields); }
+            catch (e) { UI.toast(e.message, { kind: "warn" }); }
+          });
+        }
+      } catch { /* prefill is advisory — the blank form still works */ }
+
+      $("#nd").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const f = Object.fromEntries(new FormData(ev.target));
+      // Accept/override bookkeeping for every suggestion that was shown.
+      const shown = { ...suggested };
+      for (const k of Object.keys(suggested)) delete suggested[k];
+      const finalVal = { case_number: f.case_number, qpa: f.qpa || "", service_line: f.service_line,
+                         plan_type: f.plan_type, provider_id: f.provider_id, payer_id: f.payer_id };
+      for (const [k, v] of Object.entries(shown)) {
+        if (window.Telemetry) Telemetry.track(finalVal[k] === v ? "prefill_accept" : "prefill_override", k);
+      }
       await UI.run(ev.target.querySelector("button"), async () => {
         try {
           const r = await Api.cases.initiate({
@@ -1420,8 +1484,9 @@ const Views = (() => {
           location.hash = `#/cases/${r.case_id}`;
         } catch (e) { UI.toast(e.message, { kind: "warn", duration: 9000 }); }
       }, "Initiating…");
-    }));
+    }); });
     return `<h1>New ${esc(App.t("case_noun").toLowerCase())}</h1><form id="nd" class="form">
+      <label id="pf-doc-label" style="display:none">Prefill from a recent document <select id="pf-doc"></select></label>
       <label>CMS case number <input name="case_number" required placeholder="CMS-TX-2026-00002" /></label>
       <label>Service line <select name="service_line"><option>ER</option><option>AIR_AMBULANCE</option><option>ANESTHESIA</option><option>RADIOLOGY</option><option>LAB</option><option>OTHER</option></select></label>
       <label>Plan type <select name="plan_type"><option>SELF_FUNDED</option><option>FULLY_INSURED</option></select></label>
