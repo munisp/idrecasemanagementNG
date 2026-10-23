@@ -4695,5 +4695,35 @@ async function railAttachAuthFn(id) {
     UI.toast("Noted — complete this step manually; the row shows the detail", { duration: 5000 });
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeStepGo, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, productivity, productivityDetail, attentionGo, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, insightsView, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
+  async function docReview() {
+    if (!can("CASE_MANAGER", "ARBITRATOR", "DOCTOR", "NURSE", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) return err(new Error("forbidden"));
+    try {
+      const r = await Api.cases.docReviewQueue();
+      const q = r.queue || [];
+      const rows = q.map((i) => `<tr>
+        <td><a href="#/cases/${i.case_id}">${esc(i.case_number)}</a></td>
+        <td>${esc(i.doc_type || "document")}</td>
+        <td>${i.findings}</td>
+        <td class="muted">${fmtDate(i.analyzed_at)}</td>
+        <td>${i.next_statutory_date ? fmtDate(i.next_statutory_date) : "—"}</td>
+        <td><button class="mini primary" onclick="Views.docAck('${i.case_id}','${i.doc_id}',this)">Mark reviewed</button></td></tr>`).join("");
+      return `<div class="view-head"><h1>Document review</h1>
+        <span class="muted">analysis findings awaiting a human check, statutory-urgency first</span></div>
+        ${q.length ? `<table><thead><tr><th>Case</th><th>Document</th><th>Findings</th><th>Analyzed</th><th>Statutory due</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table>` : `<p class="muted">Queue empty — every analysis with findings has been reviewed.</p>`}`;
+    } catch (e) { return err(e); }
+  }
+
+  async function docAck(caseId, docId, btn) {
+    await UI.run(btn, async () => {
+      try {
+        await Api.cases.ackDoc(caseId, docId);
+        if (window.Telemetry) Telemetry.track("next_action_accept", "review_documents", { source: "doc_review" });
+        btn.closest("tr").remove();
+        UI.toast("Findings reviewed");
+      } catch (e) { UI.toast(e.message, { kind: "warn" }); }
+    }, "…");
+  }
+
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeStepGo, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, productivity, productivityDetail, attentionGo, docReview, docAck, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, insightsView, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
 })();

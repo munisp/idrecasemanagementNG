@@ -73,6 +73,8 @@ const Api = (() => {
       attention: () => req("GET", `${t()}/cases/attention`),
       telemetryMetrics: (days = 30) => req("GET", `${t()}/telemetry/metrics?days=${days}`),
       telemetryPaths: (days = 30, workflow = "") => req("GET", `${t()}/telemetry/paths?days=${days}${workflow ? `&workflow=${encodeURIComponent(workflow)}` : ""}`),
+      docReviewQueue: () => req("GET", `${t()}/documents/review-queue`),
+      ackDoc: (caseId, docId) => req("POST", `${t()}/cases/${caseId}/documents/${docId}/acknowledge`, {}),
       initiate: (payload) => req("POST", `${t()}/cases/initiate`, payload),
       signal: (id, signal, data) => req("POST", `${t()}/cases/${id}/signal`, { signal, data }),
       benchmarks: (id) => req("GET", `${t()}/cases/${id}/benchmarks`),

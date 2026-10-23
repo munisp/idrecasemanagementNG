@@ -495,6 +495,7 @@ func main() {
 		r.Get("/cases/{caseId}/documents/{docId}/download", s.downloadDocument)
 		r.Patch("/cases/{caseId}/documents/{docId}", s.moveDocument) // re-file to folder (staff only)
 		r.Get("/cases/{caseId}/documents/{docId}/analysis", s.documentAnalysis)
+		r.Post("/cases/{caseId}/documents/{docId}/acknowledge", s.acknowledgeDocFindings) // reviewer checked the findings
 		r.Post("/cases/{caseId}/documents/{docId}/analysis/feedback", s.submitDocFeedback)
 
 		// Stakeholder onboarding: applications, decisions, status.
@@ -686,6 +687,7 @@ func main() {
 		r.Get("/party/cases/{caseId}", s.partyCaseDetail)
 		r.Get("/qa", s.qaQueue) // QA gate queue (G4)
 		r.Get("/qa/draft-quality", s.qaDraftQuality) // per-template draft effectiveness
+		r.Get("/documents/review-queue", s.docReviewQueue) // tenant-level findings inbox
 		r.Get("/qa/{qaId}", s.qaGet)
 		r.Post("/qa/{qaId}/decision", s.qaDecision)
 		r.Post("/cases/{caseId}/invoices", s.issueInvoice) // dual-party receivables (G8)
