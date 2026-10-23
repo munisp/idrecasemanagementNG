@@ -50,6 +50,7 @@ const Views = (() => {
           [c.intake_steps_due, "#/intake", `intake steps due${c.intake_overdue ? ` (${c.intake_overdue} overdue)` : ""}`],
           [c.statutory_due_72h, "#/cases", "statutory clocks < 72h"],
           [c.statutory_overdue, "#/cases", "statutory clocks overdue"],
+          [c.stalled_cases, "#/cases", "stalled cases (no activity 7d+)"],
         ].filter(([n]) => n > 0);
         if (!chips.length) { qs.remove(); return; }
         qs.innerHTML = `<div class="sla-cluster">` + chips.map(([n, href, lbl]) => `

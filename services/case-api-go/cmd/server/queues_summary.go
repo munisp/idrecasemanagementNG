@@ -19,6 +19,12 @@ import (
 	"time"
 )
 
+// stalledCaseDays: an open case with no logged activity for this long is
+// stalled. 7 days is quiet-but-not-alarming for federal IDRE work (open
+// negotiation runs 30 business days); it's long enough that a healthy case
+// would normally see SOME touch — a note, a doc, a status read.
+const stalledCaseDays = 7
+
 // queueCounts are the headline numbers for the dashboard strip. Each maps to
 // a queue the user can open: attention -> #/dashboard strip links,
 // qa_pending -> #/qa, docs_findings_review -> #/doc-review,
@@ -33,6 +39,7 @@ type queueCounts struct {
 	IntakeOverdue      int `json:"intake_overdue"`
 	StatutoryOverdue   int `json:"statutory_overdue"`
 	StatutoryDue72h    int `json:"statutory_due_72h"`
+	StalledCases       int `json:"stalled_cases"` // open, no activity past stalledCaseDays
 }
 
 // queuesSummary: GET /queues/summary — aggregated day-start counts for the
@@ -97,6 +104,23 @@ func (s *server) queuesSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		rows.Close()
 	}
+
+	// Stalled cases: open cases whose newest activity (or opened_at, if none)
+	// is older than stalledCaseDays. Every other count in this rollup is a
+	// SIGNAL — pending QA, unread findings, a clock expiring. A stalled case
+	// is the opposite: the absence of any signal, which no queue catches.
+	// The day count is a rolling window over recent activity, not a breach
+	// flag — a case mid-offer-window is legitimately quiet, which is why
+	// cases with a live statutory clock are excluded: their deadline already
+	// surfaces them elsewhere in this rollup.
+	_ = s.db.QueryRow(r.Context(), fmt.Sprintf(`
+		SELECT count(*) FROM tenant_%s.cases c
+		WHERE c.status NOT LIKE 'CLOSED%%' AND c.status <> 'SETTLED_IN_NEGOTIATION'
+		  AND c.offer_window_ends_at IS NULL AND c.open_negotiation_end IS NULL
+		  AND coalesce((SELECT max(a.created_at) FROM public.case_activities a
+		                WHERE a.tenant=$1 AND a.case_id=c.id::text), c.opened_at)
+		      < now() - make_interval(days => $2)`,
+		sanitizeTenant(tenant)), tenant, stalledCaseDays).Scan(&c.StalledCases)
 
 	// Statutory clocks across the open docket: nearest of offer window /
 	// negotiation end, bucketed overdue vs due inside 72h.
