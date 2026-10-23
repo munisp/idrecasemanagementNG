@@ -155,13 +155,20 @@ func (s *server) telemetryActionStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
+	type actionOutcome struct {
+		AcceptedN                  int      `json:"accepted_n"`
+		AcceptedMedianHoursToClose *float64 `json:"accepted_median_hours_to_close,omitempty"`
+		NotAcceptedN               int      `json:"not_accepted_n"`
+		NotAcceptedMedianHours     *float64 `json:"not_accepted_median_hours_to_close,omitempty"`
+	}
 	type actionStat struct {
-		ActionID   string  `json:"action_id"`
-		Shown      int     `json:"shown"`
-		Accepts    int     `json:"accepts"`
-		Prior      float64 `json:"prior"`
-		Confidence float64 `json:"confidence"` // what the recommender reports now
-		Basis      string  `json:"basis"`      // "prior" | "observed"
+		ActionID   string         `json:"action_id"`
+		Shown      int            `json:"shown"`
+		Accepts    int            `json:"accepts"`
+		Prior      float64        `json:"prior"`
+		Confidence float64        `json:"confidence"` // what the recommender reports now
+		Basis      string         `json:"basis"`      // "prior" | "observed"
+		Outcome    *actionOutcome `json:"outcome,omitempty"`
 	}
 	out := []actionStat{}
 	for rows.Next() {
@@ -177,12 +184,81 @@ func (s *server) telemetryActionStats(w http.ResponseWriter, r *http.Request) {
 	// this one table answers both "how calibrated are we?" and "when do the
 	// priors themselves start learning?".
 	closed := s.countClosedCases(r.Context(), tenant)
+	gateOpen := closed >= modelMinClosedCases
+
+	// Delayed-outcome estimates (gated with the priors): per action, the
+	// median wall time from first showing to the case's first terminal
+	// lifecycle transition, split by whether anyone accepted the suggestion.
+	// Cohorts are per (action, case); each cohort reports only at or above
+	// calibrateMinShown members. OBSERVATIONAL — cases that accept a
+	// suggestion differ from cases that don't, so this is an association a
+	// reviewer watches over time, never a causal claim the model acts on.
+	if gateOpen {
+		outcomes := map[string]*actionOutcome{}
+		oRows, oErr := s.db.Query(r.Context(), `
+			WITH ev AS (
+				SELECT target, meta->>'case_id' AS case_id,
+				       bool_or(action='next_action_accept') AS accepted,
+				       min(created_at) AS first_at
+				FROM public.interaction_events
+				WHERE tenant=$1 AND action IN ('next_action_shown','next_action_accept')
+				  AND created_at > now() - make_interval(days => $2)
+				  AND meta ? 'case_id' AND meta->>'case_id' <> ''
+				GROUP BY target, meta->>'case_id'
+			), term AS (
+				SELECT ev.target, ev.accepted,
+				       EXTRACT(EPOCH FROM (t.created_at - ev.first_at))/3600.0 AS hours
+				FROM ev
+				JOIN LATERAL (
+					SELECT created_at FROM public.case_transitions ct
+					WHERE ct.tenant=$1 AND ct.case_id=ev.case_id AND ct.axis='lifecycle'
+					  AND (ct.to_status LIKE 'CLOSED%%' OR ct.to_status='SETTLED_IN_NEGOTIATION')
+					  AND ct.created_at >= ev.first_at
+					ORDER BY ct.created_at LIMIT 1
+				) t ON true
+			)
+			SELECT target, accepted, count(*),
+			       percentile_cont(0.5) WITHIN GROUP (ORDER BY hours)
+			FROM term GROUP BY target, accepted`, tenant, days)
+		if oErr == nil {
+			for oRows.Next() {
+				var target string
+				var accepted bool
+				var n int
+				var median float64
+				if oRows.Scan(&target, &accepted, &n, &median) != nil {
+					continue
+				}
+				o := outcomes[target]
+				if o == nil {
+					o = &actionOutcome{}
+					outcomes[target] = o
+				}
+				if accepted {
+					o.AcceptedN = n
+					if n >= calibrateMinShown {
+						o.AcceptedMedianHoursToClose = &median
+					}
+				} else {
+					o.NotAcceptedN = n
+					if n >= calibrateMinShown {
+						o.NotAcceptedMedianHours = &median
+					}
+				}
+			}
+			oRows.Close()
+			for i := range out {
+				out[i].Outcome = outcomes[out[i].ActionID]
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"days": days, "actions": out, "generated_at": time.Now().UTC(),
 		"model_gate": map[string]any{
 			"closed_cases": closed, "required": modelMinClosedCases,
-			"open": closed >= modelMinClosedCases,
+			"open": gateOpen,
 		},
+		"outcome_caveat": "Observational: cases that accept a suggestion differ from cases that do not — association, not causation.",
 	})
 }
 

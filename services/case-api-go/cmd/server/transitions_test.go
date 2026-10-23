@@ -101,3 +101,84 @@ func TestLoadPriorsFallbackTable(t *testing.T) {
 		t.Fatalf("unknown learned id changed a recommendation: %+v vs %+v", rec, recWith)
 	}
 }
+
+func TestPrimaryRoleDeterministic(t *testing.T) {
+	// The portal stamps events with Telemetry.role(), which implements the
+	// same canonical order — a multi-role user must resolve identically on
+	// both sides or the per-role cells split silently.
+	cases := []struct {
+		roles []string
+		want  string
+	}{
+		{[]string{"CASE_MANAGER", "FEDERAL_ADMIN"}, "FEDERAL_ADMIN"}, // admins first
+		{[]string{"NURSE", "CASE_MANAGER"}, "CASE_MANAGER"},
+		{[]string{"DOCTOR", "NURSE"}, "DOCTOR"},
+		{[]string{"PARTY"}, "PARTY"},
+		{[]string{"SOME_FUTURE_ROLE"}, "SOME_FUTURE_ROLE"}, // unknown roles still resolve
+		{nil, ""},
+	}
+	for _, tc := range cases {
+		if got := primaryRole(principal{Roles: tc.roles}); got != tc.want {
+			t.Fatalf("primaryRole(%v) = %q, want %q", tc.roles, got, tc.want)
+		}
+	}
+}
+
+func TestValuesForPrecedence(t *testing.T) {
+	base := map[string]float64{}
+	for k, v := range nextActionPriors {
+		base[k] = v
+	}
+	base["triage"] = 0.61 // tenant overlay armed triage
+	lp := learnedPriors{
+		open:   true,
+		values: base,
+		armed:  map[string]bool{"triage": true},
+		byRole: map[string]map[string]float64{
+			"CASE_MANAGER": {"triage": 0.42},
+		},
+		byService: map[string]map[string]float64{
+			"AIR_AMBULANCE": {"triage": 0.55, "qa_review": 0.77},
+		},
+	}
+
+	// Full context: role wins over service, service over tenant, tenant over static.
+	v, basis := lp.valuesFor("CASE_MANAGER", "AIR_AMBULANCE")
+	if v["triage"] != 0.42 || basis["triage"] != "learned:role" {
+		t.Fatalf("role cell must win: triage=%v basis=%q", v["triage"], basis["triage"])
+	}
+	if v["qa_review"] != 0.77 || basis["qa_review"] != "learned:service_line" {
+		t.Fatalf("service cell must beat tenant/static: qa_review=%v basis=%q", v["qa_review"], basis["qa_review"])
+	}
+
+	// Service only.
+	v, basis = lp.valuesFor("ARBITRATOR", "AIR_AMBULANCE")
+	if v["triage"] != 0.55 || basis["triage"] != "learned:service_line" {
+		t.Fatalf("service cell expected: triage=%v basis=%q", v["triage"], basis["triage"])
+	}
+
+	// Neither overlay: tenant-learned value with plain "learned" basis.
+	v, basis = lp.valuesFor("ATTORNEY", "DENTAL")
+	if v["triage"] != 0.61 || basis["triage"] != "learned" {
+		t.Fatalf("tenant overlay expected: triage=%v basis=%q", v["triage"], basis["triage"])
+	}
+	// The AIR_AMBULANCE service cell must NOT leak into a DENTAL context:
+	// qa_review falls back to the static prior with no basis claim.
+	if v["qa_review"] != nextActionPriors["qa_review"] || basis["qa_review"] != "" {
+		t.Fatalf("qa_review should be static here, got %v basis %q", v["qa_review"], basis["qa_review"])
+	}
+	if v["review_case"] != nextActionPriors["review_case"] || basis["review_case"] != "" {
+		t.Fatalf("static fallback broken: %v %q", v["review_case"], basis["review_case"])
+	}
+
+	// Empty context strings never match a cell.
+	v, _ = lp.valuesFor("", "")
+	if v["triage"] != 0.61 {
+		t.Fatalf("empty context must fall to tenant overlay, got %v", v["triage"])
+	}
+
+	// Input maps are not mutated by resolution.
+	if lp.values["triage"] != 0.61 || lp.byRole["CASE_MANAGER"]["triage"] != 0.42 {
+		t.Fatal("valuesFor mutated the loaded tables")
+	}
+}

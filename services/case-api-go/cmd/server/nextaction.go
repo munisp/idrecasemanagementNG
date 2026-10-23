@@ -124,8 +124,9 @@ func (s *server) caseNextAction(w http.ResponseWriter, r *http.Request) {
 	tcase := "tenant_" + sanitizeTenant(tenant) + ".cases"
 	var status string
 	var assignedTo *string
+	var serviceLine string
 	err := s.db.QueryRow(r.Context(),
-		`SELECT status, assigned_to FROM `+tcase+` WHERE id=$1`, caseID).Scan(&status, &assignedTo)
+		`SELECT status, assigned_to, coalesce(service_line,'') FROM `+tcase+` WHERE id=$1`, caseID).Scan(&status, &assignedTo, &serviceLine)
 	if err != nil {
 		http.Error(w, `{"error":"case not found"}`, http.StatusNotFound)
 		return
@@ -182,11 +183,12 @@ func (s *server) caseNextAction(w http.ResponseWriter, r *http.Request) {
 	// changes WHERE the number comes from, never whether one is shown
 	// without a basis.
 	priors := s.loadPriors(r.Context(), tenant)
-	rec := recommendNextActionWith(in, caseID, priors.values)
+	vals, basisByAction := priors.valuesFor(primaryRole(p), serviceLine)
+	rec := recommendNextActionWith(in, caseID, vals)
 	basis := "prior"
 	if priors.open {
-		if priors.armed[rec.ActionID] {
-			basis = "learned"
+		if b := basisByAction[rec.ActionID]; b != "" {
+			basis = b
 		}
 	} else {
 		// Pre-gate calibration: hand-set prior until this action has been
@@ -214,26 +216,91 @@ func (s *server) caseNextAction(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// learnedPriors: the prior table recommendNextActionWith ranks by, plus the
-// gate state behind it. values always starts as a copy of nextActionPriors
-// so every rule keeps its hand-set floor; armed marks the actions whose
-// value the tenant's own accept history replaced.
+// learnedPriors: the prior tables recommendNextActionWith ranks by, plus
+// the gate state behind them. values always starts as a copy of
+// nextActionPriors so every rule keeps its hand-set floor; the tenant-wide
+// overlay replaces values per armed action, and byRole / byService hold the
+// more specific cells. An action is "armed" only at or above the same
+// sample threshold calibrateConfidence uses — one window, one threshold,
+// one smoothing rule across the whole arc, at every granularity.
 type learnedPriors struct {
-	closed int
-	open   bool
-	values map[string]float64
-	armed  map[string]bool
+	closed    int
+	open      bool
+	values    map[string]float64 // static priors + tenant-wide learned overlay
+	armed     map[string]bool    // actions the tenant-wide overlay replaced
+	byRole    map[string]map[string]float64
+	byService map[string]map[string]float64
 }
 
-// loadPriors builds the prior table for one request. Gate closed (fewer
+// canonicalRoleOrder decides which of a principal's roles stamps an event
+// and scopes a lookup when they hold several. The portal's Telemetry.role()
+// implements the SAME order — event-time stamps and request-time lookups
+// must agree or the per-role cells split silently. Admins first (their
+// behavior should never be mistaken for a line role's), then line roles.
+var canonicalRoleOrder = []string{
+	"PLATFORM_ADMIN", "FEDERAL_ADMIN", "TENANT_ADMIN",
+	"CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "FINANCE", "PM",
+	"DOCTOR", "NURSE", "NURSE_PHYSICIAN", "CODER", "BULK_SUBMITTER", "PARTY",
+}
+
+// primaryRole: the single role a multi-role principal acts as for learning
+// purposes. Deterministic, never "" for an authenticated principal (the
+// middleware requires at least one role to reach any of these handlers).
+func primaryRole(p principal) string {
+	for _, want := range canonicalRoleOrder {
+		for _, have := range p.Roles {
+			if have == want {
+				return want
+			}
+		}
+	}
+	if len(p.Roles) > 0 {
+		return p.Roles[0]
+	}
+	return ""
+}
+
+// valuesFor resolves the effective prior table for one (role, service line)
+// context. Precedence: role cell → service-line cell → tenant-wide learned
+// → static prior — the actor's own accept pattern is the strongest signal
+// of what they'll act on, the case kind's next, the portfolio's after that.
+// The returned basis map says WHICH layer supplied each armed value, so the
+// endpoint can report it instead of implying one monolithic "learned".
+func (lp learnedPriors) valuesFor(role, serviceLine string) (map[string]float64, map[string]string) {
+	v := make(map[string]float64, len(lp.values))
+	basis := map[string]string{}
+	for id, val := range lp.values {
+		v[id] = val
+	}
+	for id := range lp.armed {
+		basis[id] = "learned"
+	}
+	if cells := lp.byService[serviceLine]; serviceLine != "" && cells != nil {
+		for id, val := range cells {
+			v[id] = val
+			basis[id] = "learned:service_line"
+		}
+	}
+	if cells := lp.byRole[role]; role != "" && cells != nil {
+		for id, val := range cells {
+			v[id] = val
+			basis[id] = "learned:role"
+		}
+	}
+	return v, basis
+}
+
+// loadPriors builds the prior tables for one request. Gate closed (fewer
 // than modelMinClosedCases closed cases): the static table, untouched. Gate
-// open: per-action Laplace-smoothed accept rate over the 90-day telemetry
-// window, but only for actions still emitted by the rules (a retired
-// action's history must never resurrect it) and only at or above the same
-// sample threshold calibrateConfidence uses — one window, one threshold,
-// one smoothing rule across the whole arc.
+// open: tenant-wide smoothed accept rates over the 90-day window, plus
+// per-role and per-service-line cells for stamped events — each cell armed
+// independently at calibrateMinShown, each restricted to action ids the
+// rules still emit (a retired action's history must never resurrect it).
 func (s *server) loadPriors(ctx context.Context, tenant string) learnedPriors {
-	lp := learnedPriors{values: map[string]float64{}, armed: map[string]bool{}}
+	lp := learnedPriors{
+		values: map[string]float64{}, armed: map[string]bool{},
+		byRole: map[string]map[string]float64{}, byService: map[string]map[string]float64{},
+	}
 	for k, v := range nextActionPriors {
 		lp.values[k] = v
 	}
@@ -242,6 +309,16 @@ func (s *server) loadPriors(ctx context.Context, tenant string) learnedPriors {
 	if !lp.open {
 		return lp
 	}
+	arm := func(dim, target string, shown, accepts int) (float64, bool) {
+		if shown < calibrateMinShown {
+			return 0, false
+		}
+		if _, live := nextActionPriors[target]; !live {
+			return 0, false
+		}
+		return float64(accepts+1) / float64(shown+2), true
+	}
+	// Tenant-wide overlay.
 	rows, err := s.db.Query(ctx, `
 		SELECT target,
 		       count(*) FILTER (WHERE action='next_action_shown'),
@@ -250,24 +327,52 @@ func (s *server) loadPriors(ctx context.Context, tenant string) learnedPriors {
 		WHERE tenant=$1 AND action IN ('next_action_shown','next_action_accept')
 		  AND created_at > now() - interval '90 days'
 		GROUP BY target`, tenant)
-	if err != nil {
-		return lp
+	if err == nil {
+		for rows.Next() {
+			var target string
+			var shown, accepts int
+			if rows.Scan(&target, &shown, &accepts) != nil {
+				continue
+			}
+			if rate, ok := arm("", target, shown, accepts); ok {
+				lp.values[target] = rate
+				lp.armed[target] = true
+			}
+		}
+		rows.Close()
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var target string
-		var shown, accepts int
-		if rows.Scan(&target, &shown, &accepts) != nil {
+	// Per-dimension overlays. Stamped events only: pre-overlay history has
+	// no meta key and simply stays in the tenant-wide cell.
+	for _, dim := range []struct {
+		key  string
+		into map[string]map[string]float64
+	}{{"role", lp.byRole}, {"service_line", lp.byService}} {
+		dimRows, err := s.db.Query(ctx, `
+			SELECT meta->>$2, target,
+			       count(*) FILTER (WHERE action='next_action_shown'),
+			       count(*) FILTER (WHERE action='next_action_accept')
+			FROM public.interaction_events
+			WHERE tenant=$1 AND action IN ('next_action_shown','next_action_accept')
+			  AND created_at > now() - interval '90 days'
+			  AND meta ? $2 AND meta->>$2 <> ''
+			GROUP BY meta->>$2, target`, tenant, dim.key)
+		if err != nil {
 			continue
 		}
-		if shown < calibrateMinShown {
-			continue
+		for dimRows.Next() {
+			var dimVal, target string
+			var shown, accepts int
+			if dimRows.Scan(&dimVal, &target, &shown, &accepts) != nil {
+				continue
+			}
+			if rate, ok := arm(dimVal, target, shown, accepts); ok {
+				if dim.into[dimVal] == nil {
+					dim.into[dimVal] = map[string]float64{}
+				}
+				dim.into[dimVal][target] = rate
+			}
 		}
-		if _, live := nextActionPriors[target]; !live {
-			continue
-		}
-		lp.values[target] = float64(accepts+1) / float64(shown+2)
-		lp.armed[target] = true
+		dimRows.Close()
 	}
 	return lp
 }
@@ -312,7 +417,7 @@ func (s *server) computeAttention(ctx context.Context, tenant string, p principa
 
 	rows, err := s.db.Query(ctx, fmt.Sprintf(`
 		SELECT c.id::text, c.case_number, c.status, coalesce(c.assigned_to,''),
-		       coalesce(c.details->>'lock',''),
+		       coalesce(c.details->>'lock',''), coalesce(c.service_line,''),
 		       (SELECT count(*) FROM public.qa_reviews q
 		         WHERE q.tenant=$1 AND q.case_id=c.id::text AND q.status='PENDING'),
 		       (SELECT count(*) FROM public.doc_analysis a
@@ -331,13 +436,14 @@ func (s *server) computeAttention(ctx context.Context, tenant string, p principa
 	defer rows.Close()
 
 	priors := s.loadPriors(ctx, tenant)
+	role := primaryRole(p)
 
 	items := []attentionItem{}
 	for rows.Next() {
-		var id, num, status, assigned, lock string
+		var id, num, status, assigned, lock, serviceLine string
 		var pendingQA, unreadDocs, checklistDue int
 		var statDate *time.Time
-		if rows.Scan(&id, &num, &status, &assigned, &lock, &pendingQA, &unreadDocs, &checklistDue, &statDate) != nil {
+		if rows.Scan(&id, &num, &status, &assigned, &lock, &serviceLine, &pendingQA, &unreadDocs, &checklistDue, &statDate) != nil {
 			continue
 		}
 		if !isReviewer && assigned != p.Subject {
@@ -350,7 +456,8 @@ func (s *server) computeAttention(ctx context.Context, tenant string, p principa
 			AssignedToMe:    assigned == p.Subject,
 			IsReviewer:      isReviewer, CanDecide: isReviewer,
 		}
-		rec := recommendNextActionWith(in, id, priors.values)
+		vals, _ := priors.valuesFor(role, serviceLine)
+		rec := recommendNextActionWith(in, id, vals)
 		// The generic fallbacks (review_case 0.4, log_negotiation 0.6) aren't
 		// attention-worthy — "needs attention" means a blocking signal fired.
 		if rec.Confidence < 0.65 {

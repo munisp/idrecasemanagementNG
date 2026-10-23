@@ -55,5 +55,17 @@ const Telemetry = (() => {
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(true); });
   setInterval(() => flush(false), 15000);
 
-  return { track, flush };
+  // role: the single role this user acts as, for per-role learning cells.
+  // SAME canonical order as canonicalRoleOrder in the API's nextaction.go —
+  // event-time stamps and request-time lookups must agree or the cells split.
+  const ROLE_ORDER = ["PLATFORM_ADMIN", "FEDERAL_ADMIN", "TENANT_ADMIN",
+    "CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "FINANCE", "PM",
+    "DOCTOR", "NURSE", "NURSE_PHYSICIAN", "CODER", "BULK_SUBMITTER", "PARTY"];
+  const role = () => {
+    const have = (window.Auth && Auth.claims() && Auth.claims().roles) || [];
+    for (const want of ROLE_ORDER) if (have.includes(want)) return want;
+    return have[0] || "";
+  };
+
+  return { track, flush, role };
 })();

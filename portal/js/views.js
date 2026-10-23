@@ -1217,12 +1217,14 @@ const Views = (() => {
         const a = na && na.next_action;
         const box = document.getElementById("next-action");
         if (!a || !box) return;
-        if (window.Telemetry) Telemetry.track("next_action_shown", a.action_id, { confidence: a.confidence, basis: na.confidence_basis });
+        if (window.Telemetry) Telemetry.track("next_action_shown", a.action_id,
+          { confidence: a.confidence, basis: na.confidence_basis, role: Telemetry.role(), service_line: c.service_line || "", case_id: id });
         box.innerHTML = `<div class="sla-cluster"><div class="sla-card" style="border-left:3px solid var(--accent,#3b82f6)">
           <button id="na-go" class="primary">${esc(a.label)}</button>
-          <span class="lbl">Suggested next step · ${esc(a.reason)} · confidence ${Math.round(a.confidence * 100)}%${na.confidence_basis === "learned" ? " (learned from this program's history)" : na.confidence_basis === "observed" ? " (observed accept rate)" : " (rule prior)"}</span></div></div>`;
+          <span class="lbl">Suggested next step · ${esc(a.reason)} · confidence ${Math.round(a.confidence * 100)}%${na.confidence_basis === "learned" ? " (learned from this program's history)" : na.confidence_basis === "learned:role" ? " (learned from how your role acts here)" : na.confidence_basis === "learned:service_line" ? ` (learned from similar ${esc(App.t("case_plural")).toLowerCase()})` : na.confidence_basis === "observed" ? " (observed accept rate)" : " (rule prior)"}</span></div></div>`;
         document.getElementById("na-go").addEventListener("click", () => {
-          if (window.Telemetry) Telemetry.track("next_action_accept", a.action_id, { confidence: a.confidence });
+          if (window.Telemetry) Telemetry.track("next_action_accept", a.action_id,
+            { confidence: a.confidence, role: Telemetry.role(), service_line: c.service_line || "", case_id: id });
           location.hash = a.href;
         });
       }).catch(() => {}));
@@ -4710,17 +4712,23 @@ async function railAttachAuthFn(id) {
         if (!box) return;
         try {
           const r = await Api.cases.telemetryActionStats(90);
+          const hrs = (h) => h == null ? "—" : h >= 48 ? (h / 24).toFixed(1) + "d" : h.toFixed(0) + "h";
+          const anyOutcome = (r.actions || []).some((a) => a.outcome && (a.outcome.accepted_median_hours_to_close != null || a.outcome.not_accepted_median_hours_to_close != null));
           const rows = (r.actions || []).map((a) => `<tr>
             <td class="mono">${esc(a.action_id)}</td>
             <td>${a.shown}</td><td>${a.accepts}</td>
             <td>${a.shown ? Math.round(100 * a.accepts / a.shown) + "%" : "—"}</td>
             <td>${a.prior ? a.prior.toFixed(2) : "— (retired rule)"}</td>
             <td>${a.confidence.toFixed(2)}</td>
-            <td>${a.basis === "observed" ? badge("OBSERVED") : '<span class="muted">prior</span>'}</td></tr>`).join("");
+            <td>${a.basis === "observed" ? badge("OBSERVED") : '<span class="muted">prior</span>'}</td>
+            ${anyOutcome ? `<td>${hrs(a.outcome && a.outcome.accepted_median_hours_to_close)}</td>
+            <td>${hrs(a.outcome && a.outcome.not_accepted_median_hours_to_close)}</td>` : ""}</tr>`).join("");
           if (!rows) { box.remove(); return; }
           box.innerHTML = `<h2>Next-action calibration <span class="muted">last ${r.days} days</span></h2>
             <table><thead><tr><th>Action</th><th>Shown</th><th>Accepted</th><th>Accept rate</th>
-              <th>Prior</th><th>Confidence now</th><th>Basis</th></tr></thead><tbody>${rows}</tbody></table>
+              <th>Prior</th><th>Confidence now</th><th>Basis</th>
+              ${anyOutcome ? "<th>→ close when accepted</th><th>→ close when not</th>" : ""}</tr></thead><tbody>${rows}</tbody></table>
+            ${anyOutcome ? `<p class="muted">${esc(r.outcome_caveat || "")}</p>` : ""}
             <p class="muted">Confidence flips from prior to observed at 30 showings (Laplace-smoothed, never a literal 100%).</p>
             ${r.model_gate ? `<p class="muted">${r.model_gate.open
               ? `Learning gate OPEN — ${r.model_gate.closed_cases} closed ${esc(App.t("case_plural")).toLowerCase()}: the priors above now drive ranking directly (basis "learned" on the ${esc(App.t("case_noun")).toLowerCase()} page).`
