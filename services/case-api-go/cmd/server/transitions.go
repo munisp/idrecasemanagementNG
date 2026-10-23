@@ -209,6 +209,7 @@ func (s *server) analyticsTransitions(w http.ResponseWriter, r *http.Request) {
 		"matrix": cells,
 	})
 }
+
 // expectedPathNext is one likely next status from the case's current one.
 type expectedPathNext struct {
 	To               string  `json:"to"`
