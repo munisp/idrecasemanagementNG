@@ -4670,6 +4670,7 @@ async function railAttachAuthFn(id) {
     try {
       const [m, p] = await Promise.all([Api.cases.telemetryMetrics(30), Api.cases.telemetryPaths(30)]);
       const pct = (x) => x == null ? "—" : Math.round(x * 100) + "%";
+      const dur = (s) => s == null ? "—" : s < 90 ? Math.round(s) + "s" : (s / 60).toFixed(1) + "m";
       const pathsByWf = Object.fromEntries((p.workflows || []).map((w) => [w.workflow, w]));
       const cards = (m.workflows || []).map((w) => {
         const pw = pathsByWf[w.workflow] || {};
@@ -4677,6 +4678,7 @@ async function railAttachAuthFn(id) {
           <td><a href="#/productivity" onclick="Views.productivityDetail('${esc(w.workflow)}');return false">${esc(w.workflow)}</a></td>
           <td>${w.sessions}</td>
           <td>${pct(pw.completion_rate)}</td>
+          <td>${dur(pw.median_time_to_submit_secs)}</td>
           <td>${w.clicks_per_session != null ? w.clicks_per_session.toFixed(1) : "—"}</td>
           <td>${w.keystrokes_per_session != null ? w.keystrokes_per_session.toFixed(1) : "—"}</td>
           <td>${pct(w.prefill_accept_rate)}</td>
@@ -4685,9 +4687,9 @@ async function railAttachAuthFn(id) {
       const html = `<div class="view-head"><h1>Productivity</h1>
         <span class="muted">measured interaction baseline, last ${m.days} days — keystroke counts, never content</span></div>
         <h2>Workflow funnel</h2>
-        <table><thead><tr><th>Workflow</th><th>Sessions</th><th>Completed</th><th>Clicks/session</th>
+        <table><thead><tr><th>Workflow</th><th>Sessions</th><th>Completed</th><th>Median → submit</th><th>Clicks/session</th>
           <th>Keystrokes/session</th><th>Prefill accept</th><th>Next-action accept</th></tr></thead>
-        <tbody>${cards || `<tr><td colspan="7" class="muted">No telemetry yet — events appear as people use the portal.</td></tr>`}</tbody></table>
+        <tbody>${cards || `<tr><td colspan="8" class="muted">No telemetry yet — events appear as people use the portal.</td></tr>`}</tbody></table>
         <div id="action-stats"></div>
         <div id="prefill-stats"></div>
         <div id="prod-detail"></div>`;

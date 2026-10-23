@@ -249,16 +249,30 @@ func (s *server) telemetryPaths(w http.ResponseWriter, r *http.Request) {
 	workflow := r.URL.Query().Get("workflow")
 
 	if workflow == "" {
-		// Summary mode: per-workflow funnel (sessions, completions, abandon).
+		// Summary mode: per-workflow funnel (sessions, completions, abandon)
+		// plus timing — median session length and median time-to-first-submit.
+		// The timing columns are what make the productivity arc's core claim
+		// checkable: prefill and next-action exist to shrink time-to-submit,
+		// and without a measured baseline that claim would be unfalsifiable.
 		rows, err := s.db.Query(r.Context(), `
+			WITH per_sess AS (
+				SELECT workflow, session_id,
+				       min(created_at) AS started,
+				       max(created_at) AS last_ev,
+				       min(created_at) FILTER (WHERE action='submit') AS first_submit,
+				       bool_or(action IN ('prefill_override','next_action_override')) AS had_override
+				FROM public.interaction_events
+				WHERE tenant=$1 AND created_at > now() - make_interval(days => $2)
+				GROUP BY workflow, session_id
+			)
 			SELECT workflow,
-			       count(DISTINCT session_id) AS sessions,
-			       count(DISTINCT session_id) FILTER (WHERE action='submit') AS completed,
-			       count(DISTINCT session_id) FILTER (WHERE action='prefill_override'
-			                                          OR action='next_action_override') AS overrides
-			FROM public.interaction_events
-			WHERE tenant=$1 AND created_at > now() - make_interval(days => $2)
-			GROUP BY workflow ORDER BY sessions DESC`, tenant, days)
+			       count(*) AS sessions,
+			       count(*) FILTER (WHERE first_submit IS NOT NULL) AS completed,
+			       count(*) FILTER (WHERE had_override) AS overrides,
+			       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM last_ev - started)) AS median_secs,
+			       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM first_submit - started))
+			         FILTER (WHERE first_submit IS NOT NULL) AS median_tts_secs
+			FROM per_sess GROUP BY workflow ORDER BY sessions DESC`, tenant, days)
 		if err != nil {
 			http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 			return
@@ -268,12 +282,19 @@ func (s *server) telemetryPaths(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var wf string
 			var sess, comp, ovr int64
-			if rows.Scan(&wf, &sess, &comp, &ovr) != nil {
+			var medSecs, medTTS *float64
+			if rows.Scan(&wf, &sess, &comp, &ovr, &medSecs, &medTTS) != nil {
 				continue
 			}
 			row := map[string]any{"workflow": wf, "sessions": sess, "completed": comp, "abandoned": sess - comp, "override_sessions": ovr}
 			if sess > 0 {
 				row["completion_rate"] = float64(comp) / float64(sess)
+			}
+			if medSecs != nil {
+				row["median_session_secs"] = *medSecs
+			}
+			if medTTS != nil {
+				row["median_time_to_submit_secs"] = *medTTS
 			}
 			out = append(out, row)
 		}
