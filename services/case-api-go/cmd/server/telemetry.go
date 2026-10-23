@@ -173,7 +173,17 @@ func (s *server) telemetryActionStats(w http.ResponseWriter, r *http.Request) {
 		st.Confidence, st.Basis = calibrateConfidence(st.Prior, st.Shown, st.Accepts)
 		out = append(out, st)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"days": days, "actions": out, "generated_at": time.Now().UTC()})
+	// The learned-model gate, reported alongside the per-action numbers so
+	// this one table answers both "how calibrated are we?" and "when do the
+	// priors themselves start learning?".
+	closed := s.countClosedCases(r.Context(), tenant)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"days": days, "actions": out, "generated_at": time.Now().UTC(),
+		"model_gate": map[string]any{
+			"closed_cases": closed, "required": modelMinClosedCases,
+			"open": closed >= modelMinClosedCases,
+		},
+	})
 }
 
 // telemetryPrefillStats: GET /telemetry/prefill-stats?days=90 — per initiation

@@ -4,8 +4,9 @@ package main
 // picks the single most likely next action for this case and actor; the
 // portal renders it as the primary button and emits next_action_accept /
 // next_action_override telemetry. Those events are the training data for the
-// learned successor (per-role transition statistics → contextual bandit):
-// until accept-rate data accumulates, the rules below are the priors, each
+// learned successor: once a tenant closes modelMinClosedCases cases,
+// loadPriors replaces the hand-set table with the tenant's own smoothed
+// accept rates (Phase 4); until then the rules below are the priors, each
 // carrying its reason so the UI can show "why this".
 
 import (
@@ -61,7 +62,23 @@ var nextActionPriors = map[string]float64{
 // recommendNextAction: pure, priority-ordered. First match wins; later rules
 // are progressively weaker priors.
 func recommendNextAction(in nextActionInput, caseID string) nextAction {
-	prior := func(id string) float64 { return nextActionPriors[id] }
+	return recommendNextActionWith(in, caseID, nil)
+}
+
+// recommendNextActionWith is recommendNextAction against an explicit prior
+// table: loadPriors' output when the learned-model gate is open (hand-set
+// priors overridden per-action by the tenant's smoothed accept rate), nil
+// otherwise. An id absent from the table falls back to the static prior, so
+// a partial learned table can never zero a rule.
+func recommendNextActionWith(in nextActionInput, caseID string, priors map[string]float64) nextAction {
+	prior := func(id string) float64 {
+		if priors != nil {
+			if v, ok := priors[id]; ok {
+				return v
+			}
+		}
+		return nextActionPriors[id]
+	}
 	qa := func() nextAction {
 		return nextAction{"qa_review", "Review pending QA draft", "#/qa",
 			"A draft is waiting in the QA gate — approving it unblocks the case clock", prior("qa_review")}
@@ -157,23 +174,102 @@ func (s *server) caseNextAction(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(status, "OFFER_WINDOW_OPEN") {
 		in.OfferWindowOpen = true
 	}
-	rec := recommendNextAction(in, caseID)
-	// Confidence calibration: hand-set priors until this action has been
-	// SHOWN enough times in this tenant to trust the observed accept rate.
-	// The portal emits next_action_shown on render and next_action_accept
-	// on click; below the sample threshold the prior stands and the basis
-	// says so — the UI never shows an unearned calibrated number.
-	var shown, accepts int
-	_ = s.db.QueryRow(r.Context(), `
-		SELECT count(*) FILTER (WHERE action='next_action_shown' AND target=$2),
-		       count(*) FILTER (WHERE action='next_action_accept' AND target=$2)
-		FROM public.interaction_events
-		WHERE tenant=$1 AND created_at > now() - interval '90 days'`,
-		tenant, rec.ActionID).Scan(&shown, &accepts)
-	conf, basis := calibrateConfidence(rec.Confidence, shown, accepts)
-	rec.Confidence = conf
+	// Phase 4: once the tenant's closed portfolio passes the model gate, the
+	// priors the rules rank by are the tenant's OWN smoothed accept rates
+	// (per action, 90d window, armed at the same sample threshold as the
+	// pre-gate calibration). Below the gate the hand-set table stands and
+	// the per-action calibration path runs exactly as before — the gate
+	// changes WHERE the number comes from, never whether one is shown
+	// without a basis.
+	priors := s.loadPriors(r.Context(), tenant)
+	rec := recommendNextActionWith(in, caseID, priors.values)
+	basis := "prior"
+	if priors.open {
+		if priors.armed[rec.ActionID] {
+			basis = "learned"
+		}
+	} else {
+		// Pre-gate calibration: hand-set prior until this action has been
+		// SHOWN enough times in this tenant to trust the observed accept
+		// rate. The portal emits next_action_shown on render and
+		// next_action_accept on click; below the sample threshold the prior
+		// stands and the basis says so — the UI never shows an unearned
+		// calibrated number.
+		var shown, accepts int
+		_ = s.db.QueryRow(r.Context(), `
+			SELECT count(*) FILTER (WHERE action='next_action_shown' AND target=$2),
+			       count(*) FILTER (WHERE action='next_action_accept' AND target=$2)
+			FROM public.interaction_events
+			WHERE tenant=$1 AND created_at > now() - interval '90 days'`,
+			tenant, rec.ActionID).Scan(&shown, &accepts)
+		conf, b := calibrateConfidence(rec.Confidence, shown, accepts)
+		rec.Confidence = conf
+		basis = b
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"next_action": rec, "confidence_basis": basis, "computed_at": time.Now().UTC()})
+		"next_action": rec, "confidence_basis": basis, "computed_at": time.Now().UTC(),
+		"model_gate": map[string]any{
+			"closed_cases": priors.closed, "required": modelMinClosedCases, "open": priors.open,
+		},
+	})
+}
+
+// learnedPriors: the prior table recommendNextActionWith ranks by, plus the
+// gate state behind it. values always starts as a copy of nextActionPriors
+// so every rule keeps its hand-set floor; armed marks the actions whose
+// value the tenant's own accept history replaced.
+type learnedPriors struct {
+	closed int
+	open   bool
+	values map[string]float64
+	armed  map[string]bool
+}
+
+// loadPriors builds the prior table for one request. Gate closed (fewer
+// than modelMinClosedCases closed cases): the static table, untouched. Gate
+// open: per-action Laplace-smoothed accept rate over the 90-day telemetry
+// window, but only for actions still emitted by the rules (a retired
+// action's history must never resurrect it) and only at or above the same
+// sample threshold calibrateConfidence uses — one window, one threshold,
+// one smoothing rule across the whole arc.
+func (s *server) loadPriors(ctx context.Context, tenant string) learnedPriors {
+	lp := learnedPriors{values: map[string]float64{}, armed: map[string]bool{}}
+	for k, v := range nextActionPriors {
+		lp.values[k] = v
+	}
+	lp.closed = s.countClosedCases(ctx, tenant)
+	lp.open = lp.closed >= modelMinClosedCases
+	if !lp.open {
+		return lp
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT target,
+		       count(*) FILTER (WHERE action='next_action_shown'),
+		       count(*) FILTER (WHERE action='next_action_accept')
+		FROM public.interaction_events
+		WHERE tenant=$1 AND action IN ('next_action_shown','next_action_accept')
+		  AND created_at > now() - interval '90 days'
+		GROUP BY target`, tenant)
+	if err != nil {
+		return lp
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var target string
+		var shown, accepts int
+		if rows.Scan(&target, &shown, &accepts) != nil {
+			continue
+		}
+		if shown < calibrateMinShown {
+			continue
+		}
+		if _, live := nextActionPriors[target]; !live {
+			continue
+		}
+		lp.values[target] = float64(accepts+1) / float64(shown+2)
+		lp.armed[target] = true
+	}
+	return lp
 }
 
 // calibrateConfidence: below minShown the prior is returned untouched with
@@ -181,9 +277,13 @@ func (s *server) caseNextAction(w http.ResponseWriter, r *http.Request) {
 // replaces it with basis "observed". Smoothing keeps a 30/30 streak at 0.97
 // rather than a literal 1.0 — one future override shouldn't contradict a
 // number the UI already showed.
+// calibrateMinShown: the sample threshold below which no observed rate —
+// pre-gate calibration or post-gate learned prior — may replace a hand-set
+// prior. Shared so the two paths can never arm at different sample sizes.
+const calibrateMinShown = 30
+
 func calibrateConfidence(prior float64, shown, accepts int) (float64, string) {
-	const minShown = 30
-	if shown < minShown {
+	if shown < calibrateMinShown {
 		return prior, "prior"
 	}
 	return float64(accepts+1) / float64(shown+2), "observed"
@@ -230,6 +330,8 @@ func (s *server) computeAttention(ctx context.Context, tenant string, p principa
 	}
 	defer rows.Close()
 
+	priors := s.loadPriors(ctx, tenant)
+
 	items := []attentionItem{}
 	for rows.Next() {
 		var id, num, status, assigned, lock string
@@ -248,7 +350,7 @@ func (s *server) computeAttention(ctx context.Context, tenant string, p principa
 			AssignedToMe:    assigned == p.Subject,
 			IsReviewer:      isReviewer, CanDecide: isReviewer,
 		}
-		rec := recommendNextAction(in, id)
+		rec := recommendNextActionWith(in, id, priors.values)
 		// The generic fallbacks (review_case 0.4, log_negotiation 0.6) aren't
 		// attention-worthy — "needs attention" means a blocking signal fired.
 		if rec.Confidence < 0.65 {

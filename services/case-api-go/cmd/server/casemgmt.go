@@ -275,19 +275,25 @@ func (s *server) autoChecklist(r *http.Request, tenant, caseID string) {
 func (s *server) maybeAdvanceStatus(r *http.Request, tenant, caseID string) {
 	t := sanitizeTenant(tenant)
 	// All case invoices PAID while awaiting payment => funds settled.
-	_, _ = s.db.Exec(r.Context(), fmt.Sprintf(`
+	res, err := s.db.Exec(r.Context(), fmt.Sprintf(`
 		UPDATE tenant_%s.cases SET status='CLOSED_PAID', updated_at=now()
 		WHERE id=$1 AND status='PAYMENT_PENDING'
 		  AND EXISTS(SELECT 1 FROM public.invoices WHERE tenant=$2 AND case_id=$1)
 		  AND NOT EXISTS(SELECT 1 FROM public.invoices WHERE tenant=$2 AND case_id=$1 AND status='OPEN')`, t),
 		caseID, tenant)
+	if err == nil && res.RowsAffected() > 0 {
+		s.recordTransition(r.Context(), tenant, caseID, axisLifecycle, "PAYMENT_PENDING", "CLOSED_PAID", "", "auto_advance")
+	}
 	// A generated determination letter while under review => determined.
-	_, _ = s.db.Exec(r.Context(), fmt.Sprintf(`
+	res2, err2 := s.db.Exec(r.Context(), fmt.Sprintf(`
 		UPDATE tenant_%s.cases SET status='DETERMINED', updated_at=now()
 		WHERE id=$1 AND status='IN_REVIEW'
 		  AND EXISTS(SELECT 1 FROM tenant_%s.documents d
 		             WHERE d.case_id=$1 AND d.object_key ILIKE '%%determination%%')`, t, t),
 		caseID)
+	if err2 == nil && res2.RowsAffected() > 0 {
+		s.recordTransition(r.Context(), tenant, caseID, axisLifecycle, "IN_REVIEW", "DETERMINED", "", "auto_advance")
+	}
 }
 
 func (s *server) getChecklist(w http.ResponseWriter, r *http.Request) {

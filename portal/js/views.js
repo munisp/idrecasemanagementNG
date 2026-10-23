@@ -1220,7 +1220,7 @@ const Views = (() => {
         if (window.Telemetry) Telemetry.track("next_action_shown", a.action_id, { confidence: a.confidence, basis: na.confidence_basis });
         box.innerHTML = `<div class="sla-cluster"><div class="sla-card" style="border-left:3px solid var(--accent,#3b82f6)">
           <button id="na-go" class="primary">${esc(a.label)}</button>
-          <span class="lbl">Suggested next step · ${esc(a.reason)}</span></div></div>`;
+          <span class="lbl">Suggested next step · ${esc(a.reason)} · confidence ${Math.round(a.confidence * 100)}%${na.confidence_basis === "learned" ? " (learned from this program's history)" : na.confidence_basis === "observed" ? " (observed accept rate)" : " (rule prior)"}</span></div></div>`;
         document.getElementById("na-go").addEventListener("click", () => {
           if (window.Telemetry) Telemetry.track("next_action_accept", a.action_id, { confidence: a.confidence });
           location.hash = a.href;
@@ -4699,6 +4699,7 @@ async function railAttachAuthFn(id) {
           <th>Keystrokes/session</th><th>Prefill accept</th><th>Next-action accept</th></tr></thead>
         <tbody>${cards || `<tr><td colspan="8" class="muted">No telemetry yet — events appear as people use the portal.</td></tr>`}</tbody></table>
         <div id="action-stats"></div>
+        <div id="model-matrix"></div>
         <div id="prefill-stats"></div>
         <div id="prod-detail"></div>`;
       // Next-action calibration: per action, the prior the rule carries vs the
@@ -4720,8 +4721,39 @@ async function railAttachAuthFn(id) {
           box.innerHTML = `<h2>Next-action calibration <span class="muted">last ${r.days} days</span></h2>
             <table><thead><tr><th>Action</th><th>Shown</th><th>Accepted</th><th>Accept rate</th>
               <th>Prior</th><th>Confidence now</th><th>Basis</th></tr></thead><tbody>${rows}</tbody></table>
-            <p class="muted">Confidence flips from prior to observed at 30 showings (Laplace-smoothed, never a literal 100%).</p>`;
+            <p class="muted">Confidence flips from prior to observed at 30 showings (Laplace-smoothed, never a literal 100%).</p>
+            ${r.model_gate ? `<p class="muted">${r.model_gate.open
+              ? `Learning gate OPEN — ${r.model_gate.closed_cases} closed ${esc(App.t("case_plural")).toLowerCase()}: the priors above now drive ranking directly (basis "learned" on the ${esc(App.t("case_noun")).toLowerCase()} page).`
+              : `Learning gate: ${r.model_gate.closed_cases}/${r.model_gate.required} closed ${esc(App.t("case_plural")).toLowerCase()} — at ${r.model_gate.required}, next-action ranking switches from hand-set priors to this deployment's own accept rates.`}</p>` : ""}`;
         } catch { const b = document.getElementById("action-stats"); if (b) b.remove(); }
+      });
+      // Transition matrix (Phase 5): where cases actually go from each
+      // status and how long they sit there first, computed from recorded
+      // transitions. Gated with the priors: below 300 closed cases this
+      // shows gate progress instead of a handful of anecdotes.
+      afterRender(async () => {
+        const box = document.getElementById("model-matrix");
+        if (!box) return;
+        const dwell = (h) => h == null ? "—" : h >= 48 ? (h / 24).toFixed(1) + "d" : h.toFixed(1) + "h";
+        try {
+          const r = await Api.cases.analyticsTransitions("lifecycle");
+          if (r.status === "insufficient_data") {
+            box.innerHTML = `<h2>Transition matrix <span class="muted">lifecycle axis</span></h2>
+              <p class="muted">Learning gate: ${r.closed_cases}/${r.required} closed ${esc(App.t("case_plural")).toLowerCase()}. Every status hop is
+              being recorded from now on; the matrix — where ${esc(App.t("case_plural")).toLowerCase()} go next from each status, and the median
+              time they spend there first — unlocks at ${r.required}.</p>`;
+            return;
+          }
+          const rows = (r.matrix || []).map((c) => `<tr>
+            <td class="mono">${esc(c.from)}</td><td class="mono">${esc(c.to)}</td>
+            <td>${c.count}</td><td>${Math.round(100 * c.share)}%</td>
+            <td>${dwell(c.median_dwell_hours)}</td></tr>`).join("");
+          if (!rows) { box.remove(); return; }
+          box.innerHTML = `<h2>Transition matrix <span class="muted">lifecycle axis · ${r.transitions} recorded transitions</span></h2>
+            <table><thead><tr><th>From</th><th>To</th><th>${esc(App.t("case_plural"))}</th><th>Share of exits</th><th>Median dwell</th></tr></thead>
+            <tbody>${rows}</tbody></table>
+            <p class="muted">Share is within the from-status. Dwell is wall time between entering the status and leaving it toward that outcome.</p>`;
+        } catch { const b = document.getElementById("model-matrix"); if (b) b.remove(); }
       });
       // Prefill accuracy by field: a low accept rate means the extraction is
       // wrong or its confidence badge is distrusted — either way, a pipeline

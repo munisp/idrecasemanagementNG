@@ -220,15 +220,24 @@ func (s *server) setDualStatus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var oldInternal string
+	var internalMoved bool
 	if in.Internal != "" {
-		_, _ = s.db.Exec(r.Context(),
-			fmt.Sprintf(`UPDATE tenant_%s.cases SET internal_status=$2, updated_at=now() WHERE id=$1`, sanitizeTenant(tenant)), id, in.Internal)
+		_ = s.db.QueryRow(r.Context(),
+			fmt.Sprintf(`SELECT coalesce(internal_status,'') FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), id).Scan(&oldInternal)
+		if res, err := s.db.Exec(r.Context(),
+			fmt.Sprintf(`UPDATE tenant_%s.cases SET internal_status=$2, updated_at=now() WHERE id=$1`, sanitizeTenant(tenant)), id, in.Internal); err == nil {
+			internalMoved = res.RowsAffected() > 0
+		}
 	}
 	if in.Agency != "" {
 		_, _ = s.db.Exec(r.Context(),
 			fmt.Sprintf(`UPDATE tenant_%s.cases SET agency_status=$2, updated_at=now() WHERE id=$1`, sanitizeTenant(tenant)), id, in.Agency)
 	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if internalMoved {
+		s.recordTransition(r.Context(), tenant, id, axisProgram, oldInternal, in.Internal, p.Subject, "status_update")
+	}
 	s.logActivity(r.Context(), tenant, id, "STATUS_CHANGE",
 		fmt.Sprintf("Status updated by %s — internal: %s, agency: %s", p.Subject, orDash(in.Internal), orDash(in.Agency)))
 	// Warn-only eligibility gate (G2 hardening): moving past the initial
