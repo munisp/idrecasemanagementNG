@@ -71,6 +71,7 @@ const Api = (() => {
       prefill: (docId) => req("GET", `${t()}/cases/prefill${docId ? `?doc_id=${encodeURIComponent(docId)}` : ""}`),
       nextAction: (id) => req("GET", `${t()}/cases/${id}/next-action`),
       telemetryMetrics: (days = 30) => req("GET", `${t()}/telemetry/metrics?days=${days}`),
+      telemetryPaths: (days = 30, workflow = "") => req("GET", `${t()}/telemetry/paths?days=${days}${workflow ? `&workflow=${encodeURIComponent(workflow)}` : ""}`),
       initiate: (payload) => req("POST", `${t()}/cases/initiate`, payload),
       signal: (id, signal, data) => req("POST", `${t()}/cases/${id}/signal`, { signal, data }),
       benchmarks: (id) => req("GET", `${t()}/cases/${id}/benchmarks`),

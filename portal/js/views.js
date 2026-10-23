@@ -4614,5 +4614,47 @@ async function railAttachAuthFn(id) {
     } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, insightsView, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
+  async function productivity() {
+    if (!can("CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) return err(new Error("forbidden"));
+    try {
+      const [m, p] = await Promise.all([Api.cases.telemetryMetrics(30), Api.cases.telemetryPaths(30)]);
+      const pct = (x) => x == null ? "—" : Math.round(x * 100) + "%";
+      const pathsByWf = Object.fromEntries((p.workflows || []).map((w) => [w.workflow, w]));
+      const cards = (m.workflows || []).map((w) => {
+        const pw = pathsByWf[w.workflow] || {};
+        return `<tr>
+          <td><a href="#/productivity" onclick="Views.productivityDetail('${esc(w.workflow)}');return false">${esc(w.workflow)}</a></td>
+          <td>${w.sessions}</td>
+          <td>${pct(pw.completion_rate)}</td>
+          <td>${w.clicks_per_session != null ? w.clicks_per_session.toFixed(1) : "—"}</td>
+          <td>${w.keystrokes_per_session != null ? w.keystrokes_per_session.toFixed(1) : "—"}</td>
+          <td>${pct(w.prefill_accept_rate)}</td>
+          <td>${pct(w.next_action_accept_rate)}</td></tr>`;
+      }).join("");
+      return `<div class="view-head"><h1>Productivity</h1>
+        <span class="muted">measured interaction baseline, last ${m.days} days — keystroke counts, never content</span></div>
+        <h2>Workflow funnel</h2>
+        <table><thead><tr><th>Workflow</th><th>Sessions</th><th>Completed</th><th>Clicks/session</th>
+          <th>Keystrokes/session</th><th>Prefill accept</th><th>Next-action accept</th></tr></thead>
+        <tbody>${cards || `<tr><td colspan="7" class="muted">No telemetry yet — events appear as people use the portal.</td></tr>`}</tbody></table>
+        <div id="prod-detail"></div>`;
+    } catch (e) { return err(e); }
+  }
+
+  async function productivityDetail(workflow) {
+    const box = $("#prod-detail");
+    try {
+      const d = await Api.cases.telemetryPaths(30, workflow);
+      const t = (d.top_transitions || []).map((x) =>
+        `<tr><td>${esc(x.from)}</td><td>${esc(x.to)}</td><td>${x.count}</td></tr>`).join("");
+      const ex = (d.abandon_exits || []).map((x) =>
+        `<tr><td>${esc(x.last_step)}</td><td>${x.sessions}</td></tr>`).join("");
+      box.innerHTML = `<h2>${esc(workflow)} — step transitions</h2>
+        <table><thead><tr><th>From</th><th>To</th><th>Count</th></tr></thead><tbody>${t || `<tr><td colspan="3" class="muted">No transitions yet.</td></tr>`}</tbody></table>
+        <h3>Where abandoned sessions end</h3>
+        <table><thead><tr><th>Last step before giving up</th><th>Sessions</th></tr></thead><tbody>${ex || `<tr><td colspan="2" class="muted">No abandoned sessions.</td></tr>`}</tbody></table>`;
+    } catch (e) { box.innerHTML = err(e); }
+  }
+
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, productivity, productivityDetail, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, insightsView, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
 })();

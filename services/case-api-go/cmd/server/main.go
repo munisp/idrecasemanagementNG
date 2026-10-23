@@ -484,6 +484,7 @@ func main() {
 		r.Get("/cases/{caseId}/next-action", s.caseNextAction) // rule-based next best action
 		r.Post("/telemetry/events", s.telemetryIngest)       // portal interaction baseline
 		r.Get("/telemetry/metrics", s.telemetryMetrics)
+		r.Get("/telemetry/paths", s.telemetryPaths) // per-workflow transitions + abandonment
 		r.Post("/fees/transfer", s.postFeeTransfer)    // escrow/admin/IDRE fee double-entry
 		r.Post("/cases/{caseId}/signal", s.signalCase) // e.g. response filed, fees paid
 
