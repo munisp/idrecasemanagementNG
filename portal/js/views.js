@@ -4689,6 +4689,7 @@ async function railAttachAuthFn(id) {
           <th>Keystrokes/session</th><th>Prefill accept</th><th>Next-action accept</th></tr></thead>
         <tbody>${cards || `<tr><td colspan="7" class="muted">No telemetry yet — events appear as people use the portal.</td></tr>`}</tbody></table>
         <div id="action-stats"></div>
+        <div id="prefill-stats"></div>
         <div id="prod-detail"></div>`;
       // Next-action calibration: per action, the prior the rule carries vs the
       // Laplace-smoothed observed accept rate once n>=30 — same numbers the
@@ -4711,6 +4712,23 @@ async function railAttachAuthFn(id) {
               <th>Prior</th><th>Confidence now</th><th>Basis</th></tr></thead><tbody>${rows}</tbody></table>
             <p class="muted">Confidence flips from prior to observed at 30 showings (Laplace-smoothed, never a literal 100%).</p>`;
         } catch { const b = document.getElementById("action-stats"); if (b) b.remove(); }
+      });
+      // Prefill accuracy by field: a low accept rate means the extraction is
+      // wrong or its confidence badge is distrusted — either way, a pipeline
+      // fix, and this is where you find which field needs it.
+      afterRender(async () => {
+        const box = document.getElementById("prefill-stats");
+        if (!box) return;
+        try {
+          const r = await Api.cases.telemetryPrefillStats(90);
+          const rows = (r.fields || []).map((f) => `<tr>
+            <td class="mono">${esc(f.field)}</td>
+            <td>${f.accepts}</td><td>${f.overrides}</td>
+            <td>${f.accept_rate != null ? Math.round(100 * f.accept_rate) + "%" : "—"}</td></tr>`).join("");
+          if (!rows) { box.remove(); return; }
+          box.innerHTML = `<h2>Prefill accuracy by field <span class="muted">last ${r.days} days</span></h2>
+            <table><thead><tr><th>Field</th><th>Accepted</th><th>Typed over</th><th>Accept rate</th></tr></thead><tbody>${rows}</tbody></table>`;
+        } catch { const b = document.getElementById("prefill-stats"); if (b) b.remove(); }
       });
       return html;
     } catch (e) { return err(e); }

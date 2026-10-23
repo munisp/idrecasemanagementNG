@@ -176,6 +176,59 @@ func (s *server) telemetryActionStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"days": days, "actions": out, "generated_at": time.Now().UTC()})
 }
 
+// telemetryPrefillStats: GET /telemetry/prefill-stats?days=90 — per initiation
+// form field: how often the prefill suggestion was accepted as-is vs typed
+// over. This is the field-level mirror of action-stats: a field with a low
+// accept rate is either extracting the wrong value or carrying a confidence
+// badge users have learned to distrust — both are extraction-pipeline fixes,
+// and this table is how you find them without reading individual cases.
+// No smoothing here: unlike action confidence, nothing is RECOMMENDED from
+// these numbers, so a raw rate with its sample size is the honest display.
+func (s *server) telemetryPrefillStats(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, "FEDERAL_ADMIN", "PLATFORM_ADMIN", "CASE_MANAGER") {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	days := 90
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
+		days = d
+	}
+	rows, err := s.db.Query(r.Context(), `
+		SELECT target,
+		       count(*) FILTER (WHERE action='prefill_accept') AS accepts,
+		       count(*) FILTER (WHERE action='prefill_override') AS overrides
+		FROM public.interaction_events
+		WHERE tenant=$1 AND action IN ('prefill_accept','prefill_override') AND target <> ''
+		  AND created_at > now() - make_interval(days => $2)
+		GROUP BY target ORDER BY accepts + overrides DESC`, tenant, days)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	type fieldStat struct {
+		Field      string   `json:"field"`
+		Accepts    int      `json:"accepts"`
+		Overrides  int      `json:"overrides"`
+		AcceptRate *float64 `json:"accept_rate,omitempty"`
+	}
+	out := []fieldStat{}
+	for rows.Next() {
+		var st fieldStat
+		if rows.Scan(&st.Field, &st.Accepts, &st.Overrides) != nil {
+			continue
+		}
+		if n := st.Accepts + st.Overrides; n > 0 {
+			r := float64(st.Accepts) / float64(n)
+			st.AcceptRate = &r
+		}
+		out = append(out, st)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"days": days, "fields": out, "generated_at": time.Now().UTC()})
+}
+
 // telemetryPaths: GET /telemetry/paths?days=30&workflow=case_initiate — the
 // transition layer. Per workflow: how many sessions, how many reached a
 // submit (completion) vs abandoned, and the most common step→step
