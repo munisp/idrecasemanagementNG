@@ -46,6 +46,7 @@ const Views = (() => {
         const c = r.counts || {};
         const chips = [
           [c.qa_pending, "#/qa", `QA awaiting review${c.qa_pending_aging ? ` (${c.qa_pending_aging} aging 24h+)` : ""}`],
+          [c.qa_approved_unsent, "#/qa", "approved drafts unsent 24h+"],
           [c.docs_findings_review, "#/doc-review", `docs with findings${c.docs_findings_aging ? ` (${c.docs_findings_aging} aging 48h+)` : ""}`],
           [c.intake_steps_due, "#/intake", `intake steps due${c.intake_overdue ? ` (${c.intake_overdue} overdue)` : ""}`],
           [c.statutory_due_72h, "#/cases", "statutory clocks < 72h"],

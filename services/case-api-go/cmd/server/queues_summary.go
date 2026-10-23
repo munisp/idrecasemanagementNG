@@ -32,7 +32,8 @@ const stalledCaseDays = 7
 type queueCounts struct {
 	AttentionCases     int `json:"attention_cases"`
 	QAPending          int `json:"qa_pending"`
-	QAPendingAging     int `json:"qa_pending_aging"` // subset PENDING past qaAgingHours
+	QAPendingAging     int `json:"qa_pending_aging"`   // subset PENDING past qaAgingHours
+	QAApprovedUnsent   int `json:"qa_approved_unsent"` // APPROVED, no send, past qaSendOverdueHours
 	DocsFindingsReview int `json:"docs_findings_review"`
 	DocsFindingsAging  int `json:"docs_findings_aging"` // subset unacknowledged past docFindingsAgingHours
 	IntakeStepsDue     int `json:"intake_steps_due"`
@@ -68,6 +69,16 @@ func (s *server) queuesSummary(w http.ResponseWriter, r *http.Request) {
 		       count(*) FILTER (WHERE created_at < now() - make_interval(hours => $2))
 		FROM public.qa_reviews WHERE tenant=$1 AND status='PENDING'`,
 		tenant, qaAgingHours).Scan(&c.QAPending, &c.QAPendingAging)
+
+	// Approved-but-unsent: NG sends in qaDecision, so APPROVED with no sent_at
+	// means the SMTP send failed and the retained-for-retry draft sat past
+	// qaSendOverdueHours without anyone retrying.
+	_ = s.db.QueryRow(r.Context(), `
+		SELECT count(*) FROM public.qa_reviews
+		WHERE tenant=$1 AND status='APPROVED' AND sent_at IS NULL
+		  AND coalesce(channel,'email')='email'
+		  AND reviewed_at < now() - make_interval(hours => $2)`,
+		tenant, qaSendOverdueHours).Scan(&c.QAApprovedUnsent)
 
 	// Documents whose analysis surfaced findings nobody has acknowledged yet,
 	// with the aging subset (past docFindingsAgingHours) counted separately so

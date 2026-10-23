@@ -30,6 +30,12 @@ const docFindingsAgingHours = 48
 // while a document finding is informational until reviewed.
 const qaAgingHours = 24
 
+// qaSendOverdueHours: NG has no separate ready-to-send queue (qaDecision sends
+// directly), but an SMTP failure retains the draft as APPROVED for retry. An
+// approved email unsent this long after review means the send failed and
+// nobody retried — surface it.
+const qaSendOverdueHours = 24
+
 type docReviewItem struct {
 	DocID       string     `json:"doc_id"`
 	CaseID      string     `json:"case_id"`
