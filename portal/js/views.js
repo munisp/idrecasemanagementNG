@@ -50,7 +50,7 @@ const Views = (() => {
           [c.intake_steps_due, "#/intake", `intake steps due${c.intake_overdue ? ` (${c.intake_overdue} overdue)` : ""}`],
           [c.statutory_due_72h, "#/cases", "statutory clocks < 72h"],
           [c.statutory_overdue, "#/cases", "statutory clocks overdue"],
-          [c.stalled_cases, "#/cases", "stalled cases (no activity 7d+)"],
+          [c.stalled_cases, "#/cases?stalled=1", "stalled cases (no activity 7d+)"],
         ].filter(([n]) => n > 0);
         if (!chips.length) { qs.remove(); return; }
         qs.innerHTML = `<div class="sla-cluster">` + chips.map(([n, href, lbl]) => `
@@ -265,7 +265,8 @@ const Views = (() => {
       const saved = await Api.cm.views().catch(() => []);
       const sv = saved.find((s) => s.id === v);
       const status = sv && sv.filters && sv.filters.status ? sv.filters.status : "";
-      const reqParams = { limit: PAGE_SIZE, ...(status ? { status } : {}), ...(sort ? { sort } : {}), ...(lane ? { lane } : {}) };
+      const stalled = hq.get("stalled") === "1";
+      const reqParams = { limit: PAGE_SIZE, ...(status ? { status } : {}), ...(sort ? { sort } : {}), ...(lane ? { lane } : {}), ...(stalled ? { stalled: "true" } : {}) };
       const [page, clocks] = await Promise.all([Api.cases.list(reqParams), clockMap()]);
       let loaded = page.cases.slice();   // accumulated rows across pages
       let cursor = page.next_cursor;     // "" when no more pages
@@ -322,7 +323,7 @@ const Views = (() => {
         };
         $("#more")?.addEventListener("click", loadMore);
       });
-      return `<div class="view-head"><h1>${esc(App.t("case_plural"))}</h1><span class="muted">${total} total</span>
+      return `<div class="view-head"><h1>${esc(App.t("case_plural"))}</h1><span class="muted">${total} total${stalled ? ' · <span class="badge warn">stalled filter</span> <a href="#/cases">clear</a>' : ""}</span>
         <span style="flex:1"></span>
         <button class="mini" id="grab">⇪ Grab next</button>
         <button class="mini" id="density">Density: ${density}</button></div>

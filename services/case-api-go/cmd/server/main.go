@@ -1061,6 +1061,17 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 	if lane := q.Get("lane"); lane == "AUTO_REVIEW" || lane == "STANDARD" || lane == "COMPLEX" {
 		where += fmt.Sprintf(" AND %s = '%s'", triageLaneSQL, lane)
 	}
+	// stalled=true: EXACTLY the queues-rollup definition, so the dashboard
+	// chip's count and the list it lands on can never disagree. The clause
+	// references stalledCaseDays via parameter, not a duplicated literal.
+	if q.Get("stalled") == "true" {
+		where += fmt.Sprintf(` AND c.status NOT LIKE 'CLOSED%%' AND c.status <> 'SETTLED_IN_NEGOTIATION'
+			AND c.offer_window_ends_at IS NULL AND c.open_negotiation_end IS NULL
+			AND coalesce((SELECT max(a.created_at) FROM public.case_activities a
+			              WHERE a.tenant=$1 AND a.case_id=c.id::text), c.opened_at)
+			    < now() - make_interval(days => $%d)`, len(args)+1)
+		args = append(args, stalledCaseDays)
+	}
 	// Sort: default opened_at DESC uses keyset pagination; any explicit column
 	// sort switches to offset mode (keyset over arbitrary columns isn't stable).
 	// sort=sla = soonest determination deadline first = oldest opened_at ASC.
