@@ -40,3 +40,30 @@ func TestTokenEditDistanceCaps(t *testing.T) {
 		t.Errorf("cap not applied: dist=%d tokens=%d", d, n)
 	}
 }
+
+func TestTemplateHealthVerdict(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name        string
+		drafts, rej int64
+		ratio       *float64
+		want        string
+	}{
+		{"below minN stays silent even when terrible", 19, 19, f(0.9), "insufficient_data"},
+		{"healthy at minN", 20, 1, f(0.05), "healthy"},
+		{"nil ratio treated as zero", 25, 0, nil, "healthy"},
+		{"watch by rejection rate", 20, 6, f(0.1), "watch"},
+		{"watch by edit ratio", 40, 2, f(0.25), "watch"},
+		{"retire by rejection rate", 20, 9, f(0.1), "retire_candidate"},
+		{"retire by edit ratio", 30, 3, f(0.4), "retire_candidate"},
+		{"boundary: exactly 40% rejection is watch not retire", 20, 8, f(0.1), "watch"},
+		{"boundary: exactly 0.35 ratio is watch not retire", 20, 0, f(0.35), "watch"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := templateHealthVerdict(tc.drafts, tc.rej, tc.ratio); got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}

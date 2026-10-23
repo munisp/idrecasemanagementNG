@@ -18,6 +18,12 @@ import (
 
 var docReviewRoles = []string{"CASE_MANAGER", "ARBITRATOR", "DOCTOR", "NURSE", "FEDERAL_ADMIN", "PLATFORM_ADMIN"}
 
+// docFindingsAgingHours: findings older than this without a reviewer
+// acknowledgment are "aging" — flagged in the queue and counted separately
+// in the queues rollup so a silent backlog is visible at dashboard level,
+// not only to someone who opens the inbox.
+const docFindingsAgingHours = 48
+
 type docReviewItem struct {
 	DocID       string     `json:"doc_id"`
 	CaseID      string     `json:"case_id"`
@@ -26,6 +32,7 @@ type docReviewItem struct {
 	AnalyzedAt  *time.Time `json:"analyzed_at"`
 	Findings    int        `json:"findings"`
 	NextStatute *time.Time `json:"next_statutory_date,omitempty"`
+	Aging       bool       `json:"aging,omitempty"` // unacknowledged past docFindingsAgingHours
 }
 
 // docReviewQueue: GET /documents/review-queue.
@@ -53,9 +60,13 @@ func (s *server) docReviewQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	out := []docReviewItem{}
+	now := time.Now().UTC()
 	for rows.Next() {
 		var it docReviewItem
 		if rows.Scan(&it.DocID, &it.CaseID, &it.CaseNumber, &it.DocType, &it.AnalyzedAt, &it.Findings, &it.NextStatute) == nil {
+			if it.AnalyzedAt != nil && now.Sub(*it.AnalyzedAt) > docFindingsAgingHours*time.Hour {
+				it.Aging = true
+			}
 			out = append(out, it)
 		}
 	}

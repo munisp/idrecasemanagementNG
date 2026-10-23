@@ -14,8 +14,10 @@ package main
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // tokenEditDistance: Levenshtein over whitespace-separated tokens. Tokens,
@@ -155,4 +157,94 @@ func (s *server) qaTemplateStats(r *http.Request, tenant, artifact string) map[s
 		out["avg_edit_ratio"] = *avgRatio
 	}
 	return out
+}
+
+// templateHealthVerdict: pure. Turns a template's decision record into one
+// word a templates admin can act on.
+//
+//	insufficient_data — fewer than minN decisions; small samples would
+//	                    retire templates for one reviewer's taste.
+//	healthy           — accepted mostly as drafted.
+//	watch             — rejection rate above 25% or reviewers rewrite more
+//	                    than a fifth of the body on average.
+//	retire_candidate  — rejection rate above 40% or average rewrite above a
+//	                    third: the template is producing work, not saving it.
+//
+// Thresholds are deliberately round and documented — when they move, the
+// portal copy and this comment move together.
+func templateHealthVerdict(drafts, rejected int64, avgRatio *float64) string {
+	const minN = 20
+	if drafts < minN {
+		return "insufficient_data"
+	}
+	rejRate := float64(rejected) / float64(drafts)
+	ratio := 0.0
+	if avgRatio != nil {
+		ratio = *avgRatio
+	}
+	switch {
+	case rejRate > 0.4 || ratio > 0.35:
+		return "retire_candidate"
+	case rejRate > 0.25 || ratio > 0.2:
+		return "watch"
+	default:
+		return "healthy"
+	}
+}
+
+// qaTemplateHealth: GET /qa/template-health?days=90 — per-template decision
+// record across the whole tenant (qaTemplateStats covers one template inside
+// the review screen; this is the portfolio view for the templates admin
+// page). Worst verdict first so the page reads top-down as a work list.
+func (s *server) qaTemplateHealth(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	if p := r.Context().Value(ctxPrincipal{}).(principal); !hasAnyRole(p, "CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN") {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	days := 90
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
+		days = d
+	}
+	rows, err := s.db.Query(r.Context(), `
+		SELECT artifact,
+		       count(*),
+		       count(*) FILTER (WHERE decision='APPROVE'),
+		       count(*) FILTER (WHERE decision='APPROVE' AND NOT edited),
+		       count(*) FILTER (WHERE decision='REJECT'),
+		       avg(edit_ratio)
+		FROM public.qa_edit_diffs
+		WHERE tenant=$1 AND created_at > now() - make_interval(days => $2)
+		GROUP BY artifact`, tenant, days)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	type health struct {
+		Artifact         string   `json:"artifact"`
+		Drafts           int64    `json:"drafts"`
+		Approved         int64    `json:"approved"`
+		ApprovedUnedited int64    `json:"approved_unedited"`
+		Rejected         int64    `json:"rejected"`
+		AvgEditRatio     *float64 `json:"avg_edit_ratio,omitempty"`
+		Verdict          string   `json:"verdict"`
+	}
+	out := []health{}
+	for rows.Next() {
+		var h health
+		if rows.Scan(&h.Artifact, &h.Drafts, &h.Approved, &h.ApprovedUnedited, &h.Rejected, &h.AvgEditRatio) != nil {
+			continue
+		}
+		h.Verdict = templateHealthVerdict(h.Drafts, h.Rejected, h.AvgEditRatio)
+		out = append(out, h)
+	}
+	rank := map[string]int{"retire_candidate": 0, "watch": 1, "healthy": 2, "insufficient_data": 3}
+	sort.SliceStable(out, func(i, j int) bool {
+		if rank[out[i].Verdict] != rank[out[j].Verdict] {
+			return rank[out[i].Verdict] < rank[out[j].Verdict]
+		}
+		return out[i].Drafts > out[j].Drafts
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"days": days, "templates": out, "generated_at": time.Now().UTC()})
 }

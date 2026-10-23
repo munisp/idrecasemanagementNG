@@ -27,6 +27,7 @@ type queueCounts struct {
 	AttentionCases     int `json:"attention_cases"`
 	QAPending          int `json:"qa_pending"`
 	DocsFindingsReview int `json:"docs_findings_review"`
+	DocsFindingsAging  int `json:"docs_findings_aging"` // subset unacknowledged past docFindingsAgingHours
 	IntakeStepsDue     int `json:"intake_steps_due"`
 	IntakeOverdue      int `json:"intake_overdue"`
 	StatutoryOverdue   int `json:"statutory_overdue"`
@@ -57,10 +58,14 @@ func (s *server) queuesSummary(w http.ResponseWriter, r *http.Request) {
 		SELECT count(*) FROM public.qa_reviews WHERE tenant=$1 AND status='PENDING'`,
 		tenant).Scan(&c.QAPending)
 
-	// Documents whose analysis surfaced findings nobody has acknowledged yet.
+	// Documents whose analysis surfaced findings nobody has acknowledged yet,
+	// with the aging subset (past docFindingsAgingHours) counted separately so
+	// a silent backlog shows on the dashboard, not only inside the inbox.
 	_ = s.db.QueryRow(r.Context(), `
-		SELECT count(*) FROM public.doc_analysis WHERE tenant=$1 AND status='ANALYZED_WITH_FINDINGS'`,
-		tenant).Scan(&c.DocsFindingsReview)
+		SELECT count(*),
+		       count(*) FILTER (WHERE analyzed_at < now() - make_interval(hours => $2))
+		FROM public.doc_analysis WHERE tenant=$1 AND status='ANALYZED_WITH_FINDINGS'`,
+		tenant, docFindingsAgingHours).Scan(&c.DocsFindingsReview, &c.DocsFindingsAging)
 
 	// Intake pipeline: run the rule-based next-step recommender over the open
 	// requests; "due" = a step exists, "overdue" = the step's clock expired.

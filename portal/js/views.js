@@ -46,7 +46,7 @@ const Views = (() => {
         const c = r.counts || {};
         const chips = [
           [c.qa_pending, "#/qa", "QA awaiting review"],
-          [c.docs_findings_review, "#/doc-review", "docs with findings"],
+          [c.docs_findings_review, "#/doc-review", `docs with findings${c.docs_findings_aging ? ` (${c.docs_findings_aging} aging 48h+)` : ""}`],
           [c.intake_steps_due, "#/intake", `intake steps due${c.intake_overdue ? ` (${c.intake_overdue} overdue)` : ""}`],
           [c.statutory_due_72h, "#/cases", "statutory clocks < 72h"],
           [c.statutory_overdue, "#/cases", "statutory clocks overdue"],
@@ -2121,14 +2121,19 @@ const Views = (() => {
       // untouched. Staff-only, advisory — no model, just graded decisions.
       if (can("CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
         try {
-          const dq = await Api.qaDraftQuality(90);
+          const [dq, th] = await Promise.all([Api.qaDraftQuality(90), Api.qaTemplateHealth(90).catch(() => null)]);
+          const verdictOf = {};
+          (th?.templates || []).forEach((t) => { verdictOf[t.artifact] = t.verdict; });
+          const vb = { retire_candidate: `<span class="badge warn">Retire candidate</span>`,
+            watch: `<span class="badge">Watch</span>`, healthy: `<span class="badge s-paid">Healthy</span>` };
           if (dq.templates && dq.templates.length) {
             dqHtml = `<h2>Draft quality (last ${dq.days} days)</h2>
-              <p class="muted">An untouched approval means the template produced text a reviewer sent as-is; edit ratio is how much of the draft the reviewer rewrote.</p>
-              <table><thead><tr><th>Template</th><th>Channel</th><th>Drafts</th><th>Approved</th><th>Untouched</th><th>Rejected</th><th>Avg edit ratio</th></tr></thead><tbody>` +
+              <p class="muted">An untouched approval means the template produced text a reviewer sent as-is; edit ratio is how much of the draft the reviewer rewrote. Verdicts need 20+ decisions; retire candidate = &gt;40% rejected or &gt;35% rewritten on average.</p>
+              <table><thead><tr><th>Template</th><th>Channel</th><th>Drafts</th><th>Approved</th><th>Untouched</th><th>Rejected</th><th>Avg edit ratio</th><th>Verdict</th></tr></thead><tbody>` +
               dq.templates.map((x) => `<tr><td>${esc(x.artifact)}</td><td>${esc(x.channel)}</td><td>${x.drafts}</td>
                 <td>${x.approved}</td><td>${x.approved_unedited} (${x.drafts ? Math.round(100 * x.approved_unedited / x.drafts) : 0}%)</td>
-                <td>${x.rejected}</td><td>${x.avg_edit_ratio == null ? "—" : Math.round(x.avg_edit_ratio * 100) + "%"}</td></tr>`).join("") +
+                <td>${x.rejected}</td><td>${x.avg_edit_ratio == null ? "—" : Math.round(x.avg_edit_ratio * 100) + "%"}</td>
+                <td>${vb[verdictOf[x.artifact]] || '<span class="muted">—</span>'}</td></tr>`).join("") +
               `</tbody></table>`;
           }
         } catch { /* stats are advisory */ }
@@ -4767,11 +4772,11 @@ async function railAttachAuthFn(id) {
     try {
       const r = await Api.cases.docReviewQueue();
       const q = r.queue || [];
-      const rows = q.map((i) => `<tr>
+      const rows = q.map((i) => `<tr${i.aging ? ' class="tpl-retired"' : ""}>
         <td><a href="#/cases/${i.case_id}">${esc(i.case_number)}</a></td>
         <td>${esc(i.doc_type || "document")}</td>
         <td>${i.findings}</td>
-        <td class="muted">${fmtDate(i.analyzed_at)}</td>
+        <td class="muted">${fmtDate(i.analyzed_at)}${i.aging ? ' <span class="badge warn">aging 48h+</span>' : ""}</td>
         <td>${i.next_statutory_date ? fmtDate(i.next_statutory_date) : "—"}</td>
         <td><button class="mini primary" onclick="Views.docAck('${i.case_id}','${i.doc_id}',this)">Mark reviewed</button></td></tr>`).join("");
       return `<div class="view-head"><h1>Document review</h1>

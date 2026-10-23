@@ -690,6 +690,7 @@ func main() {
 		r.Get("/party/cases/{caseId}", s.partyCaseDetail)
 		r.Get("/qa", s.qaQueue)                            // QA gate queue (G4)
 		r.Get("/qa/draft-quality", s.qaDraftQuality)       // per-template draft effectiveness
+		r.Get("/qa/template-health", s.qaTemplateHealth)   // portfolio verdicts for the templates admin page
 		r.Get("/documents/review-queue", s.docReviewQueue) // tenant-level findings inbox
 		r.Get("/qa/{qaId}", s.qaGet)
 		r.Post("/qa/{qaId}/decision", s.qaDecision)
