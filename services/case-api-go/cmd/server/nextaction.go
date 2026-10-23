@@ -40,43 +40,62 @@ type nextAction struct {
 	Confidence float64 `json:"confidence"`
 }
 
+// nextActionPriors: the hand-set confidence priors, one per action_id. Kept
+// in one table (instead of inline literals) so the calibration stats endpoint
+// can report "prior vs observed" per action without re-deriving the numbers
+// from the rules. recommendNextAction reads from this map — a rule and its
+// prior can never drift apart.
+var nextActionPriors = map[string]float64{
+	"qa_review":             0.9,
+	"send_payment_reminder": 0.85,
+	"review_eligibility":    0.8,
+	"review_documents":      0.8,
+	"review_duplicates":     0.75,
+	"submit_offer":          0.85,
+	"clear_checklist":       0.65,
+	"log_negotiation":       0.6,
+	"triage":                0.7,
+	"review_case":           0.4,
+}
+
 // recommendNextAction: pure, priority-ordered. First match wins; later rules
 // are progressively weaker priors.
 func recommendNextAction(in nextActionInput, caseID string) nextAction {
+	prior := func(id string) float64 { return nextActionPriors[id] }
 	qa := func() nextAction {
 		return nextAction{"qa_review", "Review pending QA draft", "#/qa",
-			"A draft is waiting in the QA gate — approving it unblocks the case clock", 0.9}
+			"A draft is waiting in the QA gate — approving it unblocks the case clock", prior("qa_review")}
 	}
 	switch {
 	case in.Lock == "AWAITING_PAYMENT":
 		return nextAction{"send_payment_reminder", "Send payment reminder", "#/cases/" + caseID + "#correspondence",
-			"Case is frozen until the initial fee is paid — a reminder is the only forward action", 0.85}
+			"Case is frozen until the initial fee is paid — a reminder is the only forward action", prior("send_payment_reminder")}
 	case in.Lock == "INELIGIBLE":
 		return nextAction{"review_eligibility", "Review eligibility determination", "#/cases/" + caseID,
-			"Case is locked as ineligible — confirm or appeal before the record finalizes", 0.8}
+			"Case is locked as ineligible — confirm or appeal before the record finalizes", prior("review_eligibility")}
 	case in.PendingQA > 0 && in.IsReviewer:
 		return qa()
 	case in.UnreadDocs > 0:
 		return nextAction{"review_documents", "Review analyzed documents", "#/cases/" + caseID + "#documents",
-			"Analysis finished with findings — extracted values need a human check", 0.8}
+			"Analysis finished with findings — extracted values need a human check", prior("review_documents")}
 	case in.HasOverlaps:
 		return nextAction{"review_duplicates", "Review possible duplicates", "#/cases/" + caseID + "#relationships",
-			"Other cases share this case's clinical fingerprint — link or dismiss before negotiating", 0.75}
+			"Other cases share this case's clinical fingerprint — link or dismiss before negotiating", prior("review_duplicates")}
 	case in.OfferWindowOpen && in.CanDecide:
 		return nextAction{"submit_offer", "Submit sealed offer", "#/cases/" + caseID + "/offers",
-			"The offer window is open — the deadline is statutory", 0.85}
+			"The offer window is open — the deadline is statutory", prior("submit_offer")}
 	case in.ChecklistDue > 0:
 		return nextAction{"clear_checklist", "Complete checklist items", "#/cases/" + caseID + "#checklist",
-			"Open checklist items gate the next status transition", 0.65}
+			"Open checklist items gate the next status transition", prior("clear_checklist")}
 	case strings.Contains(in.Status, "OPEN_NEGOTIATION"):
 		return nextAction{"log_negotiation", "Log negotiation activity", "#/cases/" + caseID + "#correspondence",
-			"Open negotiation is running — record outreach so the clock and the record agree", 0.6}
+			"Open negotiation is running — record outreach so the clock and the record agree", prior("log_negotiation")}
 	case in.Status == "INITIATED":
 		return nextAction{"triage", "Triage and assign", "#/cases/" + caseID,
-			"New dispute — assign an owner and verify eligibility before clocks advance", 0.7}
+			"New dispute — assign an owner and verify eligibility before clocks advance", prior("triage")}
 	default:
 		return nextAction{"review_case", "Review case status", "#/cases/" + caseID,
-			"No blocking signal detected — review the timeline", 0.4}
+			"No blocking signal detected — review the timeline", prior("review_case")}
 	}
 }
 

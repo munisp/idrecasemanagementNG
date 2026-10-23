@@ -4682,13 +4682,37 @@ async function railAttachAuthFn(id) {
           <td>${pct(w.prefill_accept_rate)}</td>
           <td>${pct(w.next_action_accept_rate)}</td></tr>`;
       }).join("");
-      return `<div class="view-head"><h1>Productivity</h1>
+      const html = `<div class="view-head"><h1>Productivity</h1>
         <span class="muted">measured interaction baseline, last ${m.days} days — keystroke counts, never content</span></div>
         <h2>Workflow funnel</h2>
         <table><thead><tr><th>Workflow</th><th>Sessions</th><th>Completed</th><th>Clicks/session</th>
           <th>Keystrokes/session</th><th>Prefill accept</th><th>Next-action accept</th></tr></thead>
         <tbody>${cards || `<tr><td colspan="7" class="muted">No telemetry yet — events appear as people use the portal.</td></tr>`}</tbody></table>
+        <div id="action-stats"></div>
         <div id="prod-detail"></div>`;
+      // Next-action calibration: per action, the prior the rule carries vs the
+      // Laplace-smoothed observed accept rate once n>=30 — same numbers the
+      // live recommender uses, so this is "why did the button say 0.83".
+      afterRender(async () => {
+        const box = document.getElementById("action-stats");
+        if (!box) return;
+        try {
+          const r = await Api.cases.telemetryActionStats(90);
+          const rows = (r.actions || []).map((a) => `<tr>
+            <td class="mono">${esc(a.action_id)}</td>
+            <td>${a.shown}</td><td>${a.accepts}</td>
+            <td>${a.shown ? Math.round(100 * a.accepts / a.shown) + "%" : "—"}</td>
+            <td>${a.prior ? a.prior.toFixed(2) : "— (retired rule)"}</td>
+            <td>${a.confidence.toFixed(2)}</td>
+            <td>${a.basis === "observed" ? badge("OBSERVED") : '<span class="muted">prior</span>'}</td></tr>`).join("");
+          if (!rows) { box.remove(); return; }
+          box.innerHTML = `<h2>Next-action calibration <span class="muted">last ${r.days} days</span></h2>
+            <table><thead><tr><th>Action</th><th>Shown</th><th>Accepted</th><th>Accept rate</th>
+              <th>Prior</th><th>Confidence now</th><th>Basis</th></tr></thead><tbody>${rows}</tbody></table>
+            <p class="muted">Confidence flips from prior to observed at 30 showings (Laplace-smoothed, never a literal 100%).</p>`;
+        } catch { const b = document.getElementById("action-stats"); if (b) b.remove(); }
+      });
+      return html;
     } catch (e) { return err(e); }
   }
 

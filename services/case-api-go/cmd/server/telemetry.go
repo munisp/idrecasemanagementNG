@@ -123,6 +123,59 @@ func (s *server) telemetryMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"days": days, "workflows": out, "generated_at": time.Now().UTC()})
 }
 
+// telemetryActionStats: GET /telemetry/action-stats?days=90 — the calibration
+// loop made visible. Per next-action action_id: how often it was shown, how
+// often accepted, the hand-set prior, and the confidence the recommender
+// would report TODAY (prior below the sample threshold, Laplace-smoothed
+// observed rate at or above it — the same calibrateConfidence the live
+// endpoint uses, so this table is the answer to "why did the button say
+// 0.83?"). Sorted by sample size so the actions closest to flipping from
+// prior to observed are on top where a reviewer can watch them.
+func (s *server) telemetryActionStats(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	if !hasAnyRole(p, "FEDERAL_ADMIN", "PLATFORM_ADMIN", "CASE_MANAGER") {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	days := 90 // matches the calibration window in caseNextAction
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 365 {
+		days = d
+	}
+	rows, err := s.db.Query(r.Context(), `
+		SELECT target,
+		       count(*) FILTER (WHERE action='next_action_shown') AS shown,
+		       count(*) FILTER (WHERE action='next_action_accept') AS accepts
+		FROM public.interaction_events
+		WHERE tenant=$1 AND action IN ('next_action_shown','next_action_accept')
+		  AND created_at > now() - make_interval(days => $2)
+		GROUP BY target ORDER BY shown DESC`, tenant, days)
+	if err != nil {
+		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	type actionStat struct {
+		ActionID   string  `json:"action_id"`
+		Shown      int     `json:"shown"`
+		Accepts    int     `json:"accepts"`
+		Prior      float64 `json:"prior"`
+		Confidence float64 `json:"confidence"` // what the recommender reports now
+		Basis      string  `json:"basis"`      // "prior" | "observed"
+	}
+	out := []actionStat{}
+	for rows.Next() {
+		var st actionStat
+		if rows.Scan(&st.ActionID, &st.Shown, &st.Accepts) != nil {
+			continue
+		}
+		st.Prior = nextActionPriors[st.ActionID] // 0 for action_ids the rules no longer emit — a visible drift signal
+		st.Confidence, st.Basis = calibrateConfidence(st.Prior, st.Shown, st.Accepts)
+		out = append(out, st)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"days": days, "actions": out, "generated_at": time.Now().UTC()})
+}
+
 // telemetryPaths: GET /telemetry/paths?days=30&workflow=case_initiate — the
 // transition layer. Per workflow: how many sessions, how many reached a
 // submit (completion) vs abandoned, and the most common step→step

@@ -74,6 +74,7 @@ const Api = (() => {
       queuesSummary: () => req("GET", `${t()}/queues/summary`),
       telemetryMetrics: (days = 30) => req("GET", `${t()}/telemetry/metrics?days=${days}`),
       telemetryPaths: (days = 30, workflow = "") => req("GET", `${t()}/telemetry/paths?days=${days}${workflow ? `&workflow=${encodeURIComponent(workflow)}` : ""}`),
+      telemetryActionStats: (days = 90) => req("GET", `${t()}/telemetry/action-stats?days=${days}`),
       docReviewQueue: () => req("GET", `${t()}/documents/review-queue`),
       ackDoc: (caseId, docId) => req("POST", `${t()}/cases/${caseId}/documents/${docId}/acknowledge`, {}),
       initiate: (payload) => req("POST", `${t()}/cases/initiate`, payload),
