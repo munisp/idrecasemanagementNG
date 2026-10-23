@@ -9,6 +9,7 @@ package main
 // carrying its reason so the UI can show "why this".
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -176,12 +177,21 @@ func calibrateConfidence(prior float64, shown, accepts int) (float64, string) {
 // reasons. Reviewers see the whole open docket; other roles see only cases
 // assigned to them. No model — the same priors, ranked; the accept telemetry
 // these clicks emit calibrates them the same way.
-func (s *server) casesAttention(w http.ResponseWriter, r *http.Request) {
-	tenant := r.Context().Value(ctxTenant{}).(string)
-	p := r.Context().Value(ctxPrincipal{}).(principal)
+// attentionItem is one ranked case in the needs-attention set.
+type attentionItem struct {
+	CaseID      string     `json:"case_id"`
+	CaseNumber  string     `json:"case_number"`
+	Status      string     `json:"status"`
+	NextStatute *time.Time `json:"next_statutory_date,omitempty"`
+	NextAction  nextAction `json:"next_action"`
+}
+
+// computeAttention runs the ranking shared by /cases/attention and the
+// queues rollup; extracted so the two never drift apart.
+func (s *server) computeAttention(ctx context.Context, tenant string, p principal) ([]attentionItem, error) {
 	isReviewer := hasAnyRole(p, "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "DOCTOR", "NURSE")
 
-	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
 		SELECT c.id::text, c.case_number, c.status, coalesce(c.assigned_to,''),
 		       coalesce(c.details->>'lock',''),
 		       (SELECT count(*) FROM public.qa_reviews q
@@ -197,18 +207,10 @@ func (s *server) casesAttention(w http.ResponseWriter, r *http.Request) {
 		         c.opened_at DESC
 		LIMIT 100`, sanitizeTenant(tenant)), tenant)
 	if err != nil {
-		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
-	type attentionItem struct {
-		CaseID      string     `json:"case_id"`
-		CaseNumber  string     `json:"case_number"`
-		Status      string     `json:"status"`
-		NextStatute *time.Time `json:"next_statutory_date,omitempty"`
-		NextAction  nextAction `json:"next_action"`
-	}
 	items := []attentionItem{}
 	for rows.Next() {
 		var id, num, status, assigned, lock string
@@ -248,6 +250,17 @@ func (s *server) casesAttention(w http.ResponseWriter, r *http.Request) {
 		}
 		return items[i].NextStatute.Before(*items[j].NextStatute)
 	})
+	return items, nil
+}
+
+func (s *server) casesAttention(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	items, err := s.computeAttention(r.Context(), tenant, p)
+	if err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
 	if len(items) > 5 {
 		items = items[:5]
 	}

@@ -14,6 +14,7 @@ type intakeNextStep struct {
 	Label     string `json:"label"`
 	Reason    string `json:"reason"`
 	AdvanceTo string `json:"advance_to,omitempty"` // advanceIntake target when the step is a status move
+	Overdue   bool   `json:"overdue,omitempty"`    // the statutory/SLA clock behind this step has expired
 }
 
 // recommendIntakeStep: nil for terminal states and for "waiting is correct"
@@ -22,25 +23,25 @@ func recommendIntakeStep(status string, createdAt time.Time, packetCompleteAt *t
 	switch status {
 	case "DOCS_RECEIVED":
 		return &intakeNextStep{"verify_packet", "Verify packet & start clock",
-			"Documents arrived — verifying packet completeness starts the 10-day initial-review clock", "PACKET_COMPLETE"}
+			"Documents arrived — verifying packet completeness starts the 10-day initial-review clock", "PACKET_COMPLETE", false}
 	case "PACKET_COMPLETE":
 		if packetCompleteAt != nil {
 			daysLeft := 10 - int(now.Sub(*packetCompleteAt).Hours()/24)
 			if daysLeft < 0 {
 				return &intakeNextStep{"review_packet", "Initial review OVERDUE",
-					"The 10-day initial-review clock has expired — the review is late", ""}
+					"The 10-day initial-review clock has expired — the review is late", "", true}
 			}
 			return &intakeNextStep{"review_packet", "Complete initial review",
-				"Day " + itoa(10-daysLeft) + " of the 10-day initial-review clock — " + itoa(daysLeft) + " day(s) left", ""}
+				"Day " + itoa(10-daysLeft) + " of the 10-day initial-review clock — " + itoa(daysLeft) + " day(s) left", "", false}
 		}
-		return &intakeNextStep{"review_packet", "Complete initial review", "Packet is complete — the review clock is running", ""}
+		return &intakeNextStep{"review_packet", "Complete initial review", "Packet is complete — the review clock is running", "", false}
 	case "PAID":
 		return &intakeNextStep{"convert", "Convert to case",
-			"Fee paid — conversion opens the dispute and starts the statutory clocks", "CONVERTED"}
+			"Fee paid — conversion opens the dispute and starts the statutory clocks", "CONVERTED", false}
 	case "INSTRUCTED":
 		if now.Sub(createdAt) > 5*24*time.Hour {
 			return &intakeNextStep{"send_reminder", "Send packet reminder",
-				"Instructions went out over 5 days ago and no documents have arrived — a reminder usually unblocks it", ""}
+				"Instructions went out over 5 days ago and no documents have arrived — a reminder usually unblocks it", "", false}
 		}
 		return nil
 	default: // CONVERTED, CLOSED_REFUNDED, INELIGIBLE — terminal

@@ -34,7 +34,30 @@ const Views = (() => {
     const me = Auth.claims();
     let html = `<div class="view-head"><h1>Good day, ${esc((me.name || "").split(/[.\s]/)[0] || me.name)}</h1>
       <span class="muted">tenant <b>${esc(Api.getTenant()).toUpperCase()}</b> · ${me.roles.map(esc).join(", ")}</span></div>
+      <div id="queue-summary"></div>
       <div id="attention"></div>`;
+    // Queues-at-a-glance: one aggregate call, counts-only (no model — renders
+    // even when the LLM is down). Each chip links to the queue it counts.
+    afterRender(async () => {
+      const qs = document.getElementById("queue-summary");
+      if (!qs) return;
+      try {
+        const r = await Api.cases.queuesSummary();
+        const c = r.counts || {};
+        const chips = [
+          [c.qa_pending, "#/qa", "QA awaiting review"],
+          [c.docs_findings_review, "#/doc-review", "docs with findings"],
+          [c.intake_steps_due, "#/intake", `intake steps due${c.intake_overdue ? ` (${c.intake_overdue} overdue)` : ""}`],
+          [c.statutory_due_72h, "#/cases", "statutory clocks < 72h"],
+          [c.statutory_overdue, "#/cases", "statutory clocks overdue"],
+        ].filter(([n]) => n > 0);
+        if (!chips.length) { qs.remove(); return; }
+        qs.innerHTML = `<div class="sla-cluster">` + chips.map(([n, href, lbl]) => `
+          <a class="sla-card" href="${href}" style="text-decoration:none">
+            <span class="lbl"><b>${n}</b> ${esc(lbl)}</span>
+          </a>`).join("") + `</div>`;
+      } catch { const b = document.getElementById("queue-summary"); if (b) b.remove(); }
+    });
     // Portfolio next-actions: the per-case rule engine ranked across the open
     // docket. Async; clicks emit next_action_accept into the calibration stream.
     afterRender(async () => {

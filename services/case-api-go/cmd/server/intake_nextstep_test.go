@@ -59,4 +59,12 @@ func TestRecommendIntakeStepOverdueWording(t *testing.T) {
 	if got == nil || got.Label != "Initial review OVERDUE" {
 		t.Errorf("overdue wording: %+v", got)
 	}
+	if !got.Overdue {
+		t.Errorf("overdue step must carry the Overdue flag for the queues rollup: %+v", got)
+	}
+	// Inside the window the same action is not flagged.
+	fresh := now.Add(-2 * 24 * time.Hour)
+	if in := recommendIntakeStep("PACKET_COMPLETE", fresh, &fresh, now); in == nil || in.Overdue {
+		t.Errorf("in-window review must not be flagged overdue: %+v", in)
+	}
 }

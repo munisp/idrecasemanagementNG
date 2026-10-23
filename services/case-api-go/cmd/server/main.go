@@ -478,14 +478,15 @@ func main() {
 	r.Route("/v1/tenants/{tenant}", func(r chi.Router) {
 		r.Use(a.middleware, tenancy)
 		r.Post("/cases/initiate", s.initiateCase)
-		r.Get("/cases/prefill", s.casePrefill) // prefill suggestions for the initiation form
+		r.Get("/cases/prefill", s.casePrefill)      // prefill suggestions for the initiation form
 		r.Get("/cases/attention", s.casesAttention) // portfolio-level "what needs me most"
+		r.Get("/queues/summary", s.queuesSummary)   // dashboard rollup: queue counts + clocks in one call
 		r.Get("/cases", s.listCases)
 		r.Get("/cases/{caseId}", s.getCase)
 		r.Get("/cases/{caseId}/next-action", s.caseNextAction) // rule-based next best action
-		r.Post("/telemetry/events", s.telemetryIngest)       // portal interaction baseline
+		r.Post("/telemetry/events", s.telemetryIngest)         // portal interaction baseline
 		r.Get("/telemetry/metrics", s.telemetryMetrics)
-		r.Get("/telemetry/paths", s.telemetryPaths) // per-workflow transitions + abandonment
+		r.Get("/telemetry/paths", s.telemetryPaths)    // per-workflow transitions + abandonment
 		r.Post("/fees/transfer", s.postFeeTransfer)    // escrow/admin/IDRE fee double-entry
 		r.Post("/cases/{caseId}/signal", s.signalCase) // e.g. response filed, fees paid
 
@@ -685,8 +686,8 @@ func main() {
 		r.Get("/cases/{caseId}/party-accounts", s.listPartyAccounts)
 		r.Get("/party/cases", s.partyCases) // party workspace
 		r.Get("/party/cases/{caseId}", s.partyCaseDetail)
-		r.Get("/qa", s.qaQueue) // QA gate queue (G4)
-		r.Get("/qa/draft-quality", s.qaDraftQuality) // per-template draft effectiveness
+		r.Get("/qa", s.qaQueue)                            // QA gate queue (G4)
+		r.Get("/qa/draft-quality", s.qaDraftQuality)       // per-template draft effectiveness
 		r.Get("/documents/review-queue", s.docReviewQueue) // tenant-level findings inbox
 		r.Get("/qa/{qaId}", s.qaGet)
 		r.Post("/qa/{qaId}/decision", s.qaDecision)
