@@ -31,6 +31,30 @@ type prefillValue struct {
 	Evidence   string `json:"evidence"`   // human-readable "why"
 }
 
+// prefillFeedbackAdjust closes the prefill loop: once a field has enough
+// accept/override telemetry (same threshold discipline as next-action
+// calibration — nothing moves below 30 observations), a field that users
+// accept less than half the time gets capped at "low" confidence and its
+// evidence line says why. The suggestion itself is NOT dropped — it may
+// still be right for this particular document — but the badge stops
+// vouching for it, which is exactly what "advisory" means here. Pure; the
+// handler supplies the counts.
+func prefillFeedbackAdjust(pv prefillValue, accepts, overrides int) prefillValue {
+	const minN = 30
+	n := accepts + overrides
+	if n < minN {
+		return pv
+	}
+	rate := float64(accepts) / float64(n)
+	if rate >= 0.5 {
+		return pv
+	}
+	pv.Confidence = "low"
+	overPct := int(100*(1-rate) + 0.5)
+	pv.Evidence += fmt.Sprintf(" · staff override this suggestion %d%% of the time (n=%d)", overPct, n)
+	return pv
+}
+
 type prefillDoc struct {
 	DocID      string `json:"doc_id"`
 	CaseID     string `json:"case_id"`
@@ -159,6 +183,35 @@ func (s *server) casePrefill(w http.ResponseWriter, r *http.Request) {
 			var d prefillDoc
 			if rows.Scan(&d.DocID, &d.CaseID, &d.DocType, &d.AnalyzedAt) == nil {
 				docs = append(docs, d)
+			}
+		}
+	}
+
+	// --- feedback: demote fields staff keep typing over --------------------
+	// Reads the same interaction_events the /telemetry/prefill-stats panel
+	// reports, so the dashboard and the form can never disagree about a
+	// field's track record.
+	fbRows, err := s.db.Query(r.Context(), `
+		SELECT target,
+		       count(*) FILTER (WHERE action='prefill_accept') AS accepts,
+		       count(*) FILTER (WHERE action='prefill_override') AS overrides
+		FROM public.interaction_events
+		WHERE tenant=$1 AND action IN ('prefill_accept','prefill_override') AND target <> ''
+		  AND created_at > now() - interval '90 days'
+		GROUP BY target`, tenant)
+	if err == nil {
+		rates := map[string][2]int{}
+		for fbRows.Next() {
+			var f string
+			var a, o int
+			if fbRows.Scan(&f, &a, &o) == nil {
+				rates[f] = [2]int{a, o}
+			}
+		}
+		fbRows.Close()
+		for k, pv := range fields {
+			if r, ok := rates[k]; ok {
+				fields[k] = prefillFeedbackAdjust(pv, r[0], r[1])
 			}
 		}
 	}
