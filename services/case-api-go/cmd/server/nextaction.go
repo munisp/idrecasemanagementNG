@@ -136,7 +136,33 @@ func (s *server) caseNextAction(w http.ResponseWriter, r *http.Request) {
 		in.OfferWindowOpen = true
 	}
 	rec := recommendNextAction(in, caseID)
-	// Confidence values are hand-set priors; they get calibrated once the
-	// accept/override telemetry (Phase 1) has enough volume to score them.
-	writeJSON(w, http.StatusOK, map[string]any{"next_action": rec, "computed_at": time.Now().UTC()})
+	// Confidence calibration: hand-set priors until this action has been
+	// SHOWN enough times in this tenant to trust the observed accept rate.
+	// The portal emits next_action_shown on render and next_action_accept
+	// on click; below the sample threshold the prior stands and the basis
+	// says so — the UI never shows an unearned calibrated number.
+	var shown, accepts int
+	_ = s.db.QueryRow(r.Context(), `
+		SELECT count(*) FILTER (WHERE action='next_action_shown' AND target=$2),
+		       count(*) FILTER (WHERE action='next_action_accept' AND target=$2)
+		FROM public.interaction_events
+		WHERE tenant=$1 AND created_at > now() - interval '90 days'`,
+		tenant, rec.ActionID).Scan(&shown, &accepts)
+	conf, basis := calibrateConfidence(rec.Confidence, shown, accepts)
+	rec.Confidence = conf
+	writeJSON(w, http.StatusOK, map[string]any{
+		"next_action": rec, "confidence_basis": basis, "computed_at": time.Now().UTC()})
+}
+
+// calibrateConfidence: below minShown the prior is returned untouched with
+// basis "prior"; at or above it, the Laplace-smoothed observed accept rate
+// replaces it with basis "observed". Smoothing keeps a 30/30 streak at 0.97
+// rather than a literal 1.0 — one future override shouldn't contradict a
+// number the UI already showed.
+func calibrateConfidence(prior float64, shown, accepts int) (float64, string) {
+	const minShown = 30
+	if shown < minShown {
+		return prior, "prior"
+	}
+	return float64(accepts+1) / float64(shown+2), "observed"
 }

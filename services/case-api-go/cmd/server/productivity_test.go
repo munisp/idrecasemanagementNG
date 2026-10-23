@@ -42,3 +42,19 @@ func TestRecommendNextActionIneligbleLock(t *testing.T) {
 		t.Errorf("got %q want review_eligibility", got.ActionID)
 	}
 }
+
+func TestCalibrateConfidence(t *testing.T) {
+	c, b := calibrateConfidence(0.7, 29, 29)
+	if c != 0.7 || b != "prior" {
+		t.Errorf("below threshold: got %v %q", c, b)
+	}
+	c, b = calibrateConfidence(0.7, 30, 24)
+	want := float64(25) / float64(32)
+	if b != "observed" || c < want-1e-9 || c > want+1e-9 {
+		t.Errorf("at threshold: got %v %q want %v observed", c, b, want)
+	}
+	c, _ = calibrateConfidence(0.5, 100, 100)
+	if c >= 1.0 {
+		t.Errorf("smoothing broken: %v", c)
+	}
+}

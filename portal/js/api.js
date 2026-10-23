@@ -332,6 +332,7 @@ const Api = (() => {
       importClaims: (caseId, claims) => req("POST", `${t()}/cases/${caseId}/claims`, { claims }),
       qaQueue: (caseId) => req("GET", `${t()}/qa${caseId ? `?case_id=${encodeURIComponent(caseId)}` : ""}`),
       qaGet: (id) => req("GET", `${t()}/qa/${id}`),
+      qaDraftQuality: (days = 90) => req("GET", `${t()}/qa/draft-quality?days=${days}`),
       qaDecision: (id, decision, note, editedBody) => req("POST", `${t()}/qa/${id}/decision`, { decision, note, edited_body: editedBody || undefined }),
       mailJournal: (opts) => req("GET", `${t()}/correspondence${qs(opts || {})}`),
       // Payment rails (moov-io): vault-sealed accounts, ACH/wire/ICL/Metro2 files, OFAC screening

@@ -1174,6 +1174,7 @@ const Views = (() => {
         const a = na && na.next_action;
         const box = document.getElementById("next-action");
         if (!a || !box) return;
+        if (window.Telemetry) Telemetry.track("next_action_shown", a.action_id, { confidence: a.confidence, basis: na.confidence_basis });
         box.innerHTML = `<div class="sla-cluster"><div class="sla-card" style="border-left:3px solid var(--accent,#3b82f6)">
           <button id="na-go" class="primary">${esc(a.label)}</button>
           <span class="lbl">Suggested next step · ${esc(a.reason)}</span></div></div>`;
@@ -2075,6 +2076,23 @@ const Views = (() => {
       const r = await Api.program.qaQueue();
       const q = r.queue || [];
       const recent = r.recent || [];
+      let dqHtml = "";
+      // Phase 3-lite panel: which templates produce drafts reviewers send
+      // untouched. Staff-only, advisory — no model, just graded decisions.
+      if (can("CASE_MANAGER", "ARBITRATOR", "ATTORNEY", "FEDERAL_ADMIN", "PLATFORM_ADMIN")) {
+        try {
+          const dq = await Api.qaDraftQuality(90);
+          if (dq.templates && dq.templates.length) {
+            dqHtml = `<h2>Draft quality (last ${dq.days} days)</h2>
+              <p class="muted">An untouched approval means the template produced text a reviewer sent as-is; edit ratio is how much of the draft the reviewer rewrote.</p>
+              <table><thead><tr><th>Template</th><th>Channel</th><th>Drafts</th><th>Approved</th><th>Untouched</th><th>Rejected</th><th>Avg edit ratio</th></tr></thead><tbody>` +
+              dq.templates.map((x) => `<tr><td>${esc(x.artifact)}</td><td>${esc(x.channel)}</td><td>${x.drafts}</td>
+                <td>${x.approved}</td><td>${x.approved_unedited} (${x.drafts ? Math.round(100 * x.approved_unedited / x.drafts) : 0}%)</td>
+                <td>${x.rejected}</td><td>${x.avg_edit_ratio == null ? "—" : Math.round(x.avg_edit_ratio * 100) + "%"}</td></tr>`).join("") +
+              `</tbody></table>`;
+          }
+        } catch { /* stats are advisory */ }
+      }
       return `<div class="view-head"><h1>QA gate</h1>
         <span class="muted">nothing reaches a party without approval on gated templates</span></div>
       <details class="prog-sec" ${q.length ? "" : "open"}><summary>What the QA gate does</summary>
@@ -2091,7 +2109,7 @@ const Views = (() => {
         (recent.length ? `<h2>Recently decided</h2><table><thead><tr><th>Subject</th><th>Status</th><th>Reviewed by</th><th>When</th></tr></thead><tbody>` +
           recent.map((i) => `<tr><td>${esc(i.subject)}</td><td>${badge(i.status)}</td>
             <td>${esc(i.reviewed_by || "—")}</td><td class="muted">${fmtDate(i.reviewed_at)}</td></tr>`).join("") +
-          `</tbody></table>` : "");
+          `</tbody></table>` : "") + dqHtml;
     } catch (e) { return err(e); }
   }
 
