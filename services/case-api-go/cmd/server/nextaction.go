@@ -9,7 +9,9 @@ package main
 // carrying its reason so the UI can show "why this".
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -165,4 +167,89 @@ func calibrateConfidence(prior float64, shown, accepts int) (float64, string) {
 		return prior, "prior"
 	}
 	return float64(accepts+1) / float64(shown+2), "observed"
+}
+
+// casesAttention: GET /cases/attention — the portfolio-level answer to "what
+// needs me most right now". Runs the same rule engine as the per-case
+// endpoint across the tenant's open cases (statutory-date-first scan,
+// capped), drops the generic fallbacks, and returns the top few with their
+// reasons. Reviewers see the whole open docket; other roles see only cases
+// assigned to them. No model — the same priors, ranked; the accept telemetry
+// these clicks emit calibrates them the same way.
+func (s *server) casesAttention(w http.ResponseWriter, r *http.Request) {
+	tenant := r.Context().Value(ctxTenant{}).(string)
+	p := r.Context().Value(ctxPrincipal{}).(principal)
+	isReviewer := hasAnyRole(p, "CASE_MANAGER", "FEDERAL_ADMIN", "PLATFORM_ADMIN", "DOCTOR", "NURSE")
+
+	rows, err := s.db.Query(r.Context(), fmt.Sprintf(`
+		SELECT c.id::text, c.case_number, c.status, coalesce(c.assigned_to,''),
+		       coalesce(c.details->>'lock',''),
+		       (SELECT count(*) FROM public.qa_reviews q
+		         WHERE q.tenant=$1 AND q.case_id=c.id::text AND q.status='PENDING'),
+		       (SELECT count(*) FROM public.doc_analysis a
+		         WHERE a.tenant=$1 AND a.case_id=c.id AND a.status='ANALYZED_WITH_FINDINGS'),
+		       (SELECT count(*) FROM public.case_checklists ci
+		         WHERE ci.tenant=$1 AND ci.case_id::text=c.id::text AND ci.done=false),
+		       LEAST(c.offer_window_ends_at, c.open_negotiation_end::timestamptz)
+		FROM tenant_%s.cases c
+		WHERE c.status NOT LIKE 'CLOSED%%' AND c.status <> 'SETTLED_IN_NEGOTIATION'
+		ORDER BY LEAST(c.offer_window_ends_at, c.open_negotiation_end::timestamptz) ASC NULLS LAST,
+		         c.opened_at DESC
+		LIMIT 100`, sanitizeTenant(tenant)), tenant)
+	if err != nil {
+		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type attentionItem struct {
+		CaseID      string     `json:"case_id"`
+		CaseNumber  string     `json:"case_number"`
+		Status      string     `json:"status"`
+		NextStatute *time.Time `json:"next_statutory_date,omitempty"`
+		NextAction  nextAction `json:"next_action"`
+	}
+	items := []attentionItem{}
+	for rows.Next() {
+		var id, num, status, assigned, lock string
+		var pendingQA, unreadDocs, checklistDue int
+		var statDate *time.Time
+		if rows.Scan(&id, &num, &status, &assigned, &lock, &pendingQA, &unreadDocs, &checklistDue, &statDate) != nil {
+			continue
+		}
+		if !isReviewer && assigned != p.Subject {
+			continue
+		}
+		in := nextActionInput{
+			Status: status, Lock: lock,
+			PendingQA: pendingQA, UnreadDocs: unreadDocs, ChecklistDue: checklistDue,
+			OfferWindowOpen: strings.Contains(status, "OFFER_WINDOW_OPEN"),
+			AssignedToMe:    assigned == p.Subject,
+			IsReviewer:      isReviewer, CanDecide: isReviewer,
+		}
+		rec := recommendNextAction(in, id)
+		// The generic fallbacks (review_case 0.4, log_negotiation 0.6) aren't
+		// attention-worthy — "needs attention" means a blocking signal fired.
+		if rec.Confidence < 0.65 {
+			continue
+		}
+		items = append(items, attentionItem{id, num, status, statDate, rec})
+	}
+	// Strongest signal first; ties break toward the nearest statutory date.
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].NextAction.Confidence != items[j].NextAction.Confidence {
+			return items[i].NextAction.Confidence > items[j].NextAction.Confidence
+		}
+		if items[i].NextStatute == nil {
+			return false
+		}
+		if items[j].NextStatute == nil {
+			return true
+		}
+		return items[i].NextStatute.Before(*items[j].NextStatute)
+	})
+	if len(items) > 5 {
+		items = items[:5]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attention": items, "computed_at": time.Now().UTC()})
 }

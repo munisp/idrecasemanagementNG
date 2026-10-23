@@ -70,6 +70,7 @@ const Api = (() => {
       get: (id) => req("GET", `${t()}/cases/${id}`),
       prefill: (docId) => req("GET", `${t()}/cases/prefill${docId ? `?doc_id=${encodeURIComponent(docId)}` : ""}`),
       nextAction: (id) => req("GET", `${t()}/cases/${id}/next-action`),
+      attention: () => req("GET", `${t()}/cases/attention`),
       telemetryMetrics: (days = 30) => req("GET", `${t()}/telemetry/metrics?days=${days}`),
       telemetryPaths: (days = 30, workflow = "") => req("GET", `${t()}/telemetry/paths?days=${days}${workflow ? `&workflow=${encodeURIComponent(workflow)}` : ""}`),
       initiate: (payload) => req("POST", `${t()}/cases/initiate`, payload),
