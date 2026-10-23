@@ -77,12 +77,12 @@ func (s *server) acknowledgeDocFindings(w http.ResponseWriter, r *http.Request) 
 		UPDATE public.doc_analysis
 		SET status='ANALYZED', reviewed_by=$4, reviewed_at=now()
 		WHERE tenant=$1 AND doc_id=$2 AND case_id=$3 AND status='ANALYZED_WITH_FINDINGS'`,
-		tenant, docID, caseID, displayName(p))
+		tenant, docID, caseID, p.Subject)
 	if err != nil || tag.RowsAffected() == 0 {
 		http.Error(w, `{"error":"not found or already reviewed"}`, http.StatusConflict)
 		return
 	}
 	s.logActivity(r.Context(), tenant, caseID, "DOC_FINDINGS_REVIEWED",
-		fmt.Sprintf("Analysis findings on document %s reviewed by %s", docID, displayName(p)))
+		fmt.Sprintf("Analysis findings on document %s reviewed by %s", docID, p.Subject))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ANALYZED"})
 }
