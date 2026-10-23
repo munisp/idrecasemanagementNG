@@ -2101,9 +2101,9 @@ const Views = (() => {
         <b>PENDING</b> — the named role reviews the exact subject, body, recipients, and any secure links, then
         approves (email is delivered and logged) or rejects with a note back to the drafter. Ungated templates
         never appear here. An empty queue simply means no gated draft is waiting right now.</p></details>` +
-        (q.length ? `<h2>Awaiting review (${q.length})</h2><table><thead><tr><th>Subject</th><th>Case</th><th>Drafted by</th><th></th></tr></thead><tbody>` +
+        (q.length ? `<h2>Awaiting review (${q.length})</h2><table><thead><tr><th>Subject</th><th>Case</th><th>Drafted by</th><th>Statutory due</th><th></th></tr></thead><tbody>` +
           q.map((i) => `<tr><td>${esc(i.subject)}</td><td class="mono">${esc((i.case_id || "").slice(0, 8))}…</td>
-            <td>${esc(i.drafted_by)}</td>
+            <td>${esc(i.drafted_by)}</td><td>${(() => { const ds = [i.open_negotiation_end, i.offer_window_ends_at].filter(Boolean).sort(); return ds.length ? fmtDate(ds[0]) : "—"; })()}</td>
             <td><button class="mini" onclick="Views.qaReview('${i.id}')">review</button></td></tr>`).join("") +
           `</tbody></table>` : `<p class="muted">Queue empty — no drafts awaiting review.</p>`) + `<div id="qa-detail"></div>` +
         (recent.length ? `<h2>Recently decided</h2><table><thead><tr><th>Subject</th><th>Status</th><th>Reviewed by</th><th>When</th></tr></thead><tbody>` +
@@ -2127,9 +2127,14 @@ const Views = (() => {
         ? `<textarea id="qa-edit" rows="14" style="width:100%">${esc(d.body)}</textarea>
            <p class="muted">Copilot draft — edit freely; the approved text is what gets ${isNote ? "filed" : "sent"}, and the edit is recorded.</p>`
         : `<pre class="qa-body">${esc(d.body)}</pre>`;
+      const ts = d.template_stats;
+      const tsHtml = ts && ts.drafts
+        ? `<p class="muted">Template track record (90d): ${ts.drafts} drafts · ${ts.approved_unedited} approved untouched (${Math.round(100 * ts.approved_unedited / ts.drafts)}%) · ${ts.rejected} rejected${ts.avg_edit_ratio != null ? ` · reviewers rewrite ~${Math.round(ts.avg_edit_ratio * 100)}% when editing` : ""}</p>`
+        : "";
       box.innerHTML = `<div class="card"><h3>${esc(d.subject)}</h3>
         <p class="muted">${isNote ? "determination rationale · files to the case timeline on approval" : `to: ${esc(to)} · channel ${esc(d.channel)}`}
           ${isCopilot ? ' · <span class="badge s-review">COPILOT DRAFT</span>' : ""}</p>
+        ${tsHtml}
         ${bodyHtml}
         <div class="actions">
           <button onclick="Views.qaDecide('${qaId}','APPROVE',this)">${isNote ? "Approve & file" : "Approve & send"}</button>

@@ -130,3 +130,29 @@ func (s *server) qaDraftQuality(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"days": days, "templates": out})
 }
+
+// qaTemplateStats: one template's track record at this tenant's QA gate.
+// Returned inside qaGet so the reviewer sees the evidence next to the draft.
+func (s *server) qaTemplateStats(r *http.Request, tenant, artifact string) map[string]any {
+	var drafts, approved, unedited, rejected int64
+	var avgRatio *float64
+	err := s.db.QueryRow(r.Context(), `
+		SELECT count(*),
+		       count(*) FILTER (WHERE decision='APPROVE'),
+		       count(*) FILTER (WHERE decision='APPROVE' AND NOT edited),
+		       count(*) FILTER (WHERE decision='REJECT'),
+		       avg(edit_ratio)
+		FROM public.qa_edit_diffs
+		WHERE tenant=$1 AND artifact=$2 AND created_at > now() - interval '90 days'`,
+		tenant, artifact).Scan(&drafts, &approved, &unedited, &rejected, &avgRatio)
+	if err != nil || drafts == 0 {
+		return nil
+	}
+	out := map[string]any{
+		"drafts": drafts, "approved": approved, "approved_unedited": unedited, "rejected": rejected,
+	}
+	if avgRatio != nil {
+		out["avg_edit_ratio"] = *avgRatio
+	}
+	return out
+}
