@@ -1227,6 +1227,16 @@ const Views = (() => {
             { confidence: a.confidence, role: Telemetry.role(), service_line: c.service_line || "", case_id: id });
           location.hash = a.href;
         });
+        // Expected path: the tenant's transition matrix read at this case's
+        // current status. Present only when the model gate and the per-cell
+        // samples both cleared — the API omits it otherwise and nothing renders.
+        if (na.expected_path && na.expected_path.next && na.expected_path.next.length) {
+          const ep = na.expected_path;
+          const h2 = (h) => h >= 48 ? (h / 24).toFixed(1) + "d" : h.toFixed(0) + "h";
+          const legs = ep.next.map((n) => `${esc(n.to)} ${Math.round(100 * n.share)}% (~${h2(n.median_dwell_hours)})`).join(", ");
+          box.insertAdjacentHTML("beforeend", `<div class="muted" style="margin-top:4px;font-size:12px">
+            Typical from ${esc(ep.from)} (n=${ep.sample_exits}): ${legs}${ep.median_hours_to_close != null ? ` · median to close ${h2(ep.median_hours_to_close)} (n=${ep.closed_sample})` : ""}</div>`);
+        }
       }).catch(() => {}));
       html += `
         <p class="muted">${esc(c.service_line)} · ${esc(App.t("amount_label"))} $${(c.qpa_cents / 100).toLocaleString()} · opened ${fmtDate(c.opened_at)}</p>`;
@@ -4743,10 +4753,14 @@ async function railAttachAuthFn(id) {
         const box = document.getElementById("model-matrix");
         if (!box) return;
         const dwell = (h) => h == null ? "—" : h >= 48 ? (h / 24).toFixed(1) + "d" : h.toFixed(1) + "h";
-        try {
-          const r = await Api.cases.analyticsTransitions("lifecycle");
+        // Two axes: lifecycle (canonical federal NSA statuses) and program
+        // (the program's own working board spellings).
+        const loadMatrix = async (axis) => {
+          const r = await Api.cases.analyticsTransitions(axis);
+          const toggle = `<span class="muted">axis:</span> ${["lifecycle", "program"].map((x) =>
+            x === axis ? `<b>${x}</b>` : `<a href="#/productivity" data-axis="${x}">${x}</a>`).join(" · ")}`;
           if (r.status === "insufficient_data") {
-            box.innerHTML = `<h2>Transition matrix <span class="muted">lifecycle axis</span></h2>
+            box.innerHTML = `<h2>Transition matrix <span class="muted">${toggle}</span></h2>
               <p class="muted">Learning gate: ${r.closed_cases}/${r.required} closed ${esc(App.t("case_plural")).toLowerCase()}. Every status hop is
               being recorded from now on; the matrix — where ${esc(App.t("case_plural")).toLowerCase()} go next from each status, and the median
               time they spend there first — unlocks at ${r.required}.</p>`;
@@ -4756,12 +4770,20 @@ async function railAttachAuthFn(id) {
             <td class="mono">${esc(c.from)}</td><td class="mono">${esc(c.to)}</td>
             <td>${c.count}</td><td>${Math.round(100 * c.share)}%</td>
             <td>${dwell(c.median_dwell_hours)}</td></tr>`).join("");
-          if (!rows) { box.remove(); return; }
-          box.innerHTML = `<h2>Transition matrix <span class="muted">lifecycle axis · ${r.transitions} recorded transitions</span></h2>
+          if (!rows) { box.innerHTML = `<h2>Transition matrix <span class="muted">${toggle}</span></h2>
+            <p class="muted">No ${axis} transitions recorded yet.</p>`; return; }
+          box.innerHTML = `<h2>Transition matrix <span class="muted">${toggle} · ${r.transitions} recorded transitions</span></h2>
             <table><thead><tr><th>From</th><th>To</th><th>${esc(App.t("case_plural"))}</th><th>Share of exits</th><th>Median dwell</th></tr></thead>
             <tbody>${rows}</tbody></table>
             <p class="muted">Share is within the from-status. Dwell is wall time between entering the status and leaving it toward that outcome.</p>`;
-        } catch { const b = document.getElementById("model-matrix"); if (b) b.remove(); }
+        };
+        box.addEventListener("click", (ev) => {
+          const a = ev.target.closest("a[data-axis]");
+          if (!a) return;
+          ev.preventDefault();
+          loadMatrix(a.dataset.axis).catch(() => {});
+        });
+        try { await loadMatrix("lifecycle"); } catch { const b = document.getElementById("model-matrix"); if (b) b.remove(); }
       });
       // Prefill accuracy by field: a low accept rate means the extraction is
       // wrong or its confidence badge is distrusted — either way, a pipeline

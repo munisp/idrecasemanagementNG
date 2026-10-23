@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -207,4 +208,102 @@ func (s *server) analyticsTransitions(w http.ResponseWriter, r *http.Request) {
 		"closed_cases": closed, "transitions": len(events),
 		"matrix": cells,
 	})
+}
+// expectedPathNext is one likely next status from the case's current one.
+type expectedPathNext struct {
+	To               string  `json:"to"`
+	Count            int     `json:"count"`
+	Share            float64 `json:"share"`
+	MedianDwellHours float64 `json:"median_dwell_hours"` // time in current status before this hop
+}
+
+// expectedPath is the per-case read of the transition matrix: where cases
+// in this status actually went next, and how long the status typically
+// lasted. Nil unless every number in it clears the same sample threshold
+// the priors use — a path read from four cases is an anecdote, and the
+// case page stays silent rather than show one.
+type expectedPath struct {
+	From               string             `json:"from"`
+	SampleExits        int                `json:"sample_exits"` // transitions that left this status
+	Next               []expectedPathNext `json:"next"`         // top 3 by frequency
+	MedianHoursToClose *float64           `json:"median_hours_to_close,omitempty"`
+	ClosedSample       int                `json:"closed_sample"` // cases reaching a terminal status from here
+}
+
+// expectedPathFor reads the tenant's lifecycle matrix for one status.
+// Callers gate on the model gate first; the per-cell samples here gate the
+// readout itself. Terminal statuses have no outgoing path — nil.
+func (s *server) expectedPathFor(ctx context.Context, tenant, fromStatus string) *expectedPath {
+	if fromStatus == "" || strings.HasPrefix(fromStatus, "CLOSED") || fromStatus == "SETTLED_IN_NEGOTIATION" {
+		return nil
+	}
+	// Outgoing edges from this status, with dwell measured between entering
+	// it and each exit (the lag over the case's ordered hops).
+	rows, err := s.db.Query(ctx, `
+		WITH ev AS (
+			SELECT case_id, from_status, to_status, created_at,
+			       lag(created_at) OVER (PARTITION BY case_id ORDER BY created_at, id) AS prev_at
+			FROM public.case_transitions
+			WHERE tenant=$1 AND axis='lifecycle'
+		)
+		SELECT to_status, count(*),
+		       percentile_cont(0.5) WITHIN GROUP (
+		           ORDER BY EXTRACT(EPOCH FROM (created_at - prev_at))/3600.0)
+		FROM ev
+		WHERE from_status=$2
+		GROUP BY to_status ORDER BY count(*) DESC`, tenant, fromStatus)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	ep := &expectedPath{From: fromStatus}
+	for rows.Next() {
+		var n expectedPathNext
+		var dwell *float64
+		if rows.Scan(&n.To, &n.Count, &dwell) != nil {
+			continue
+		}
+		if dwell != nil {
+			n.MedianDwellHours = *dwell
+		}
+		ep.SampleExits += n.Count
+		ep.Next = append(ep.Next, n)
+	}
+	if ep.SampleExits < calibrateMinShown {
+		return nil
+	}
+	for i := range ep.Next {
+		ep.Next[i].Share = float64(ep.Next[i].Count) / float64(ep.SampleExits)
+	}
+	if len(ep.Next) > 3 {
+		ep.Next = ep.Next[:3]
+	}
+	// Typical time from entering this status to the first terminal hop.
+	// Per (case, entry) so a case passing through the status twice
+	// contributes two honest samples, never one smeared one.
+	var closedN int
+	var median *float64
+	_ = s.db.QueryRow(ctx, `
+		WITH entered AS (
+			SELECT case_id, created_at AS entered_at
+			FROM public.case_transitions
+			WHERE tenant=$1 AND axis='lifecycle' AND to_status=$2
+		), term AS (
+			SELECT e.case_id, e.entered_at, min(t.created_at) AS closed_at
+			FROM entered e
+			JOIN public.case_transitions t
+			  ON t.tenant=$1 AND t.case_id=e.case_id AND t.axis='lifecycle'
+			 AND t.created_at >= e.entered_at
+			 AND (t.to_status LIKE 'CLOSED%%' OR t.to_status='SETTLED_IN_NEGOTIATION')
+			GROUP BY e.case_id, e.entered_at
+		)
+		SELECT count(*),
+		       percentile_cont(0.5) WITHIN GROUP (
+		           ORDER BY EXTRACT(EPOCH FROM (closed_at - entered_at))/3600.0)
+		FROM term`, tenant, fromStatus).Scan(&closedN, &median)
+	if closedN >= calibrateMinShown && median != nil {
+		ep.ClosedSample = closedN
+		ep.MedianHoursToClose = median
+	}
+	return ep
 }

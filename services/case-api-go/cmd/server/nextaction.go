@@ -208,12 +208,21 @@ func (s *server) caseNextAction(w http.ResponseWriter, r *http.Request) {
 		rec.Confidence = conf
 		basis = b
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	// Expected path: the transition matrix read at this case's current
+	// status. Same gate as the learned priors plus per-cell samples — nil
+	// (and the portal stays silent) whenever either side is unearned.
+	resp := map[string]any{
 		"next_action": rec, "confidence_basis": basis, "computed_at": time.Now().UTC(),
 		"model_gate": map[string]any{
 			"closed_cases": priors.closed, "required": modelMinClosedCases, "open": priors.open,
 		},
-	})
+	}
+	if priors.open {
+		if ep := s.expectedPathFor(r.Context(), tenant, status); ep != nil {
+			resp["expected_path"] = ep
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // learnedPriors: the prior tables recommendNextActionWith ranks by, plus
