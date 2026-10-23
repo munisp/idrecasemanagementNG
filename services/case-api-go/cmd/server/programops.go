@@ -500,6 +500,21 @@ func (s *server) listIntake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
+	// Rule-based next step per row, computed from status and timestamps
+	// already on the row — no extra queries. Advisory; the portal renders it
+	// as a one-click suggestion and emits next_action_accept telemetry.
+	now := time.Now().UTC()
+	for _, row := range rows {
+		createdAt, _ := row["created_at"].(time.Time)
+		packetAt, _ := row["packet_complete_at"].(time.Time)
+		var packetPtr *time.Time
+		if !packetAt.IsZero() {
+			packetPtr = &packetAt
+		}
+		if step := recommendIntakeStep(str(row["status"]), createdAt, packetPtr, now); step != nil {
+			row["next_step"] = step
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"intake": rows,
 		"total": total, "next_offset": nextOffset(offset, limit, total)})
 }
@@ -564,10 +579,10 @@ func (s *server) listDeliverables(w http.ResponseWriter, r *http.Request) {
 func (s *server) submitDeliverable(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	var in struct {
-		Name     string `json:"name"`
-		CaseID   string `json:"case_id"`
-		DueRule  string `json:"due_rule"`
-		DueDate  string `json:"due_date"`
+		Name    string `json:"name"`
+		CaseID  string `json:"case_id"`
+		DueRule string `json:"due_rule"`
+		DueDate string `json:"due_date"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Name == "" {
 		http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
@@ -590,7 +605,7 @@ func (s *server) recordOptOut(w http.ResponseWriter, r *http.Request) {
 	tenant := r.Context().Value(ctxTenant{}).(string)
 	caseID := chi.URLParam(r, "caseId")
 	var in struct {
-		Eligible  bool   `json:"eligible"`  // plan eligible to opt out of the state process
+		Eligible  bool   `json:"eligible"` // plan eligible to opt out of the state process
 		Rationale string `json:"rationale"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -609,7 +624,6 @@ func (s *server) recordOptOut(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("Opt-out eligibility: %v%s (by %s)", in.Eligible, orDash(" — "+in.Rationale), p.Subject))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 }
-
 
 // ---- FL AHCA lifecycle semantics (AHCA answers, 2026) -------------------------
 

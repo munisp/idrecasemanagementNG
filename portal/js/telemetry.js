@@ -15,6 +15,7 @@ const Telemetry = (() => {
     const h = location.hash || "#/";
     if (h.startsWith("#/new")) return "case_initiate";
     if (h.startsWith("#/qa")) return "qa_queue";
+    if (h.startsWith("#/intake")) return "intake";
     if (h.startsWith("#/cases/")) return "case_detail";
     if (h.startsWith("#/crm")) return "crm";
     if (h === "#/" || h.startsWith("#/dashboard")) return "dashboard";

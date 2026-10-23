@@ -2203,6 +2203,12 @@ const Views = (() => {
     return `<option value="">advance…</option>` + st.filter((x) => x.name !== current)
       .map((x) => `<option value="${esc(x.name)}">${esc(x.name)} — ${esc(x.label)}</option>`).join("");
   };
+  function intakeNextStepHtml(i) {
+    const st = i.next_step;
+    if (!st) return "";
+    return `<button class="mini primary" title="${esc(st.reason)}" onclick="Views.intakeStepGo('${i.id}','${esc(st.action_id)}','${esc(st.advance_to || "")}', this)">${esc(st.label)}</button> `;
+  }
+
   // Day-13 completeness gate (AHCA): docs not received within 13 days of
   // outreach => case found incomplete, ineligible letter issues. The backend
   // sweep enforces it; this countdown makes it visible before it bites.
@@ -2300,7 +2306,7 @@ const Views = (() => {
             <td>${badge(i.status)} ${day13Countdown(i)}</td>
             <td class="muted">${fmtDate(i.outreach_at)}</td>
             <td class="muted">${i.packet_complete_at ? fmtDate(i.packet_complete_at) : "—"}</td>
-            <td>${!intakeTerminalSet().includes(i.status) ?
+            <td>${intakeNextStepHtml(i)}${!intakeTerminalSet().includes(i.status) ?
               `<select onchange="Views.advanceIntake('${i.id}', this.value, this)">
                 ${intakeAdvanceOptions(i.status)}</select>` : ""}</td></tr>`).join("") +
           `</tbody></table>` : `<p class="muted">No intake requests.</p>`) +
@@ -2323,7 +2329,7 @@ const Views = (() => {
             <td>${badge(i.status)} ${day13Countdown(i)}</td>
             <td class="muted">${fmtDate(i.outreach_at)}</td>
             <td class="muted">${i.packet_complete_at ? fmtDate(i.packet_complete_at) : "—"}</td>
-            <td>${!intakeTerminalSet().includes(i.status) ?
+            <td>${intakeNextStepHtml(i)}${!intakeTerminalSet().includes(i.status) ?
               `<select onchange="Views.advanceIntake('${i.id}', this.value, this)">
                 ${intakeAdvanceOptions(i.status)}</select>` : ""}</td></tr>`).join(""));
         const pg = document.getElementById("intake-pg");
@@ -4683,5 +4689,11 @@ async function railAttachAuthFn(id) {
     location.hash = `#/cases/${caseId}`;
   }
 
-  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, productivity, productivityDetail, attentionGo, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, insightsView, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
+  function intakeStepGo(id, actionId, advanceTo, el) {
+    if (window.Telemetry) Telemetry.track("next_action_accept", actionId, { source: "intake" });
+    if (advanceTo) return Views.advanceIntake(id, advanceTo, el);
+    UI.toast("Noted — complete this step manually; the row shows the detail", { duration: 5000 });
+  }
+
+  return { dashboard, cases, caseDetail, newDispute, sortCases, onboarding, onboardingNew, decide, voice, reports, showAnalysis, correctField, check, assign, letter, saveCurrentView, escalate, relate, feeTransfer, peek, copilotBrief, copilotDraftQA, copilotPropose, copilotDecideBatch, assistant, assistantChip, asstQaDecide, assistantTool, asstRequestUpload, asstCheck, asstSendMail, asstClearCheck, correctCheck, corrTemplateBody, timeAdd, myTimesheet, myTimeRange, myTimeListBox, myTimeAdd, myTimeEditStart, myTimeSave, myTimeDel, timeReport, timeReportRun, timeReportSend, timeReportCsv, timeRateSet, asstTimeAdd, bulkIntakeFile, bulkIntakeSubmit, askGraph, settleInvoice, qaQueue, qaReview, qaDecide, intake, newIntake, advanceIntake, intakeMore, intakeStepGo, intakeChatTurn, deliverables, submitDeliverable, requestDeliverable, finance, payInvoice, financeMore, moveDoc, rulesAdmin, ruleEdit, ruleDelete, rulesSave, bindRulesAdmin, manifestEdit, opsDashboard, productivity, productivityDetail, attentionGo, billingInvoices, billingGen, billingActFn, billingDetail, billingExportFn, billingPayForm, billingPayRun, billingFilter: (f) => billingList(f.status.value), arapView, arapRecord, arapSettle, arapVoid, arapNacha, arapNachaFile, reconView, reconImportRun, reconFetchRun, reconMatchRun, reconOpen, reconResolveFn, tpaView, tpaClaimFn, tpaAddClientFn, tpaClientStatusFn, tpaFileFn, tpaDashBox, tpaAdminStatusFn, mailLog, mailLogFilter, mailLogBody, paymentsView, railAccountsBox, railAccountAddFn, railAccountDelFn, railAttachAuthFn, railShowGenerated, railDownload, railAchDebitFn, railWireFn, railIclFn, railMetro2Fn, railReturnsFn, railFilesBox, railFileDetailFn, railScreenStatus, railScreenFn, offerForm, determinationForm, caseOffers, batchableModal, insightsView, queueView, partyCases, partyCaseDetail, partyInviteForm, reviewRequestForm };
 })();
