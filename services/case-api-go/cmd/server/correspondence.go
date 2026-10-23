@@ -266,11 +266,12 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := r.Context().Value(ctxPrincipal{}).(principal)
-	var caseID, subject, body, status, channel string
+	var caseID, subject, body, status, channel, artifact, draftedBy string
 	var toJ, ccJ []byte
 	err := s.db.QueryRow(r.Context(),
-		`SELECT case_id, subject, body, status, to_recipients, cc_recipients, coalesce(channel,'email') FROM public.qa_reviews WHERE tenant=$1 AND id=$2`,
-		tenant, qid).Scan(&caseID, &subject, &body, &status, &toJ, &ccJ, &channel)
+		`SELECT case_id, subject, body, status, to_recipients, cc_recipients, coalesce(channel,'email'), coalesce(artifact,''), coalesce(drafted_by,'') FROM public.qa_reviews WHERE tenant=$1 AND id=$2`,
+		tenant, qid).Scan(&caseID, &subject, &body, &status, &toJ, &ccJ, &channel, &artifact, &draftedBy)
+	originalBody := body // the EDIT prong below may replace body; the draft-quality capture needs the pre-edit text
 	if err != nil || status != "PENDING" {
 		http.Error(w, `{"error":"not pending"}`, http.StatusConflict)
 		return
@@ -296,6 +297,11 @@ func (s *server) qaDecision(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.db.Exec(r.Context(), `
 		UPDATE public.qa_reviews SET status=$3, reviewed_by=$4, reviewed_at=now(), review_note=$5
 		WHERE tenant=$1 AND id=$2`, tenant, qid, newStatus, p.Subject, in.Note)
+	// Phase 3-lite: every decision is a draft-quality observation (decision +
+	// token edit distance when the reviewer rewrote the body). Synchronous on
+	// purpose: losing observations would silently bias the dataset that later
+	// decides which templates actually work.
+	s.captureQAEdit(r, tenant, qid, caseID, artifact, channel, draftedBy, in.Decision, originalBody, body, p.Subject)
 
 	var to, cc []string
 	_ = json.Unmarshal(toJ, &to)

@@ -683,6 +683,7 @@ func main() {
 		r.Get("/party/cases", s.partyCases) // party workspace
 		r.Get("/party/cases/{caseId}", s.partyCaseDetail)
 		r.Get("/qa", s.qaQueue) // QA gate queue (G4)
+		r.Get("/qa/draft-quality", s.qaDraftQuality) // per-template draft effectiveness
 		r.Get("/qa/{qaId}", s.qaGet)
 		r.Post("/qa/{qaId}/decision", s.qaDecision)
 		r.Post("/cases/{caseId}/invoices", s.issueInvoice) // dual-party receivables (G8)
