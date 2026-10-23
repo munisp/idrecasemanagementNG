@@ -235,6 +235,16 @@ func (s *server) qaQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"db"}`, http.StatusInternalServerError)
 		return
 	}
+	// Aging: a PENDING draft older than qaAgingHours is stuck, not queued —
+	// flag it so the queue screen (and the dashboard rollup) can tell a
+	// 3-day-old draft from a 3-hour-old one. Same escalation pattern as
+	// doc-findings aging; statutory ordering stays the primary sort.
+	now := time.Now().UTC()
+	for _, row := range rows {
+		if ts, ok := row["created_at"].(time.Time); ok && now.Sub(ts) > qaAgingHours*time.Hour {
+			row["aging"] = true
+		}
+	}
 	// Recent decisions keep the page useful when the pending queue is empty —
 	// reviewers see what the gate has been doing, not a blank screen.
 	recent, _ := s.queryRows(r, `

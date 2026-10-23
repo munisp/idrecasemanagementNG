@@ -26,6 +26,7 @@ import (
 type queueCounts struct {
 	AttentionCases     int `json:"attention_cases"`
 	QAPending          int `json:"qa_pending"`
+	QAPendingAging     int `json:"qa_pending_aging"` // subset PENDING past qaAgingHours
 	DocsFindingsReview int `json:"docs_findings_review"`
 	DocsFindingsAging  int `json:"docs_findings_aging"` // subset unacknowledged past docFindingsAgingHours
 	IntakeStepsDue     int `json:"intake_steps_due"`
@@ -53,10 +54,13 @@ func (s *server) queuesSummary(w http.ResponseWriter, r *http.Request) {
 	c.AttentionCases = len(items)
 
 	// QA queue pressure (tenant-wide: a reviewer picking up the queue needs
-	// the whole backlog, not just their own drafts).
+	// the whole backlog, not just their own drafts), with the aging subset
+	// counted separately — a 3-day-old PENDING draft is stuck, not queued.
 	_ = s.db.QueryRow(r.Context(), `
-		SELECT count(*) FROM public.qa_reviews WHERE tenant=$1 AND status='PENDING'`,
-		tenant).Scan(&c.QAPending)
+		SELECT count(*),
+		       count(*) FILTER (WHERE created_at < now() - make_interval(hours => $2))
+		FROM public.qa_reviews WHERE tenant=$1 AND status='PENDING'`,
+		tenant, qaAgingHours).Scan(&c.QAPending, &c.QAPendingAging)
 
 	// Documents whose analysis surfaced findings nobody has acknowledged yet,
 	// with the aging subset (past docFindingsAgingHours) counted separately so

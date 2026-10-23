@@ -24,6 +24,12 @@ var docReviewRoles = []string{"CASE_MANAGER", "ARBITRATOR", "DOCTOR", "NURSE", "
 // not only to someone who opens the inbox.
 const docFindingsAgingHours = 48
 
+// qaAgingHours: a PENDING draft older than this is stuck, not queued.
+// 24h is deliberately shorter than the doc-findings 48h — a QA draft sits
+// ON a statutory path (its case's clock is why it's in the queue at all),
+// while a document finding is informational until reviewed.
+const qaAgingHours = 24
+
 type docReviewItem struct {
 	DocID       string     `json:"doc_id"`
 	CaseID      string     `json:"case_id"`
