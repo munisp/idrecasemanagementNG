@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Onboarding workflows — durable, per-tenant stakeholder onboarding.
 
 StakeholderOnboardingWorkflow: one per application (IDRE entity, provider org,

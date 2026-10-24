@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // Service worker: app-shell PWA. Static assets cache-first; API network-first
 // with offline JSON fallback; navigation requests fall back to the cached shell.
 const SHELL = "idre-shell-v1";

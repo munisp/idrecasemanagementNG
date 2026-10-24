@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // manifest_admin.go — admin API for Program Manifests.
 //
 // Same discipline as rules_admin.go: admin-only (Keycloak role + Permify

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """graph-intel service — FalkorDB dispute graph, numpy GraphSAGE link
 prediction, EPR-KGQA over ollama, and bidirectional lakehouse sync.
 

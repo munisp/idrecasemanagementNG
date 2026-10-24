@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // User preferences — server-side source of truth for the portal's device-local

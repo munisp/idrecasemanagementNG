@@ -67,7 +67,7 @@ notification hub (`public.notifications`), so nothing lives in a silo:
 | Onboarding decision | — | broadcast `ONBOARDING_APPROVE/REJECT` |
 | Assignment / escalation / breach | activity + task | targeted + `*` broadcast |
 
-No Kimi dependencies: all services are Go/Rust/Python, all endpoints are
+No external vendor dependencies: all services are Go/Rust/Python, all endpoints are
 self-hosted (Keycloak, vLLM, MinIO, Temporal, Kafka, Postgres). The only
 external calls are NPPES (public registry, with cache fallback) and the
 tenant-configured voice platform webhook.

@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- CRM core objects (Twenty/Salesforce-parity layer), tenant-scoped.
 
 -- Accounts: organizations (provider, payer, IDRE, auditor, vendor).

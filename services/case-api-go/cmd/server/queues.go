@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // queues.go — specialty work queues for CODER / NURSE_PHYSICIAN / ATTORNEY / PM.

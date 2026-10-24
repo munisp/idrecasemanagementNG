@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """EPR-KGQA — Entity linking, Path Retrieval, KG-grounded Question Answering.
 
 Pipeline for a natural-language question over a tenant's dispute graph:

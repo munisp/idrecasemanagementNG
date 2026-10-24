@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # helmfile — declarative fleet install for every platform component.
 # Usage: helmfile sync   (requires helm + helm-diff)
 repositories:

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Time entries — per-role effort tracking on each dispute. Eligibility

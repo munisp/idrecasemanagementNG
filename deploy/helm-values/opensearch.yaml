@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 clusterName: idre-search
 nodeGroup: master
 replicas: 3

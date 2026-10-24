@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Document review queue: ANALYZED_WITH_FINDINGS is set by doc-intel when
 -- analysis surfaces something a human should check, but no transition ever
 -- cleared it — the review_documents next-action and the review inbox need an

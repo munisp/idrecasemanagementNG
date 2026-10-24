@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Patrick Munis at newwave
 """Latency benchmark for the copilot's bounded Ollama call.
 
 Budget: every conversational surface must answer in under 60 seconds

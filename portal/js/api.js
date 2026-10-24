@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // api.js — typed fetch wrapper: JWT + tenant scoping + offline awareness.
 const Api = (() => {
   let tenant = localStorage.getItem("idre.tenant") || null;

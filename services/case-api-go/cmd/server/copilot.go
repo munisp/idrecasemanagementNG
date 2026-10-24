@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Agentic copilot — Phase 1: grounded, READ-ONLY case briefs.

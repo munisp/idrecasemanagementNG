@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """doc-intel service: consumes doc.uploaded events from Kafka, fetches the
 ciphertext from MinIO, decrypts via the vault, runs the docked PaddleOCR+VLM
 pipeline, and persists results (Postgres + OpenSearch + Kafka + Temporal signal).

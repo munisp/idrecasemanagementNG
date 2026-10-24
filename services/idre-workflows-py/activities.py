@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Temporal activities: side effects go here (DB updates, ledger postings,
 vault reveal calls, notifications). Workflows stay deterministic."""
 

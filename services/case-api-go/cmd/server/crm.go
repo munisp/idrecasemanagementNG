@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // crm.go — CRM core: accounts, contacts, leads, tasks, notes, global search.
 // This is the Salesforce/Twenty-parity layer; all queries are tenant-scoped
 // via the same fail-closed middleware as cases.

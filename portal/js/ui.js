@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // ui.js — Meridian interaction layer: modal dialogs, toasts with undo, confirm,
 // busy-state runner. Replaces every window.prompt / alert / confirm with branded,
 // keyboard-complete, screen-reader-announced surfaces.

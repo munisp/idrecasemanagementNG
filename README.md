@@ -1,8 +1,8 @@
 # NSA Federal IDRE Case Management Platform
 
 Self-hosted, multi-tenant (50 isolated state tenants) case-management platform for CMS
-No Surprises Act federal Independent Dispute Resolution — **no Kimi or vendor-portal
-dependencies**. English-only surface.
+No Surprises Act federal Independent Dispute Resolution — **fully self-hosted,
+no vendor-portal dependencies**. English-only surface.
 
 **Stack:** Go · Rust · Python | Kubernetes · APISIX + open-appsec · Keycloak · PostgreSQL ·
 Redis · Temporal · TigerBeetle (+ Mojaloop settlement patterns) · Kafka · Fluvio · Dapr ·

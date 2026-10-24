@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Case-worker productivity: eligibility auto-adjudication + queue triage.

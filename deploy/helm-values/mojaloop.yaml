@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # OPTIONAL — Mojaloop settlement switch. Deploy ONLY if a state mandates
 # Mojaloop-based settlement rails (see docs/PAYMENTS.md and docs/PERFORMANCE.md).
 # The platform side is already implemented (case-api mojaloop.go): payments

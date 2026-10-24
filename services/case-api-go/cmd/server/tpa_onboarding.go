@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // tpa_onboarding.go — full onboarding pipeline for TPA initiating parties

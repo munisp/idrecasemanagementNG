@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // screening.go — OFAC sanctions screening backed by moov-io/watchman's OFAC

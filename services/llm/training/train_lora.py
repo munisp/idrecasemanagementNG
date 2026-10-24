@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Patrick Munis at newwave
 """QLoRA fine-tune of Qwen2.5-7B-Instruct on the NSA/IDRE dataset.
 
 Why QLoRA and not full fine-tune:

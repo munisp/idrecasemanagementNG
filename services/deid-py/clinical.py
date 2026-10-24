@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """clinical.py — clinical entity extraction for dispute documents.
 
 Two layers, both reported in the `detector` field of every entity:

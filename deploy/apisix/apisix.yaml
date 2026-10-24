@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # APISIX standalone mode: OIDC (Keycloak) + tenant context + open-appsec WAF hook.
 routes:
   # Live-policy administration is more sensitive than ordinary case traffic:

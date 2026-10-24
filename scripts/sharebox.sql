@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- ShareBox resumable-transfer state.
 -- Resumable uploads use a tus-style protocol over MinIO multipart with
 -- per-part vault sealing: each 8–32MB part is encrypted independently, so

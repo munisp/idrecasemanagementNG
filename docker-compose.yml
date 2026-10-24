@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Local development stack — full platform, no external/cloud dependencies.
 # Heavy security/FinOps components (Wazuh, OpenCTI, Kubecost) are k8s-only; see deploy/helm-values.
 name: nsa-idre-platform

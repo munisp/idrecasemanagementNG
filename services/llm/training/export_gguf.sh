@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Author: Patrick Munis at newwave
 # Export the fine-tuned model to GGUF and register it with Ollama.
 #
 # Prereqs:

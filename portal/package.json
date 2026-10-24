@@ -2,7 +2,7 @@
   "name": "idre-portal",
   "version": "1.0.0",
   "private": true,
-  "description": "Federal IDRE Portal — PWA + native shells (Capacitor)",
+  "description": "Federal IDRE Portal \u2014 PWA + native shells (Capacitor)",
   "scripts": {
     "serve": "npx serve . -l 3000",
     "native:add": "cap add ios && cap add android",
@@ -19,5 +19,6 @@
     "@capacitor/android": "^6.1.2",
     "@capacitor/push-notifications": "^6.0.2",
     "serve": "^14.2.3"
-  }
+  },
+  "author": "Patrick Munis at newwave"
 }

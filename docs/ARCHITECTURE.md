@@ -1,6 +1,6 @@
 # NSA Federal IDRE Case Management Platform — Reference Architecture
 
-**Scope:** End-to-end Independent Dispute Resolution (IDR) case management under the No Surprises Act (45 CFR Part 149, incl. the 2026 Final Rule), operated as **50 isolated state tenants** on one platform. Fully self-hosted, **no Kimi (or any vendor-portal) dependencies**. English-only UI/API surface.
+**Scope:** End-to-end Independent Dispute Resolution (IDR) case management under the No Surprises Act (45 CFR Part 149, incl. the 2026 Final Rule), operated as **50 isolated state tenants** on one platform. Fully self-hosted, **no vendor-portal or hosted-AI dependencies**. English-only UI/API surface.
 
 **Implementation languages:** **Go** (control-plane & transactional APIs), **Rust** (cryptographic vault & ledger-integrity services), **Python** (Temporal workflow workers, lakehouse/ML analytics).
 
@@ -289,7 +289,7 @@ namespaces
 ## 14. Local development & production path
 
 - **Local:** `docker compose up` (this repo) — Postgres, Redis, Kafka(KRaft), Temporal+UI, TigerBeetle, Keycloak, APISIX, MinIO, OpenSearch, Flink/Spark (single-node), and the three app services. Wazuh/OpenCTI/Kubecost are k8s-only (documented, not composed) due to footprint.
-- **Prod:** managed-by-us Helm/helmfile on any Kubernetes (EKS/GKE/AKS/bare-metal). No Kimi services, no vendor portal, no external control plane. Object storage = any S3-compatible endpoint.
+- **Prod:** managed-by-us Helm/helmfile on any Kubernetes (EKS/GKE/AKS/bare-metal). No vendor portal, no hosted AI services, no external control plane. Object storage = any S3-compatible endpoint.
 
 ---
 

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Spark batch: bronze -> silver -> gold, Delta Lake on MinIO/S3.
 
 Incremental and idempotent by construction:

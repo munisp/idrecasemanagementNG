@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // graph_sql.go — the default graph backend: adjacency derived from relational

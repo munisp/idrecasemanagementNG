@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // nextaction.go — Phase 2: the one-button case page. A rule-based recommender

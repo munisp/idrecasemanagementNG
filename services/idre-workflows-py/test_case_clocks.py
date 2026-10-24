@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Unit tests for manifest clock resolution — pure, no Temporal sandbox."""
 from datetime import date
 

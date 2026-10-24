@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Tetragon — eBPF runtime security (part of the Cilium project).
 # NetworkPolicy controls where packets go; Tetragon controls what processes
 # do: unexpected execs, privilege escalation attempts, and file access inside

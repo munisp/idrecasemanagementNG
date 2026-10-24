@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Patrick Munis at newwave
 """sector_pack.py — build, validate, and install sector packs (NG phase 5).
 
 A sector pack is a directory (or zip) containing everything needed to onboard

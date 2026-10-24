@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Bulk dispute intake — a third-party filer (revenue-cycle vendor, legal

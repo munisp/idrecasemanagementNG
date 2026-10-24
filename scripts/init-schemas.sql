@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Bootstrap DDL for the NSA IDRE platform.
 -- Schema-per-tenant: identical DDL stamped into tenant_<state> for all 50 states.
 -- Run by Postgres container init (docker-compose) or by provision-tenant.sh (k8s).

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // entity360_graph.go — the cross-entity relationship graph (#10): entities as

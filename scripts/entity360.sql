@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- ============================================================
 -- Entity 360 (entity360.go) — one registry row per real-world
 -- organization, with links back to every place the platform has met it:

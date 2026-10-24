@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Correspondence engine — program-template driven outbound email with a

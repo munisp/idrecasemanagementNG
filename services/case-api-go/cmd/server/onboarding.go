@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // onboarding.go — stakeholder onboarding: applications, role-based approval
 // chains, and status. The durable state machine lives in Temporal
 // (StakeholderOnboardingWorkflow); these endpoints are its front door.

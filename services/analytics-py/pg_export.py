@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Postgres -> lakehouse reference feeds (run before sedona_geo.py).
 
 Exports the platform's provider/facility directory (public.entities,

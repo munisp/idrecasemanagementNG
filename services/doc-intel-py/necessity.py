@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """necessity.py — conservative dx->CPT plausibility screen.
 
 This is NOT a medical-necessity adjudication (that is the LCD/NCD policy

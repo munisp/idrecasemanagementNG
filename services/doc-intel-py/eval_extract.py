@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Field-accuracy evaluation harness for the extraction pipeline.
 
 Runs the deterministic extraction chain (dewatermark -> OCR -> typed-field

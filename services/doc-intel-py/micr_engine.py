@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """In-house MICR E-13B recognition engine (inspired by ultimateMICR's
 one-shot detector+recognizer design, rebuilt dependency-free).
 

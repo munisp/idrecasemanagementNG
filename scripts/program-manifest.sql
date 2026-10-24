@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Program Manifest seeds — the sector-agnostic lifecycle/terminology layer.
 -- Apply AFTER program-rules.sql (needs public.program_rules rows to exist).
 -- Tenants without a manifest behave exactly as before (legacy fallbacks).

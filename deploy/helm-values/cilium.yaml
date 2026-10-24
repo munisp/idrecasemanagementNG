@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Cilium — eBPF dataplane for the IDRE platform.
 #
 # Why eBPF here: 50 state tenants share one cluster. Tenant isolation must

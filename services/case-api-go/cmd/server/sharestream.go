@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // ShareBox streaming + resumable transfers.

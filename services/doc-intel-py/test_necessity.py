@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """necessity screen: conservative tripwire semantics — flags only on curated
 code families with a clear mismatch; unknown codes and absent dx never flag."""
 import necessity

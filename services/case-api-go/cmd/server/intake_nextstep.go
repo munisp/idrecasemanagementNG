@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // intake_nextstep.go — rule-based next step for each row of the intake

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Document full-text search via the shared OpenSearch cluster.

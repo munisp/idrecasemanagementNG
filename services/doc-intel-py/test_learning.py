@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Tests for the learning loop: label-phrase harvesting, champion/challenger
 promotion and retirement over a fake DB connection (no postgres, no search)."""
 

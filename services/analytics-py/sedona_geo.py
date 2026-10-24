@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Apache Sedona: geospatial analytics for jurisdiction & coverage.
 
 - Verifies provider service location falls inside the claimed state tenant

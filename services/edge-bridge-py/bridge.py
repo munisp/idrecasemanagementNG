@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Fluvio edge bridge — edge ingestion into the Kafka backbone.
 
 Voice platforms, state portals and field devices publish to Fluvio topics at

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // auth.js — Keycloak OIDC with PKCE (no library, no secrets in the SPA).
 const Auth = (() => {
   const cfg = window.IDRE_CONFIG;

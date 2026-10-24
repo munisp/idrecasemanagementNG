@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // rules.go — tenant-scoped rule engine.
 //
 // Business policy lives in DATA (public.program_rules config.rules[]), not in

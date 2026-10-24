@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Upload security: malware scanning (ClamAV INSTREAM), content-policy checks

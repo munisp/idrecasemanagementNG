@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Strimzi operator. Cluster CR:
 # apiVersion: kafka.strimzi.io/v1beta2, kind: Kafka
 kafka:

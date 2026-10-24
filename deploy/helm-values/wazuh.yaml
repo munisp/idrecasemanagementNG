@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Wazuh SIEM/XDR: manager + indexer integration with the shared OpenSearch.
 manager:
   master: { replicas: 1 }

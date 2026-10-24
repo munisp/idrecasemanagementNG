@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // qa_learning.go — Phase 3-lite: capture QA decisions as draft-quality

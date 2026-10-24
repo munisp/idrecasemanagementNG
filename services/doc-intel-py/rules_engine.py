@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Tenant-scoped rule engine — Python mirror of the Go engine
 (services/case-api-go/cmd/server/rules.go). Semantics MUST stay identical:
 

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // mailer.go — outbound email via SMTP (stdlib net/smtp, vendor-neutral).
 // Works with the state's own SMTP relay, Amazon SES SMTP, Mailgun SMTP, or
 // any RFC-compliant submission endpoint — set via env, no code change.

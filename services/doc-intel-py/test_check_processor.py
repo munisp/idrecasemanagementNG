@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Pure-function tests for check extraction (no images needed)."""
 import numpy as np
 

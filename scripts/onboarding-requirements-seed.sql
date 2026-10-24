@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Per-state stakeholder onboarding requirements matrix (research-driven defaults).
 -- check_state_requirements() reads these; admins can amend without redeploys.
 

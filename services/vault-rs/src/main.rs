@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 //! vault-rs — cryptographic trust boundary for the double-blind IDR offer vault.
 //!
 //! Design (see docs/ARCHITECTURE.md §8):

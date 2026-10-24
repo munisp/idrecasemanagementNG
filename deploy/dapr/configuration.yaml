@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Dapr control-plane / sidecar configuration (performance posture).
 # Apply: kubectl apply -f configuration.yaml — then reference via pod
 # annotation `dapr.io/config: idre-config` on every injected workload.

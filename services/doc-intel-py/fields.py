@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Deterministic structured-field extraction over OCR/parsed text.
 
 Inspired by cheque-processing pipelines (ChequeWise-style): don't leave the

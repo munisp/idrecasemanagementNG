@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Program operations: invoicing/receivables with dual parties (G8), bulk

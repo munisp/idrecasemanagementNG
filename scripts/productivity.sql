@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- productivity.sql — interaction telemetry + learning substrate (Phase 1 of
 -- the productivity program: measure, then prefill/recommend).
 --

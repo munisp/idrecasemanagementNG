@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Case-management layer: relationships, batching, checklists, notifications,
 -- saved views, assignment state. (Applied per tenant where noted.)
 

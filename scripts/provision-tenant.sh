@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Author: Patrick Munis at newwave
 # Provision a new state tenant end-to-end:
 #   1. Postgres schema (DDL template) + state_config row
 #   2. TigerBeetle ledger + core accounts

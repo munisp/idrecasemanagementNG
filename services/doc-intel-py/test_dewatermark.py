@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """dewatermark: periodic-background detection + removal.
 
 Synthetic fixtures built in-test: a clean text page must pass through

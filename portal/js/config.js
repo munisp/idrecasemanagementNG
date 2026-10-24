@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // Runtime config — overwritten per environment (nginx injects real values in prod).
 window.IDRE_CONFIG = {
   keycloakUrl: "https://keycloak-servers.newfire.app",

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """FalkorDB graph access layer — the single graph store for the platform.
 
 Graph model (one graph per tenant, name: idre_<tenant>):

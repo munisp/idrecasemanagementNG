@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // valuation.go — pluggable determination/valuation engines (NG phase 3).
 //
 // The most sector-specific question on the platform is "what is the disputed

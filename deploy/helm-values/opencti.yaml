@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # OpenCTI threat-intelligence platform (k8s-only; heavy dependency graph).
 replicaCount: 1
 env:

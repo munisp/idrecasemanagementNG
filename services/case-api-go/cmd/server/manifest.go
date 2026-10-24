@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // manifest.go — Program Manifest: the sector-agnostic keystone.
 //
 // A manifest (public.program_rules config.manifest) declares a program's

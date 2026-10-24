@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 architecture: replication
 replica: { replicaCount: 2 }
 sentinel: { enabled: true }

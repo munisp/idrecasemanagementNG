@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # shellcheck disable=SC2148
 # Source this after scripts/restore-toolchains.sh:
 #   source scripts/env.sh

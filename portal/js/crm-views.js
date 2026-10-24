@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // crm-views.js — CRM screens: pipeline kanban, accounts 360, leads, tasks, search.
 const CrmViews = (() => {
   // See views.js: bind after router innerHTML injection (macrotask, not microtask).

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Minimal RESP (Redis Serialization Protocol) client — stdlib only, no external

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // graph_sync.go — the projector: derives the tenant-wide node/edge projection

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // rules_admin.go — admin-managed rule configuration with audit trail.
 //
 // Rules are live policy (see rules.go). Editing them changes statutory

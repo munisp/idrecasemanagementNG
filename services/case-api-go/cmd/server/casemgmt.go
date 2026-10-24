@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // casemgmt.go — premier case-management layer: assignment/routing, escalations,
 // relationships & batching, stage checklists, deadline calendar, notifications,
 // duplicate detection, saved views, document generation, email-to-case.

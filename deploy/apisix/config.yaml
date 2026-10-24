@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 apisix:
   node_listen: 9080
   enable_admin: false

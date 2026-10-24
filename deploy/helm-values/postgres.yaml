@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # CloudNativePG operator values; the Cluster CR below is applied separately.
 mode: standalone
 cluster:

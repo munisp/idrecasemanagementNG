@@ -1,4 +1,5 @@
 FROM golang:1.23-bookworm AS build
+LABEL org.opencontainers.image.authors="Patrick Munis at newwave"
 WORKDIR /src
 COPY go.mod ./
 RUN go mod download

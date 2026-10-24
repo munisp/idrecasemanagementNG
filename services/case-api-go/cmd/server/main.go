@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // case-api — transactional control plane for the NSA Federal IDRE platform.
 //
 // Responsibilities:

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Program rules engine — per-tenant configuration that lets each state run its

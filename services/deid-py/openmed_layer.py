@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """openmed_layer.py — optional OpenMed transformer layer.
 
 The Safe Harbor regex floor (safeharbor.py) is deterministic but blind to

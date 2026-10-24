@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Patrick Munis at newwave
 """Build SECTOR-CONDITIONED instruction datasets (JSONL) for QLoRA tuning.
 
 NG is multi-program: one Ollama host serves NSA/IDR, FL AHCA CDR, and any

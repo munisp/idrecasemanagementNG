@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 replicaCount: 2
 production: true
 proxy: edge

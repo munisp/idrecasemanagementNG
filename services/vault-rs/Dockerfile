@@ -1,4 +1,5 @@
 FROM rust:1.90-bookworm AS build
+LABEL org.opencontainers.image.authors="Patrick Munis at newwave"
 WORKDIR /src
 COPY Cargo.toml Cargo.lock* ./
 RUN mkdir src && echo 'fn main(){}' > src/main.rs && cargo build --release && rm -rf src

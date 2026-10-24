@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Onboarding activities: verification + provisioning side effects."""
 
 from __future__ import annotations

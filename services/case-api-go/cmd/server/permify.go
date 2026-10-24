@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Permify ReBAC client — a second, finer authorization layer beneath Keycloak.

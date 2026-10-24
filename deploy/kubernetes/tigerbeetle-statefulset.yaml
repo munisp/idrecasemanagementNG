@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # TigerBeetle 6-replica cluster — ledger-per-tenant for escrow/fees.
 # 6 replicas = quorum survives 2 failures; upstream production recommendation.
 # Follows upstream production guidance: dedicated nodes, local NVMe preferred.

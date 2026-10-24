@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // moovpay_test.go — pure-function coverage for the moov-io payment rails:

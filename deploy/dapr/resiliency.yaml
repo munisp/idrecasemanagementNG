@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Resiliency policies — the timeouts/retries/circuit-breakers the architecture
 # doc promises for east-west calls. Apply: kubectl apply -f resiliency.yaml
 apiVersion: dapr.io/v1alpha1

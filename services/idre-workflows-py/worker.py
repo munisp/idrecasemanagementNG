@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Temporal worker entrypoint: python worker.py
 
 Also exposes a tiny HTTP listener used by Dapr bindings:

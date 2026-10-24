@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Card payment collection (Stripe Checkout) on top of the invoices ledger.
 -- Every checkout session, payment intent, and refund is persisted here so the
 -- financial dashboard reconciles Stripe payouts against receivables without

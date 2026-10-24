@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // graph_age.go — Apache AGE backend: openCypher inside the same Postgres

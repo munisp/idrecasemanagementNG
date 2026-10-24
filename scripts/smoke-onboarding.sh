@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Author: Patrick Munis at newwave
 # End-to-end onboarding smoke test against a running local stack:
 #   token -> submit provider application -> (auto checks run in workflow)
 #   -> admin decision -> verify ACTIVE -> audit trail present.

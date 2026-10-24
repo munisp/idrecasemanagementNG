@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Phase 3-lite: QA draft-quality capture.
 --
 -- Every QA decision (approve clean / approve after editing / reject) is a

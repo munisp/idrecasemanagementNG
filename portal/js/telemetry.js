@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 /* telemetry.js — Phase 1: the interaction baseline. Batches portal events
  * and flushes every 15s (+ sendBeacon on hide) to /telemetry/events.
  * Privacy contract: keystroke COUNTS only (never content), control labels

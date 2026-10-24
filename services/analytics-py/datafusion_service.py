@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """DataFusion ad-hoc query service: sub-second SQL over the gold zone without
 spinning up Spark. Tenant-scoped, read-only, authenticated.
 

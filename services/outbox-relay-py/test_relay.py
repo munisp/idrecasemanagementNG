@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Unit tests for the transactional outbox relay.
 
 The relay is the only bridge between Postgres and Kafka — a regression here

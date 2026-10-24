@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // payment_policy.go — NG-only flexible payment policy (config.payment).

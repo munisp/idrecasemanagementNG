@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Temporal workflows — the statutory lifecycle of a dispute case.
 
 One long-running workflow per case. Signals = business events, timers =

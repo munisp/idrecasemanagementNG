@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // documents.go — document lifecycle: encrypted upload, authorized download,
 // retention/legal-hold, and analysis-status tracking.
 //

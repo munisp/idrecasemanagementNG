@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // letters.go — request letter generation from DOCX templates (lettergen worker).
 package main
 

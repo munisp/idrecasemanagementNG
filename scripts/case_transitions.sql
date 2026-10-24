@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Case status transitions: structured capture for the transition-matrix
 -- model. Until now a case's status history existed only inside free-text
 -- activity bodies -- fine for reading, unfit for computing dwell times and

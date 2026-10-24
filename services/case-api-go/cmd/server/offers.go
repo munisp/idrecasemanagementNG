@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // offers.go — double-blind offer protocol (45 CFR 149.520(b)).

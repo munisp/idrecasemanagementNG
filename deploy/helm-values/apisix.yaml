@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 replicaCount: 3
 gateway:
   type: LoadBalancer

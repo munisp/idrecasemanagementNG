@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- ============================================================================
 -- db-optimization.sql — index & table-storage tuning for production load.
 -- Apply AFTER all other scripts (init-schemas, casemgmt-core, payments,

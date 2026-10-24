@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Pipeline stage tests — heavy models (docling/paddleocr) and the OpenAI
 client are stubbed; the endpoint under test is the LOCAL Ollama, never a
 network service."""

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Document intelligence pipeline — dockable stages.
 # Each stage is a named plugin; "dock" order and activation are data, not code.
 # Disable a stage by removing it or setting enabled: false; add a new stage by

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // bai2.go — BAI2 bank-statement adapter for the recon engine (bank.go rail 3).

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // recon.go — reconciliation engine with pluggable accounting adapters.

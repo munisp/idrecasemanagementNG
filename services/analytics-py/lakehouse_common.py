@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """lakehouse_common: pure, dependency-light logic shared by the analytics
 jobs — kept free of Spark/Flink/Ray imports so it is unit-testable in CI
 without a cluster. Everything here is deterministic.

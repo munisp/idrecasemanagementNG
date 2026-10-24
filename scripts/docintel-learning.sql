@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- doc-intel continuous learning: human corrections + learned patterns.
 -- Apply after onboarding-and-docintel.sql (doc_feedback references doc_analysis).
 

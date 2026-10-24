@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # KEDA event-driven autoscaling. Install: helmfile sync (keda release added).
 #
 # Design notes:

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Unit tests for the pure analytics logic — no Spark/Flink/Ray cluster
 needed: lakehouse_common is dependency-light by design, and flink_stream
 guards its pyflink imports so SLAWatch/to_row stay importable.

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // arap.go — accounts receivable / accounts payable subledger with aging.

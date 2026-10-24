@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # KubeRay operator; RayCluster CR:
 # head: dashboard :8265, GCS :6379
 # workers: autoscaling 1..6, 4CPU/8Gi each

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // telemetry.go — Phase 1 of the productivity program: the interaction

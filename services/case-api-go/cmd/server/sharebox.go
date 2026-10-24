@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // ShareBox — Dropbox/ShareFile-style party document exchange (G9).

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Graph-intelligence middleware: tenant-scoped proxy from the authenticated

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Case status transitions (Phase 5 of the learning arc): structured capture

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // deid.go — case-api side of the de-identification service (services/deid-py).

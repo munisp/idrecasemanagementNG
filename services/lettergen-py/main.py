@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """lettergen service: generates party-facing letters from DOCX templates.
 
 Consumes letter.requested events (Kafka topic idre.<tenant>.letters, produced

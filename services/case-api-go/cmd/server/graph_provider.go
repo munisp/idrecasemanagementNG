@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // graph_provider.go — pluggable relationship-graph backends for Entity 360.

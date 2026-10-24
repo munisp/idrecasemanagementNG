@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // onboarding_documents.go — document upload for a stakeholder application and
 // the signal relay doc-intel uses to clear the PENDING_DOCS gate.
 //

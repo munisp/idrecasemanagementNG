@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // k6 load test (go-live checklist 3.4): APISIX edge -> case-api -> Postgres/TB.
 //   k6 run -e BASE=https://api.idre.example -e TOKEN=$JWT scripts/k6-load.js
 // Targets the capacity model in docs/PERFORMANCE.md: 5k req/s sustained per

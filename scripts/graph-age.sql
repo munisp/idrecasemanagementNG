@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- graph-age.sql — Apache AGE backend for the Entity 360 relationship graph
 -- (optional; only needed when GRAPH_BACKENDS includes "age").
 --

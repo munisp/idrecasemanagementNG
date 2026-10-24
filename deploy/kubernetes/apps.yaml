@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # App Deployments with Dapr sidecar performance annotations (Tier 1).
 # The repo previously had no app manifests (compose-only); these are the
 # production shapes referenced by deploy/dapr/configuration.yaml.

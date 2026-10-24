@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Continuous learning loop for document extraction.
 
 Answers the question "can doc-intel keep improving on the documents it

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 [source.crates-io]
 replace-with = 'rsproxy-sparse'
 [source.rsproxy-sparse]

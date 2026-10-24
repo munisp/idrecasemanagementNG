@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Kubecost: per-tenant (per-state) chargeback for shared platform cost.
 kubecostProductConfigs:
   clusterName: idre-prod

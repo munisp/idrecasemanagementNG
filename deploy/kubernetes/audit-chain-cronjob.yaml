@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Nightly audit hash-chain verification (checklist 3.2). Nonzero exit =
 # job failure = kube-state-metrics alert; pairs with the AuditChainBroken
 # PrometheusRule when the exporter gauge is wired.

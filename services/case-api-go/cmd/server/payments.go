@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Card payment collection via Stripe Checkout, implemented against the Stripe

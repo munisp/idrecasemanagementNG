@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Ray: ML training + scoring for the IDRE platform.
 
 - settlement_propensity: logistic model trained from silver/cases history

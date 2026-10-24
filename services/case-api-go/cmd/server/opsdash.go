@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // opsdash.go — operations dashboard: live presence, task throughput, workload
 // distribution, and the outstanding-work + financial KPIs a manager or
 // administrator needs for internal/external stakeholder reporting.

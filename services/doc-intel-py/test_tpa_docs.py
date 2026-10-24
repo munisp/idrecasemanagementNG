@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Verdict logic for TPA onboarding packages: slot expectations, conservative
 fail-open (illegible/ambiguous -> NEEDS_REVIEW, confident wrong-type ->
 REJECTED), and keyword floors for the non-classified slots."""

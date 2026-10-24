@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """safeharbor.py — deterministic HIPAA Safe Harbor (45 CFR 164.514(b)(2))
 detector/redactor. This layer is ALWAYS on: it needs no models, no network,
 and no GPU, and its findings are exact (regex spans). The optional OpenMed

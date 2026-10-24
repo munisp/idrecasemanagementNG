@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // graph_falkordb.go — FalkorDB backend over the Redis protocol. Uses the

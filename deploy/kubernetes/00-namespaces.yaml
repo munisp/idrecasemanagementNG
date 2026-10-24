@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 apiVersion: v1
 kind: Namespace
 metadata: { name: idre-core, labels: { app.kubernetes.io/part-of: idre, tier: core } }

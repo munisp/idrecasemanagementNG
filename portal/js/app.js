@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // app.js — hash router + bootstrap. Role-aware navigation (Meridian shell).
 (async function () {
   const view = document.getElementById("view");

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Author: Patrick Munis at newwave
 # PITR restore drill (go-live checklist 3.3). Restores the CNPG cluster's S3
 # backup into a THROWAWAY cluster (never in-place), runs verification queries,
 # prints a drill report, and tears down. Run quarterly and before cutover.

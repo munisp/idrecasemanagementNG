@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """TPA onboarding package validation (feature flag: tpa_onboarding).
 
 Consumes `tpa_doc.uploaded` events (published by case-api tpa_onboarding.go

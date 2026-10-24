@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Copilot Phase 3 — bounded agentic ACTION BATCHES via Temporal.

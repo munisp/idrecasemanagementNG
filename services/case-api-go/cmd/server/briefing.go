@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Worker morning briefing — conversation-first migration, step 2 (NG).

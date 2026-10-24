@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Periodic-background (watermark) detection and removal for scanned pages.
 
 Faxes and stamped scans of EOBs/claim forms frequently carry a tiled diagonal

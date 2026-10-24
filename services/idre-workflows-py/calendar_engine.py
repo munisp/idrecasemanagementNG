@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Business-day engine: US federal holidays (observed shifts, nth-weekday) +
 per-state extra dates, operating on date objects. Mirrors contracts/idr.ts."""
 

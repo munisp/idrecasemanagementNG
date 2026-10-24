@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Parity tests for rules_engine.py against the Go engine semantics
 (services/case-api-go/cmd/server/rules.go + rules_test.go). If a behavior
 changes in one implementation it MUST change in the other — these cases are

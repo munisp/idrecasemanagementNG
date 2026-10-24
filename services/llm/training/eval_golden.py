@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Patrick Munis at newwave
 """Golden-set evaluation + determinism replay for the IDRE copilot model.
 
 This is the GATE: run it against any candidate (base q8_0, fine-tuned, new

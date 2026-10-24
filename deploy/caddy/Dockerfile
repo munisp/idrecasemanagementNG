@@ -15,6 +15,7 @@
 # policy under /etc/caddy/appsec before exposing ports 80/443.
 
 FROM caddy:2.8-builder AS appsec-build
+LABEL org.opencontainers.image.authors="Patrick Munis at newwave"
 RUN xcaddy build \
 	--with github.com/openappsec/attachment
 

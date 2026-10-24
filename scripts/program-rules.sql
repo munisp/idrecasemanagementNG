@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Program rules + FL AHCA extension tables.
 -- One row per tenant in public.program_rules; the JSONB config drives clocks,
 -- statuses, eligibility, numbering, fees, escalation, correspondence, and

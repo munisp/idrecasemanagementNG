@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Prometheus alert rules — the paging surface for go-live (checklist 3.1).
 # Requires prometheus-operator (PrometheusRule CRD) plus:
 #   - postgres-exporter sidecar on the CNPG cluster (customQueries below pick

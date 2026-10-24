@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- deid.sql — persistence for the de-identification service (services/deid-py).
 --
 -- deid_reports: one row per scan/deidentify/block decision on an artifact

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Cilium network policies — kernel-enforced east-west segmentation.
 #
 # Design: default-deny everywhere (the plain NetworkPolicy in

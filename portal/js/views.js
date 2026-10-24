@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // views.js — one render function per screen; role-aware actions.
 // Meridian upgrade: statutory-clock projections, L4 peek panel, bulk bar,
 // density toggle, modal+toast everywhere (no prompt/alert), sealed-offer flow.

@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- NG phases 2–4 DDL — sector-agnostic data structures.
 -- Apply after program-manifest.sql.
 

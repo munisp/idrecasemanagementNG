@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Author: Patrick Munis at newwave
 # Restore Go + Rust toolchains and dependency caches from the persistent
 # /mnt/agents/toolchains store — NO network, NO reinstall. Run once after any
 # sandbox/server restart, then `source scripts/env.sh`.

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Manifest-driven statutory clock resolution for case workflows.
 
 Pure functions only — no I/O, no Temporal imports — so the resolution logic

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """PyFlink streaming: Kafka -> bronze Parquet (exactly-once) and a streaming
 SLA early-warning job whose clocks come from each tenant's Program Manifest.
 

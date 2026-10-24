@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """KGQA correctness tests — the pipeline must return grounded answers:
 entities actually mentioned in the question, paths only from the graph,
 extractive fallback when ollama is down, and a log entry every time."""

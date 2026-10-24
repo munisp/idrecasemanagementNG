@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 server:
   replicaCount: 2
   # History shards: the single biggest Temporal scaling knob. 4096 is

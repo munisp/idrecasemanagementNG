@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // casefields.go — program-specific case fields (details jsonb), case-document
 // zip bundles (plan notification packages), and on-request deliverables.
 package main

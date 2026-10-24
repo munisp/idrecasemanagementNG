@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // palette.js — ⌘K / Ctrl+K command palette: navigation, actions, record search,
 // recent items. Keyboard-first, fuzzy-matched, sectioned by result type.
 const Palette = (() => {

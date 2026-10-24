@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Composable document-analysis stages (Docling-first, PaddleOCR fallback).
 
 Each stage is a function stage_<name>(ctx) -> ctx that reads/writes keys on a

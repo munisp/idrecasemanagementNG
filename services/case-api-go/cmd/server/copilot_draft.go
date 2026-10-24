@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Copilot Phase 2 — grounded DRAFTS that enter the existing human QA gate.

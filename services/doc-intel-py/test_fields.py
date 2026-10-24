@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Tests for deterministic field extraction: EOB money labels, identifiers,
 remark/diagnosis codes, extraction_score read-selection, and cross_check
 remittance arithmetic."""

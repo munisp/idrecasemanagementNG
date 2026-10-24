@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Additions: document intelligence + stakeholder onboarding + doc versioning.
 
 ALTER TABLE public.state_config

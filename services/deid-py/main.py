@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """deid service — PHI/PII de-identification + clinical NER for the platform.
 
 Phase 1 (privacy): /v1/scan and /v1/deidentify sit in front of every outbound

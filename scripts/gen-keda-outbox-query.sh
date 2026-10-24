@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Author: Patrick Munis at newwave
 # Regenerate the KEDA outbox ScaledObject query from live tenant schemas
 # (checklist 2.8). The ScaledObject ships with tx/fl hardcoded; run this after
 # each state onboarding and kubectl apply the output.

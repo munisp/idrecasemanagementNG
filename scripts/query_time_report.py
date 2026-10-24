@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Patrick Munis at newwave
 """Query the platform's team time report for any period and emit CSV.
 
 Weekly and monthly are presets; any custom range works too. The output

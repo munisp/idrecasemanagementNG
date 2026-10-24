@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // moovpay.go — payment rails built on the moov-io open-source stack (NG)

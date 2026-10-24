@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // billing.go — configurable service-fee invoicing engine.

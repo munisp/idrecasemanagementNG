@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 name: ci
 on: [push, pull_request]
 jobs:

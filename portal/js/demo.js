@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // demo.js — optional disconnected demo mode.
 // When window.IDRE_CONFIG.demoMode is true, the REAL portal code (views, router, api wrapper)
 // runs against built-in fixtures: only `fetch` and the OIDC token are stubbed. Every screen,

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // party.go — authenticated party workspace.

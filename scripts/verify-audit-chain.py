@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Patrick Munis at newwave
 """Nightly audit hash-chain verification (go-live checklist 3.2).
 
 public.audit_log rows are hash-chained: hash = sha256(prev_hash || payload),

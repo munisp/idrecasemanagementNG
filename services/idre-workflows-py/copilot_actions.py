@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Copilot Phase 3 — bounded agentic action batches.
 
 The Temporal side of the human gate: the workflow waits for a staff DECISION

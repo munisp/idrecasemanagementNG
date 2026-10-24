@@ -1,3 +1,4 @@
+-- Author: Patrick Munis at newwave
 -- Double-blind offer protocol (45 CFR 149.520(b); 2026 Final Rule).
 --
 -- Offers are sealed by vault-rs (AES-256-GCM, AAD = tenant:case:offer:party);

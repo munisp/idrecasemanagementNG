@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Unit tests for the business-day engine.
 
 IDR deadlines (45 CFR 149 + 2026 Final Rule) are computed in business days —

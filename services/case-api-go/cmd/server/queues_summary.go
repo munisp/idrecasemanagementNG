@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // queues_summary.go — the queues-at-a-glance aggregate. One endpoint that

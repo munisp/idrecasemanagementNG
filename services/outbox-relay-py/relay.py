@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Transactional outbox relay — the bridge between Postgres and Kafka.
 
 case-api writes domain events to tenant_<st>.outbox inside the same transaction

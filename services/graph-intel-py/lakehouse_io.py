@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Lakehouse IO — bidirectional bridge between the dispute graph and the
 Parquet lakehouse (bronze/silver/gold zones under LAKEHOUSE_DIR).
 

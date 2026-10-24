@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """GraphSAGE link prediction over the dispute graph — pure numpy, real
 training (mean-aggregator message passing + manual backprop through a
 dot-product decoder with negative sampling, binary cross-entropy loss).

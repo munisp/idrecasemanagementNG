@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // voice_ext.go — CRM activity timeline + outbound calling.
 //
 // - recordVoiceActivity: every inbound voice event with a case_number is

@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // eligibility.go — the "bulletproof + fast to analyze" layer on top of the

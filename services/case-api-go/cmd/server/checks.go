@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 package main
 
 // Physical check intake: photo/scan -> vault-sealed storage -> doc-intel

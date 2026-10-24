@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 # Tetragon tracing policies — eBPF runtime enforcement inside the pods.
 # NetworkPolicy says where packets go; these say what processes may do.
 # Any hit is exported as a gRPC event for SIEM correlation (Wazuh).

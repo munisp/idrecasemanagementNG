@@ -1,3 +1,4 @@
+// Author: Patrick Munis at newwave
 // calendar.go — jurisdiction-aware day counting (NG phase 4).
 //
 // Statutes differ in what "day" means: 45 CFR federal IDR counts calendar

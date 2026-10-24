@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 mode: distributed
 replicas: 4
 rootUser: idre

@@ -1,3 +1,4 @@
+# Author: Patrick Munis at newwave
 """Physical check extraction: MICR line (E-13B band), courtesy amount box,
 legal (handwritten) amount line, date, payee, memo — with per-field
 confidence and an honest ICR posture.
