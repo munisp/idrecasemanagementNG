@@ -156,6 +156,70 @@ services:
     ports: ["8265:8265", "10001:10001"]
     shm_size: "2gb"
 
+  minio-init:  # one-shot: the lakehouse bucket must exist before Flink/Spark write
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "mc alias set local http://minio:9000 idre idre-secret
+      && mc mb --ignore-existing local/lakehouse
+      && mc anonymous set none local/lakehouse"
+
+  flink-jobmanager:
+    image: flink:1.20
+    command: ["jobmanager"]
+    environment: [JOB_MANAGER_RPC_ADDRESS=flink-jobmanager]
+    ports: ["8083:8081"]
+
+  flink-taskmanager:
+    image: flink:1.20
+    command: ["taskmanager"]
+    environment: [JOB_MANAGER_RPC_ADDRESS=flink-jobmanager]
+    depends_on: [flink-jobmanager]
+
+  datafusion-query:  # JWT-gated ad-hoc SQL over the gold zone (analytics-py)
+    build: ./services/analytics-py
+    command: ["python", "datafusion_service.py"]
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080/auth   # JWKS: <URL>/realms/<REALM>/protocol/openid-connect/certs
+      KEYCLOAK_REALM: idre
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: idre
+      S3_SECRET_KEY: idre-secret
+      MAX_QUERY_ROWS: "10000"
+    ports: ["8092:8092"]
+    depends_on: [keycloak, minio-init]
+
+  ray-serve:  # ML endpoints; trainers run against this cluster on schedule
+    build: ./services/analytics-py
+    command: ["python", "ray_jobs.py"]
+    environment:
+      RAY_ADDRESS: ray://ray-head:10001
+      LAKEHOUSE_BUCKET: lakehouse
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: idre
+      S3_SECRET_KEY: idre-secret
+      TENANT: ${ANALYTICS_TENANT:-tx}
+    ports: ["8093:8093"]
+    depends_on: [ray-head, minio-init]
+
+  analytics-jobs:  # batch entrypoints: run on demand / via scheduler, e.g.
+    #   docker compose run --rm analytics-jobs python spark_gold.py tx 2026-10
+    #   docker compose run --rm analytics-jobs python pg_export.py tx
+    #   docker compose run --rm analytics-jobs python load_us_states.py
+    #   docker compose run --rm analytics-jobs flink run -py flink_stream.py
+    build: ./services/analytics-py
+    profiles: ["jobs"]
+    environment:
+      DATABASE_URL: postgres://idre:idre@postgres:5432/idre
+      KAFKA_BROKERS: kafka:9092
+      LAKEHOUSE_BUCKET: lakehouse
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: idre
+      S3_SECRET_KEY: idre-secret
+      TENANT_STATES: ${TENANT_STATES:-tx}
+    volumes: ["./ref:/ref:ro"]   # mount Census TIGER GeoJSON here for load_us_states
+    depends_on: [postgres, kafka, minio-init]
+
   # ---- platform services (build locally) -------------------------------------
   portal:  # fallback static host — the Caddy edge serves the PWA publicly;
     # this nginx tier is kept only for direct debugging on localhost
