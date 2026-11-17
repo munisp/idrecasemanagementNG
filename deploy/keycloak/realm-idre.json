@@ -210,7 +210,47 @@
     }
   ],
   "bruteForceProtected": true,
-  "passwordPolicy": "length(12) and digits(1) and upperCase(1) and specialChars(1) and notUsername",
+  "passwordPolicy": "length(12) and digits(1) and upperCase(1) and specialChars(1) and notUsername and notEmail and passwordHistory(5)",
   "otpPolicyType": "totp",
-  "loginTheme": "idre"
+  "loginTheme": "idre",
+  "failureFactor": 10,
+  "maxFailureWaitSeconds": 900,
+  "waitIncrementSeconds": 60,
+  "maxDeltaTimeSeconds": 43200,
+  "minimumQuickLoginWaitSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "permanentLockout": false,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "ssoSessionIdleTimeoutRememberMe": 0,
+  "ssoSessionMaxLifespanRememberMe": 0,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "webAuthnPolicyRpEntityName": "IDRE Case Management",
+  "webAuthnPolicySignatureAlgorithms": [
+    "ES256"
+  ],
+  "webAuthnPolicyAttestationConveyancePreference": "direct",
+  "webAuthnPolicyAvoidSameAuthenticatorRegister": true,
+  "webAuthnPolicyAcceptableAaguids": [],
+  "webAuthnPolicyPasswordlessRpEntityName": "IDRE Case Management",
+  "webAuthnPolicyPasswordlessSignatureAlgorithms": [
+    "ES256"
+  ],
+  "webAuthnPolicyPasswordlessAttestationConveyancePreference": "direct",
+  "webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister": true,
+  "eventsEnabled": true,
+  "eventsListeners": [
+    "jboss-logging"
+  ],
+  "eventsExpiration": 15552000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "verifyEmail": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true
 }

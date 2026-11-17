@@ -265,7 +265,7 @@ func tenancy(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.Context().Value(ctxPrincipal{}).(principal)
 		tenant := strings.ToLower(chi.URLParam(r, "tenant"))
-		if len(tenant) != 2 {
+		if len(tenant) != 2 || tenant[0] < 'a' || tenant[0] > 'z' || tenant[1] < 'a' || tenant[1] > 'z' {
 			http.Error(w, `{"error":"tenant required"}`, http.StatusBadRequest)
 			return
 		}

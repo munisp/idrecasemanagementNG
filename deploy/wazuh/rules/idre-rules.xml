@@ -1,0 +1,163 @@
+<!-- Author: Patrick Munis at newwave -->
+<!-- idre-rules.xml — Wazuh correlation rules for the IDRE platform.
+     Sources: case-api JSON logs, storage-rs request logs, Keycloak
+     (jboss-logging events listener), the nightly audit-chain verifier.
+     Install into /var/ossec/etc/rules/ on the Wazuh manager and restart.
+
+     Levels: 10 = page on-call, 13 = P1 incident, 15 = drop everything. -->
+<group name="idre,">
+
+  <!-- ============ canary / honeytoken access: always an incident ============ -->
+  <rule id="100200" level="15">
+    <description>IDRE: canary case accessed — any read of a CANARY record is unauthorized by definition</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">CANARY-[a-z]{2}</match>
+    <group>idre_canary,idre_data_access,</group>
+  </rule>
+
+  <rule id="100201" level="15">
+    <description>IDRE: canary object fetched from storage gateway</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">GET /objects/[^ ]*/canary-[a-z]{2}\.</match>
+    <group>idre_canary,idre_storage,</group>
+  </rule>
+
+  <rule id="100202" level="13">
+    <description>IDRE: canary token appeared in search query</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">(q|query)=CANARY-</match>
+    <group>idre_canary,idre_search,</group>
+  </rule>
+
+  <!-- ============ cross-tenant probing ============ -->
+  <rule id="100210" level="6">
+    <description>IDRE: tenant access denied (single)</description>
+    <if_group>syslog</if_group>
+    <match>tenant access denied</match>
+    <group>idre_authz,</group>
+  </rule>
+
+  <rule id="100211" level="13">
+    <description>IDRE: cross-tenant probing — 10+ tenant-denied from one source in 2 minutes</description>
+    <if_matched_sid>100210</if_matched_sid>
+    <same_source_ip />
+    <frequency>10</frequency>
+    <timeframe>120</timeframe>
+    <group>idre_authz,idre_recon,</group>
+  </rule>
+
+  <!-- ============ bulk access / exfiltration velocity ============ -->
+  <rule id="100220" level="5">
+    <description>IDRE: document download</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">GET /v1/tenants/[a-z]{2}/cases/[^ ]+/documents/[^ ]+ 200</match>
+    <group>idre_doc_read,</group>
+  </rule>
+
+  <rule id="100221" level="10">
+    <description>IDRE: bulk document reads — 50+ downloads by one identity in 5 minutes</description>
+    <if_matched_sid>100220</if_matched_sid>
+    <same_field>srcuser</same_field>
+    <frequency>50</frequency>
+    <timeframe>300</timeframe>
+    <group>idre_doc_read,idre_exfil,</group>
+  </rule>
+
+  <rule id="100222" level="13">
+    <description>IDRE: bulk document reads — 200+ downloads by one identity in 5 minutes (likely exfiltration)</description>
+    <if_matched_sid>100220</if_matched_sid>
+    <same_field>srcuser</same_field>
+    <frequency>200</frequency>
+    <timeframe>300</timeframe>
+    <group>idre_doc_read,idre_exfil,</group>
+  </rule>
+
+  <rule id="100223" level="10">
+    <description>IDRE: analytics query hit the row cap (possible bulk export attempt)</description>
+    <if_group>syslog</if_group>
+    <match>"truncated":true</match>
+    <group>idre_analytics,idre_exfil,</group>
+  </rule>
+
+  <!-- ============ identity: the Scattered Spider tripwires ============ -->
+  <rule id="100230" level="7">
+    <description>IDRE: Keycloak login failure</description>
+    <if_group>syslog</if_group>
+    <match>type=LOGIN_ERROR</match>
+    <group>idre_authn,</group>
+  </rule>
+
+  <rule id="100231" level="10">
+    <description>IDRE: MFA fatigue pattern — 3+ failed OTP/push for one user in 10 minutes</description>
+    <if_matched_sid>100230</if_matched_sid>
+    <same_field>srcuser</same_field>
+    <frequency>3</frequency>
+    <timeframe>600</timeframe>
+    <group>idre_authn,idre_mfa,</group>
+  </rule>
+
+  <rule id="100232" level="13">
+    <description>IDRE: credential/MFA reset performed — must match an approved help-desk ticket (RUNBOOK-helpdesk-mfa-reset.md)</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">operationType=UPDATE.*resourceType=USER|REMOVE_CREDENTIAL|UPDATE_CREDENTIAL</match>
+    <group>idre_authn,idre_helpdesk,</group>
+  </rule>
+
+  <rule id="100233" level="15">
+    <description>IDRE: credential reset followed by successful login from a different source within 1 hour</description>
+    <if_matched_sid>100232</if_matched_sid>
+    <same_field>srcuser</same_field>
+    <different_source_ip />
+    <timeframe>3600</timeframe>
+    <match>type=LOGIN</match>
+    <group>idre_authn,idre_helpdesk,idre_compromise,</group>
+  </rule>
+
+  <!-- ============ audit-chain integrity ============ -->
+  <rule id="100240" level="15">
+    <description>IDRE: audit hash-chain verification FAILED — audit log tampering detected</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">verify-audit-chain: (MISMATCH|GAP|FORK)</match>
+    <group>idre_audit,idre_tamper,</group>
+  </rule>
+
+  <rule id="100241" level="13">
+    <description>IDRE: audit_log row deleted or updated (append-only violation)</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">(DELETE|UPDATE) .*audit_log</match>
+    <group>idre_audit,idre_tamper,</group>
+  </rule>
+
+  <!-- ============ malware ============ -->
+  <rule id="100250" level="10">
+    <description>IDRE: ClamAV signature hit on upload (blocked)</description>
+    <if_group>syslog</if_group>
+    <match>MALWARE_BLOCKED</match>
+    <group>idre_malware,</group>
+  </rule>
+
+  <rule id="100251" level="13">
+    <description>IDRE: 3+ malware hits in 30 minutes — coordinated upload attack or compromised partner</description>
+    <if_matched_sid>100250</if_matched_sid>
+    <frequency>3</frequency>
+    <timeframe>1800</timeframe>
+    <group>idre_malware,</group>
+  </rule>
+
+  <!-- ============ service-auth failures ============ -->
+  <rule id="100260" level="6">
+    <description>IDRE: internal service token rejected (vault/storage 401)</description>
+    <if_group>syslog</if_group>
+    <match type="pcre2">(vault|storage)-rs.*401</match>
+    <group>idre_service_auth,</group>
+  </rule>
+
+  <rule id="100261" level="10">
+    <description>IDRE: repeated internal-token failures — possible token theft or misconfig</description>
+    <if_matched_sid>100260</if_matched_sid>
+    <frequency>5</frequency>
+    <timeframe>300</timeframe>
+    <group>idre_service_auth,</group>
+  </rule>
+
+</group>

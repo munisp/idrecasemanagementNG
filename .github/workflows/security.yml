@@ -1,0 +1,85 @@
+# Author: Patrick Munis at newwave
+name: security
+on: [push, pull_request]
+
+# Blocking security gates. These run in addition to ci.yml (build + tests).
+# A failure here is a release blocker — merge is not optional.
+
+jobs:
+  gosec:  # Go SAST: SQLi, weak crypto, unsafe file perms, command injection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - uses: securego/gosec@master
+        with:
+          args: -no-fail -fmt sarif -out gosec.sarif ./...
+          workdir: services/case-api-go
+      - run: |  # fail only on HIGH/MEDIUM findings (noise floor managed explicitly)
+          pip install -q sarif-tools
+          sarif blame gosec.sarif || true
+          if sarif csv gosec.sarif 2>/dev/null | tail -n +2 | grep -qiE ',(high|medium),'; then
+            echo 'gosec found HIGH/MEDIUM issues'; exit 1
+          fi
+
+  govulncheck:  # known-vuln Go deps, reachability-filtered
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: cd services/case-api-go && govulncheck ./...
+
+  cargo-audit:  # known-vuln Rust deps (vault-rs + storage-rs)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [services/vault-rs, services/storage-rs]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cargo-audit --locked
+      - run: |
+          cd ${{ matrix.crate }}
+          [ -f Cargo.lock ] || cargo generate-lockfile
+          cargo audit
+
+  python-audit:  # pip-audit over every requirements.txt + bandit SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: |
+          pip install -q pip-audit bandit
+          for req in services/*/requirements.txt; do
+            echo "== $req"
+            # ignore PKG-01 here: services install from PyPI at image build,
+            # hashes are enforced at build time in the Dockerfile
+            pip-audit -r "$req" --progress-spinner off || exit 1
+          done
+          bandit -q -r services/ -x '*/tests/*,*_test.py' -ll || exit 1
+
+  trivy-config:  # IaC + image misconfiguration scan (compose, Dockerfiles, Helm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+  trivy-deps:  # filesystem dependency scan (lockfiles) for known CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
