@@ -22,13 +22,8 @@ import os
 import sys
 
 import pyarrow as pa
-import pyarrow.fs as pafs
-import pyarrow.parquet as pq
 
-S3_BUCKET = os.environ.get("LAKEHOUSE_BUCKET", "lakehouse")
-S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "minio:9000")
-S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "idre")
-S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "idre-secret")
+from object_store import get_operator, write_parquet
 
 DEFAULT_PATH = "/ref/us_states.geojson"
 
@@ -74,12 +69,8 @@ def load(path: str = DEFAULT_PATH) -> int:
         raise ValueError(f"no usable features in {path}")
 
     table = pa.table(rows)
-    s3 = pafs.S3FileSystem(access_key=S3_ACCESS_KEY, secret_key=S3_SECRET_KEY,
-                           endpoint_override=S3_ENDPOINT, scheme="http",
-                           region="us-east-1")
-    out = f"{S3_BUCKET}/ref/us_states/us_states.parquet"
-    with s3.open_output_stream(out) as f:
-        pq.write_table(table, f)
+    out = "ref/us_states/us_states.parquet"  # relative to the opendal bucket
+    write_parquet(get_operator(), out, table)
     print(f"load_us_states: {table.num_rows} boundaries -> {out}")
     return table.num_rows
 

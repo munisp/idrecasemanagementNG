@@ -34,7 +34,6 @@ import httpx
 import psycopg
 from confluent_kafka import Consumer
 from docx import Document
-from minio import Minio
 
 DSN = os.environ.get("DATABASE_URL", "postgres://idre:idre@localhost:5432/idre")
 VAULT = os.environ.get("VAULT_URL", "http://localhost:8081")
@@ -43,12 +42,11 @@ VAULT = os.environ.get("VAULT_URL", "http://localhost:8081")
 VAULT_TOKEN = os.environ.get("VAULT_INTERNAL_TOKEN", "")
 VAULT_HEADERS = {"X-Internal-Auth": VAULT_TOKEN} if VAULT_TOKEN else {}
 
-minio = Minio(
-    os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
-    access_key=os.environ.get("MINIO_USER", "idre"),
-    secret_key=os.environ.get("MINIO_PASSWORD", "idre-secret"),
-    secure=False,
-)
+from object_store import make_object_store
+
+# Object storage: OpenDAL storage gateway (STORAGE_GATEWAY_URL) in every
+# real deployment; direct MinIO is the local-dev fallback.
+minio = make_object_store()
 
 TEMPLATE_BUCKET = "idre-templates"
 DOC_BUCKET = "idre-docs"

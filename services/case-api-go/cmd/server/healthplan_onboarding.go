@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
 )
 
 // hpPartyTypes: who a health plan may submit for.
@@ -614,8 +613,8 @@ func (s *server) hpStorePackageDoc(r *http.Request, tenant, planID, pkgID, slot,
 	if err != nil {
 		return "", fmt.Errorf("seal failed")
 	}
-	if _, err = s.docs.mc.PutObject(r.Context(), docBucket, objectKey,
-		bytes.NewReader(ct), int64(len(ct)), minio.PutObjectOptions{
+	if err = s.docs.api.PutObject(r.Context(), docBucket, objectKey,
+		bytes.NewReader(ct), int64(len(ct)), putOpts{
 			UserMetadata: map[string]string{"tenant": tenant, "package": pkgID},
 		}); err != nil {
 		return "", fmt.Errorf("store failed")
@@ -747,8 +746,8 @@ func (s *server) hpUploadMerged(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"seal failed"}`, http.StatusBadGateway)
 		return
 	}
-	if _, err = s.docs.mc.PutObject(r.Context(), docBucket, objectKey,
-		bytes.NewReader(ct), int64(len(ct)), minio.PutObjectOptions{
+	if err = s.docs.api.PutObject(r.Context(), docBucket, objectKey,
+		bytes.NewReader(ct), int64(len(ct)), putOpts{
 			UserMetadata: map[string]string{"tenant": tenant, "package": pkgID},
 		}); err != nil {
 		http.Error(w, `{"error":"store failed"}`, http.StatusBadGateway)
@@ -975,8 +974,8 @@ func (s *server) hpUploadBulkZip(w http.ResponseWriter, r *http.Request) {
 					objectKey := fmt.Sprintf("%s/hp-packages/%s/merged-%s.enc", tenant, pkgID, newUUID())
 					ct, serr := s.vaultSealDoc(r, tenant, objectKey, data)
 					if serr == nil {
-						_, serr = s.docs.mc.PutObject(r.Context(), docBucket, objectKey,
-							bytes.NewReader(ct), int64(len(ct)), minio.PutObjectOptions{
+						serr = s.docs.api.PutObject(r.Context(), docBucket, objectKey,
+							bytes.NewReader(ct), int64(len(ct)), putOpts{
 								UserMetadata: map[string]string{"tenant": tenant, "package": pkgID}})
 					}
 					if serr != nil {

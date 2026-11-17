@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
 )
 
 const (
@@ -74,8 +73,7 @@ func (s *server) shareCreateUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	objectKey := fmt.Sprintf("%s/cases/%s/share-%d.enc", g.Tenant, g.CaseID, time.Now().UnixNano())
-	core := minio.Core{Client: s.docs.mc}
-	upID, err := core.NewMultipartUpload(r.Context(), docBucket, objectKey, minio.PutObjectOptions{
+	upID, err := s.docs.api.NewMultipartUpload(r.Context(), docBucket, objectKey, putOpts{
 		ContentType:  "application/octet-stream",
 		UserMetadata: map[string]string{"tenant": g.Tenant, "case": g.CaseID, "via": "sharebox-multipart"},
 	})
@@ -175,8 +173,7 @@ func (s *server) shareUploadChunk(w http.ResponseWriter, r *http.Request) {
 			s.logActivity(r.Context(), up.tenant, up.caseID, "MALWARE_BLOCKED",
 				fmt.Sprintf("Resumable upload %q aborted — chunk tripped ClamAV signature %s", up.filename, sig))
 			// abort the multipart so nothing is retained
-			core := minio.Core{Client: s.docs.mc}
-			_ = core.AbortMultipartUpload(r.Context(), docBucket, up.objectKey, up.minioUpID)
+			_ = s.docs.api.AbortMultipartUpload(r.Context(), docBucket, up.objectKey, up.minioUpID)
 			_, _ = s.db.Exec(r.Context(), `UPDATE public.share_uploads SET status='ABORTED', updated_at=now() WHERE upload_id=$1`,
 				chi.URLParam(r, "uploadId"))
 		}
@@ -189,14 +186,14 @@ func (s *server) shareUploadChunk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"seal failed"}`, http.StatusBadGateway)
 		return
 	}
-	core := minio.Core{Client: s.docs.mc}
-	part, err := core.PutObjectPart(r.Context(), docBucket, up.objectKey, up.minioUpID, partNo,
-		bytes.NewReader(sealed), int64(len(sealed)), minio.PutObjectPartOptions{})
+	part, err := s.docs.api.PutObjectPart(r.Context(), docBucket, up.objectKey, up.minioUpID, partNo,
+		bytes.NewReader(sealed), int64(len(sealed)))
 	if err != nil {
 		http.Error(w, `{"error":"storage backend"}`, http.StatusBadGateway)
 		return
 	}
-	up.parts = append(up.parts, partMeta{N: partNo, ETag: part.ETag, PlainBytes: int64(len(chunk)), SealedBytes: part.Size})
+	part.PlainBytes = int64(len(chunk))
+	up.parts = append(up.parts, part)
 	raw, _ := json.Marshal(up.parts)
 	newOff := up.offset + int64(len(chunk))
 	if _, err := s.db.Exec(r.Context(), `
@@ -223,12 +220,7 @@ func (s *server) shareCompleteUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"incomplete — bytes missing"}`, http.StatusConflict)
 		return
 	}
-	cparts := make([]minio.CompletePart, len(up.parts))
-	for i, p := range up.parts {
-		cparts[i] = minio.CompletePart{PartNumber: p.N, ETag: p.ETag}
-	}
-	core := minio.Core{Client: s.docs.mc}
-	if _, err := core.CompleteMultipartUpload(r.Context(), docBucket, up.objectKey, up.minioUpID, cparts, minio.PutObjectOptions{}); err != nil {
+	if err := s.docs.api.CompleteMultipartUpload(r.Context(), docBucket, up.objectKey, up.minioUpID, up.parts); err != nil {
 		http.Error(w, `{"error":"compose failed"}`, http.StatusBadGateway)
 		return
 	}
@@ -239,7 +231,7 @@ func (s *server) shareCompleteUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"malware scanner unavailable — upload refused (fail-closed)"}`, http.StatusServiceUnavailable)
 		return
 	} else if sig != "" {
-		_ = s.docs.mc.RemoveObject(r.Context(), docBucket, up.objectKey, minio.RemoveObjectOptions{})
+		_ = s.docs.api.RemoveObject(r.Context(), docBucket, up.objectKey)
 		_, _ = s.db.Exec(r.Context(), `UPDATE public.share_uploads SET status='ABORTED', updated_at=now() WHERE upload_id=$1`,
 			chi.URLParam(r, "uploadId"))
 		s.logActivity(r.Context(), up.tenant, up.caseID, "MALWARE_BLOCKED",
@@ -309,15 +301,9 @@ func (s *server) scanMultipartAssembled(r *http.Request, tenant, objectKey strin
 	go func() {
 		var sealedStart int64
 		for _, p := range parts {
-			obj, err := s.docs.mc.GetObject(r.Context(), docBucket, objectKey, minio.GetObjectOptions{
-				VersionID: "",
-			})
+			obj, err := s.docs.api.GetObjectRange(r.Context(), docBucket, objectKey,
+				sealedStart, sealedStart+p.SealedBytes-1)
 			if err != nil {
-				pw.CloseWithError(err)
-				return
-			}
-			if _, err := obj.Seek(sealedStart, io.SeekStart); err != nil {
-				obj.Close()
 				pw.CloseWithError(err)
 				return
 			}
@@ -353,7 +339,7 @@ func (s *server) streamDocRange(w http.ResponseWriter, r *http.Request, tenant, 
 	if len(parts) == 0 {
 		// single sealed blob: decrypt, then ServeContent gives us RFC 7233
 		// Range handling (resume) natively.
-		obj, err := s.docs.mc.GetObject(r.Context(), docBucket, objectKey, minio.GetObjectOptions{})
+		obj, err := s.docs.api.GetObject(r.Context(), docBucket, objectKey)
 		if err != nil {
 			http.Error(w, `{"error":"object missing"}`, http.StatusNotFound)
 			return
@@ -420,12 +406,9 @@ func (s *server) streamDocRange(w http.ResponseWriter, r *http.Request, tenant, 
 			}
 			sealedStart += q.SealedBytes
 		}
-		obj, err := s.docs.mc.GetObject(r.Context(), docBucket, objectKey, minio.GetObjectOptions{})
+		obj, err := s.docs.api.GetObjectRange(r.Context(), docBucket, objectKey,
+			sealedStart, sealedStart+p.SealedBytes-1)
 		if err != nil {
-			return
-		}
-		if _, err := obj.Seek(sealedStart, io.SeekStart); err != nil {
-			obj.Close()
 			return
 		}
 		ct := make([]byte, p.SealedBytes)

@@ -157,13 +157,35 @@ services:
     ports: ["8265:8265", "10001:10001"]
     shm_size: "2gb"
 
-  minio-init:  # one-shot: the lakehouse bucket must exist before Flink/Spark write
+  minio-init:  # one-shot: buckets must exist before the storage gateway / Flink / Spark write
     image: minio/mc:latest
     depends_on: [minio]
     entrypoint: >
       /bin/sh -c "mc alias set local http://minio:9000 idre idre-secret
       && mc mb --ignore-existing local/lakehouse
-      && mc anonymous set none local/lakehouse"
+      && mc mb --ignore-existing local/idre
+      && mc anonymous set none local/lakehouse
+      && mc anonymous set none local/idre"
+
+  storage:  # OpenDAL object-storage gateway (storage-rs) — the platform's main
+    # object store. All application object I/O goes through here; logical
+    # buckets are key prefixes under OPENDAL_BUCKET. Backend is swappable via
+    # OPENDAL_SCHEME (s3 default; fs for air-gapped; gcs/azblob behind cargo
+    # features). Services fall back to direct MinIO only when
+    # STORAGE_GATEWAY_URL is unset (dev convenience).
+    build: ./services/storage-rs
+    environment:
+      OPENDAL_SCHEME: ${OPENDAL_SCHEME:-s3}
+      OPENDAL_BUCKET: ${OPENDAL_BUCKET:-idre}
+      OPENDAL_ENDPOINT: ${OPENDAL_ENDPOINT:-http://minio:9000}
+      OPENDAL_REGION: ${OPENDAL_REGION:-us-east-1}
+      OPENDAL_ACCESS_KEY_ID: ${OPENDAL_ACCESS_KEY_ID:-idre}
+      OPENDAL_SECRET_ACCESS_KEY: ${OPENDAL_SECRET_ACCESS_KEY:-idre-secret}
+      OPENDAL_ROOT: ${OPENDAL_ROOT:-/}
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:-dev-storage-token}  # must match consumers; fail-closed when set
+      LISTEN_ADDR: 0.0.0.0:8094
+    ports: ["127.0.0.1:8094:8094"]
+    depends_on: [minio-init]
 
   flink-jobmanager:
     image: flink:1.20
@@ -186,6 +208,12 @@ services:
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: idre
       S3_SECRET_KEY: idre-secret
+      OPENDAL_SCHEME: s3          # native opendal for parquet/model I/O
+      OPENDAL_BUCKET: lakehouse
+      OPENDAL_ENDPOINT: http://minio:9000
+      OPENDAL_REGION: us-east-1
+      OPENDAL_ACCESS_KEY_ID: idre
+      OPENDAL_SECRET_ACCESS_KEY: idre-secret
       MAX_QUERY_ROWS: "10000"
     ports: ["8092:8092"]
     depends_on: [keycloak, minio-init]
@@ -199,6 +227,12 @@ services:
       S3_ENDPOINT: minio:9000
       S3_ACCESS_KEY: idre
       S3_SECRET_KEY: idre-secret
+      OPENDAL_SCHEME: s3          # native opendal for parquet/model I/O
+      OPENDAL_BUCKET: lakehouse
+      OPENDAL_ENDPOINT: http://minio:9000
+      OPENDAL_REGION: us-east-1
+      OPENDAL_ACCESS_KEY_ID: idre
+      OPENDAL_SECRET_ACCESS_KEY: idre-secret
       TENANT: ${ANALYTICS_TENANT:-tx}
     ports: ["8093:8093"]
     depends_on: [ray-head, minio-init]
@@ -217,6 +251,12 @@ services:
       S3_ENDPOINT: minio:9000
       S3_ACCESS_KEY: idre
       S3_SECRET_KEY: idre-secret
+      OPENDAL_SCHEME: s3          # native opendal for parquet/model I/O
+      OPENDAL_BUCKET: lakehouse
+      OPENDAL_ENDPOINT: http://minio:9000
+      OPENDAL_REGION: us-east-1
+      OPENDAL_ACCESS_KEY_ID: idre
+      OPENDAL_SECRET_ACCESS_KEY: idre-secret
       TENANT_STATES: ${TENANT_STATES:-tx}
     volumes: ["./ref:/ref:ro"]   # mount Census TIGER GeoJSON here for load_us_states
     depends_on: [postgres, kafka, minio-init]
@@ -254,8 +294,10 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-idre@localhost}                  # ClamAV malware scanner (uploads fail-closed if down)
+      STORAGE_GATEWAY_URL: http://storage:8094   # OpenDAL gateway — main object store (unset = direct MinIO dev fallback)
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:-dev-storage-token}  # must match the storage service
     ports: ["8080:8080"]
-    depends_on: [postgres, temporal, tigerbeetle, keycloak, vault, redis, permify, clamd]
+    depends_on: [postgres, temporal, tigerbeetle, keycloak, vault, redis, permify, clamd, storage]
 
   lettergen:
     build: ./services/lettergen-py
@@ -265,9 +307,11 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_USER: idre
       MINIO_PASSWORD: idre-secret
+      STORAGE_GATEWAY_URL: http://storage:8094   # OpenDAL gateway — main object store (unset = MinIO dev fallback)
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:-dev-storage-token}
       VAULT_URL: http://vault:8081
       VAULT_INTERNAL_TOKEN: ${VAULT_INTERNAL_TOKEN:-dev-internal-token}  # must match the vault service
-    depends_on: [postgres, kafka, minio, vault]
+    depends_on: [postgres, kafka, minio, vault, storage]
 
   clamd:
     image: clamav/clamav:stable           # freshclam updates signatures on start
@@ -301,6 +345,8 @@ services:
       DATABASE_URL: postgres://idre:idre@postgres:5432/idre
       KAFKA_BROKERS: kafka:9092
       MINIO_ENDPOINT: minio:9000
+      STORAGE_GATEWAY_URL: http://storage:8094   # OpenDAL gateway — main object store (unset = MinIO dev fallback)
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:-dev-storage-token}
       VAULT_URL: http://vault:8081
       VAULT_INTERNAL_TOKEN: ${VAULT_INTERNAL_TOKEN:-dev-internal-token}  # must match the vault service
       CASE_API_URL: http://case-api:8080
@@ -308,7 +354,7 @@ services:
       VLM_ENDPOINT: ${VLM_ENDPOINT:-http://vllm:8000/v1}
       VLM_MODEL: ${VLM_MODEL:-paddleocr-vl}
       DEID_URL: http://deid:8083                # Phase 2 clinical NER per analyzed document
-    depends_on: [kafka, minio, vault, opensearch, deid]
+    depends_on: [kafka, minio, vault, opensearch, deid, storage]
 
   outbox-relay:  # Postgres outbox -> Kafka; without it the event backbone is silent
     build: ./services/outbox-relay-py

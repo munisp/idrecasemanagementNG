@@ -47,7 +47,7 @@
 | 24 | **OpenCTI** | Threat-intelligence platform: IOC feeds, TTP knowledge; exported indicators feed Wazuh detection rules and APISIX blocklists. |
 | 25 | **Kubecost** | FinOps: cost allocation per namespace/label → per-state-tenant chargeback; ledger-compute and lakehouse spend visibility. |
 
-**Supporting (not requested, but required for a complete, dependency-free platform):** MinIO/S3 (object storage for documents + Delta tables), Prometheus + Grafana + Loki (metrics/dashboards/logs), Argo CD (GitOps), cert-manager + Let's Encrypt, OPA/Gatekeeper (policy), Argo Rollouts (progressive delivery), Mailpit/SMTP + any voice-AI webhook (getline.ai-style) adapter.
+**Supporting (not requested, but required for a complete, dependency-free platform):** OpenDAL storage gateway (storage-rs) over MinIO/S3 — or fs/gcs/azblob via `OPENDAL_SCHEME` — (object storage for documents + Delta tables), Prometheus + Grafana + Loki (metrics/dashboards/logs), Argo CD (GitOps), cert-manager + Let's Encrypt, OPA/Gatekeeper (policy), Argo Rollouts (progressive delivery), Mailpit/SMTP + any voice-AI webhook (getline.ai-style) adapter.
 
 ---
 
@@ -288,7 +288,7 @@ namespaces
 
 ## 14. Local development & production path
 
-- **Local:** `docker compose up` (this repo) — Postgres, Redis, Kafka(KRaft), Temporal+UI, TigerBeetle, Keycloak, APISIX, MinIO, OpenSearch, Flink/Spark (single-node), and the three app services. Wazuh/OpenCTI/Kubecost are k8s-only (documented, not composed) due to footprint.
+- **Local:** `docker compose up` (this repo) — Postgres, Redis, Kafka(KRaft), Temporal+UI, TigerBeetle, Keycloak, APISIX, MinIO + the OpenDAL storage gateway (storage-rs), OpenSearch, Flink/Spark (single-node), and the app services. Wazuh/OpenCTI/Kubecost are k8s-only (documented, not composed) due to footprint.
 - **Prod:** managed-by-us Helm/helmfile on any Kubernetes (EKS/GKE/AKS/bare-metal). No vendor portal, no hosted AI services, no external control plane. Object storage = any S3-compatible endpoint.
 
 ---
@@ -321,7 +321,9 @@ nsa-idre-platform/
 
 ## 16. Document management & intelligent analysis (doc-intel)
 
-**Storage core:** uploads stream through `case-api` → encrypted by `vault` (AES-256-GCM, per-tenant data key, AAD-bound to the object key) → ciphertext-only objects in MinIO (`idre-docs/<state>/cases/<id>/<doc>.enc`) → metadata + version row in Postgres → `doc.uploaded` event on Kafka. Downloads reverse the path with authorization, sealed-document guards (offer justifications stay locked until lawful reveal), and audit logging. Retention is 6 years (federal mandate) enforced by WORM bucket policy + OpenSearch/Delta retention — aligned with the audit-log ISM policy.
+**Storage core:** uploads stream through `case-api` → encrypted by `vault` (AES-256-GCM, per-tenant data key, AAD-bound to the object key) → ciphertext-only objects via the **OpenDAL storage gateway** (`services/storage-rs`) → metadata + version row in Postgres → `doc.uploaded` event on Kafka. Downloads reverse the path with authorization, sealed-document guards (offer justifications stay locked until lawful reveal), and audit logging. Retention is 6 years (federal mandate) enforced by WORM bucket policy + OpenSearch/Delta retention — aligned with the audit-log ISM policy.
+
+**Object-storage layer (Apache OpenDAL):** all application object I/O flows through the storage gateway, a small Rust REST service (`storage-rs`) built on Apache OpenDAL. Logical buckets are key prefixes under one operator root, so the backend is swappable by environment variable alone (`OPENDAL_SCHEME=s3|fs|gcs|azblob` — S3/MinIO by default, plain filesystem for air-gapped sites; gcs/azblob behind cargo features). The gateway exposes S3-style semantics — PUT/GET/HEAD/DELETE, byte-range reads, listing, and multipart upload — but multipart is implemented as a staging-prefix concatenation, so it works identically on every backend (a real multipart API is S3-only). User metadata rides in `__meta.json` sidecars, keeping it backend-agnostic. Callers authenticate with a shared `X-Internal-Auth` token (fail-closed). `case-api`, `doc-intel`, and `lettergen` use the gateway whenever `STORAGE_GATEWAY_URL` is set and fall back to direct MinIO only as a dev convenience. The analytics stack uses the native OpenDAL Python bindings (`opendal` package) for parquet/model I/O. Documented boundary: table engines keep their own filesystem bindings — Spark's s3a, delta-rs transaction logs, and DataFusion/deltalake registration do not go through OpenDAL.
 
 **Intelligent analysis** is a dedicated Python service (`services/doc-intel-py`) consuming `idre.*.documents` events:
 

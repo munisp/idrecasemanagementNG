@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
 )
 
 // uploadApplicationDocument: POST /v1/tenants/{tenant}/onboarding/applications/{appId}/documents
@@ -81,8 +80,8 @@ func (s *server) uploadApplicationDocument(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"error":"seal failed"}`, http.StatusBadGateway)
 		return
 	}
-	_, err = s.docs.mc.PutObject(r.Context(), docBucket, objectKey,
-		bytes.NewReader(ct), int64(len(ct)), minio.PutObjectOptions{
+	err = s.docs.api.PutObject(r.Context(), docBucket, objectKey,
+		bytes.NewReader(ct), int64(len(ct)), putOpts{
 			ContentType:  "application/octet-stream",
 			UserMetadata: map[string]string{"tenant": tenant, "application": appID},
 		})

@@ -22,8 +22,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 const (
@@ -36,17 +34,24 @@ const (
 	tenantStorageQuota = 25 << 30
 )
 
-type docStore struct{ mc *minio.Client }
+type docStore struct{ api objectStoreAPI }
 
+// newDocStore wires the platform's object storage: the OpenDAL storage
+// gateway (STORAGE_GATEWAY_URL) is THE store in every real deployment;
+// direct MinIO is the dev fallback when the gateway isn't configured.
 func newDocStore(endpoint, user, pass string) (*docStore, error) {
-	mc, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(user, pass, ""),
-		Secure: false, // TLS terminated at ingress in prod; in-cluster plaintext
-	})
+	if gw := strings.TrimSpace(os.Getenv("STORAGE_GATEWAY_URL")); gw != "" {
+		g, err := newGatewayStore(gw, os.Getenv("STORAGE_INTERNAL_TOKEN"))
+		if err != nil {
+			return nil, err
+		}
+		return &docStore{api: g}, nil
+	}
+	m, err := newMinioStore(endpoint, user, pass)
 	if err != nil {
 		return nil, err
 	}
-	return &docStore{mc: mc}, nil
+	return &docStore{api: m}, nil
 }
 
 type vaultDocReq struct {
@@ -145,8 +150,8 @@ func (s *server) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Persist ciphertext to MinIO with retention metadata.
-	_, err = s.docs.mc.PutObject(r.Context(), docBucket, objectKey,
-		bytes.NewReader(ct), int64(len(ct)), minio.PutObjectOptions{
+	err = s.docs.api.PutObject(r.Context(), docBucket, objectKey,
+		bytes.NewReader(ct), int64(len(ct)), putOpts{
 			ContentType:  "application/octet-stream",
 			UserMetadata: map[string]string{"tenant": tenant, "case": caseID},
 			// Legal hold: retention governs object-lock in prod (WORM bucket policy).
@@ -248,7 +253,7 @@ func (s *server) downloadDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	obj, err := s.docs.mc.GetObject(r.Context(), docBucket, key, minio.GetObjectOptions{})
+	obj, err := s.docs.api.GetObject(r.Context(), docBucket, key)
 	if err != nil {
 		http.Error(w, `{"error":"object missing"}`, http.StatusNotFound)
 		return

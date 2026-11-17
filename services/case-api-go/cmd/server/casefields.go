@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
 )
 
 // setCaseDetails: PATCH /v1/tenants/{tenant}/cases/{caseId}/details
@@ -160,7 +159,7 @@ func (s *server) writeDocPlaintext(r *http.Request, tenant, objectKey string, pa
 		_ = json.Unmarshal(partsJSON, &parts)
 	}
 	if len(parts) == 0 {
-		obj, err := s.docs.mc.GetObject(r.Context(), docBucket, objectKey, minio.GetObjectOptions{})
+		obj, err := s.docs.api.GetObject(r.Context(), docBucket, objectKey)
 		if err != nil {
 			return err
 		}
@@ -178,11 +177,8 @@ func (s *server) writeDocPlaintext(r *http.Request, tenant, objectKey string, pa
 	}
 	var sealedStart int64
 	for _, p := range parts {
-		opt := minio.GetObjectOptions{}
-		if err := opt.SetRange(sealedStart, sealedStart+p.SealedBytes-1); err != nil {
-			return err
-		}
-		obj, err := s.docs.mc.GetObject(r.Context(), docBucket, objectKey, opt)
+		obj, err := s.docs.api.GetObjectRange(r.Context(), docBucket, objectKey,
+			sealedStart, sealedStart+p.SealedBytes-1)
 		if err != nil {
 			return err
 		}

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
 )
 
 // ---- Notifications -----------------------------------------------------------
@@ -449,8 +448,8 @@ func (s *server) generateLetter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := fmt.Sprintf("%s/cases/%s/gen-%s.enc", tenant, caseID, name)
-	_, err = s.docs.mc.PutObject(r.Context(), docBucket, key, bytes.NewReader(ct), int64(len(ct)),
-		minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	err = s.docs.api.PutObject(r.Context(), docBucket, key, bytes.NewReader(ct), int64(len(ct)),
+		putOpts{ContentType: "application/octet-stream"})
 	if err != nil {
 		http.Error(w, `{"error":"store failed"}`, http.StatusBadGateway)
 		return

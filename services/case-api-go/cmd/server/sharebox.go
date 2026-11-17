@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/minio/minio-go/v7"
 )
 
 type shareGrant struct {
@@ -160,8 +159,8 @@ func (s *server) shareUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"seal failed"}`, http.StatusBadGateway)
 		return
 	}
-	if _, err = s.docs.mc.PutObject(r.Context(), docBucket, objectKey,
-		bytes.NewReader(ct), int64(len(ct)), minio.PutObjectOptions{
+	if err = s.docs.api.PutObject(r.Context(), docBucket, objectKey,
+		bytes.NewReader(ct), int64(len(ct)), putOpts{
 			ContentType:  "application/octet-stream",
 			UserMetadata: map[string]string{"tenant": g.Tenant, "case": g.CaseID, "via": "sharebox"},
 		}); err != nil {

@@ -22,14 +22,10 @@ import os
 import sys
 
 import pyarrow as pa
-import pyarrow.fs as pafs
-import pyarrow.parquet as pq
+
+from object_store import get_operator, write_parquet
 
 DSN = os.environ.get("DATABASE_URL", "postgres://idre:idre@postgres:5432/idre")
-S3_BUCKET = os.environ.get("LAKEHOUSE_BUCKET", "lakehouse")
-S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "minio:9000")
-S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "idre")
-S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "idre-secret")
 
 SCHEMA = pa.schema([
     ("provider_id", pa.string()),
@@ -71,12 +67,9 @@ def export_providers(tenant: str) -> int:
         cols["in_network"].append(None)
     table = pa.table(cols, schema=SCHEMA)
 
-    s3 = pafs.S3FileSystem(access_key=S3_ACCESS_KEY, secret_key=S3_SECRET_KEY,
-                           endpoint_override=S3_ENDPOINT, scheme="http",
-                           region="us-east-1")
-    path = f"{S3_BUCKET}/silver/providers/tenant={tenant}/providers.parquet"
-    with s3.open_output_stream(path) as f:
-        pq.write_table(table, f)
+    # Object layer = OpenDAL; paths are relative to the configured bucket.
+    path = f"silver/providers/tenant={tenant}/providers.parquet"
+    write_parquet(get_operator(), path, table)
     print(f"pg_export: {len(rows)} providers -> {path}")
     return len(rows)
 

@@ -30,37 +30,43 @@ from lakehouse_common import (
     logistic_predict_proba,
 )
 
-S3_BUCKET = os.environ.get("LAKEHOUSE_BUCKET", "lakehouse")
-S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "minio:9000")
-S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "idre")
-S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "idre-secret")
 MODEL_REFRESH_SECONDS = 300
 
 ray.init(address=os.environ.get("RAY_ADDRESS", "auto"), ignore_reinit_error=True)
 
 
-def _s3fs():
-    import pyarrow.fs as fs
-    return fs.S3FileSystem(access_key=S3_ACCESS_KEY, secret_key=S3_SECRET_KEY,
-                           endpoint_override=S3_ENDPOINT, scheme="http",
-                           region="us-east-1", allow_bucket_creation=False)
+def _delta_bucket() -> str:
+    return os.environ.get("OPENDAL_BUCKET", os.environ.get("LAKEHOUSE_BUCKET", "lakehouse"))
+
+
+def _delta_storage_options() -> dict:
+    """delta-rs needs its own object-store config for the transaction log —
+    the documented boundary where table engines don't go through OpenDAL."""
+    return {
+        "AWS_ENDPOINT_URL": os.environ.get("OPENDAL_ENDPOINT", "http://minio:9000"),
+        "AWS_ACCESS_KEY_ID": os.environ.get("OPENDAL_ACCESS_KEY_ID", "idre"),
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("OPENDAL_SECRET_ACCESS_KEY", "idre-secret"),
+        "AWS_REGION": os.environ.get("OPENDAL_REGION", "us-east-1"),
+        "AWS_ALLOW_HTTP": "true",
+        "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
+    }
 
 
 def _model_path(model: str, tenant: str) -> str:
-    return f"{S3_BUCKET}/gold/ml_models/{model}/tenant={tenant}/model.json"
+    # relative to the opendal operator's configured bucket
+    return f"gold/ml_models/{model}/tenant={tenant}/model.json"
 
 
 def persist_model(model: str, tenant: str, params: dict) -> None:
-    with _s3fs().open_output_stream(_model_path(model, tenant)) as f:
-        f.write(json.dumps(params).encode())
+    from object_store import get_operator, write_bytes
+    write_bytes(get_operator(), _model_path(model, tenant),
+                json.dumps(params).encode())
 
 
 def load_model(model: str, tenant: str) -> dict | None:
-    try:
-        with _s3fs().open_input_file(_model_path(model, tenant)) as f:
-            return json.loads(f.read().decode())
-    except FileNotFoundError:
-        return None
+    from object_store import get_operator, read_bytes
+    raw = read_bytes(get_operator(), _model_path(model, tenant))
+    return json.loads(raw.decode()) if raw is not None else None
 
 
 @ray.remote
@@ -70,15 +76,8 @@ def train_settlement_model(tenant: str) -> dict:
     from deltalake import DeltaTable
 
     try:
-        dt = DeltaTable(f"s3://{S3_BUCKET}/silver/cases",
-                        storage_options={
-                            "AWS_ENDPOINT_URL": f"http://{S3_ENDPOINT}",
-                            "AWS_ACCESS_KEY_ID": S3_ACCESS_KEY,
-                            "AWS_SECRET_ACCESS_KEY": S3_SECRET_KEY,
-                            "AWS_REGION": "us-east-1",
-                            "AWS_ALLOW_HTTP": "true",
-                            "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
-                        })
+        dt = DeltaTable(f"s3://{_delta_bucket()}/silver/cases",
+                        storage_options=_delta_storage_options())
         table = dt.to_pyarrow_table(partitions=[("tenant", "=", tenant)])
     except Exception as exc:
         return {"status": "error", "detail": f"silver read failed: {exc}"}
@@ -105,15 +104,8 @@ def train_outlier_model(tenant: str) -> dict:
     """Median/MAD of initiated-case QPA for the tenant, persisted."""
     from deltalake import DeltaTable
 
-    dt = DeltaTable(f"s3://{S3_BUCKET}/silver/cases",
-                    storage_options={
-                        "AWS_ENDPOINT_URL": f"http://{S3_ENDPOINT}",
-                        "AWS_ACCESS_KEY_ID": S3_ACCESS_KEY,
-                        "AWS_SECRET_ACCESS_KEY": S3_SECRET_KEY,
-                        "AWS_REGION": "us-east-1",
-                        "AWS_ALLOW_HTTP": "true",
-                        "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
-                    })
+    dt = DeltaTable(f"s3://{_delta_bucket()}/silver/cases",
+                    storage_options=_delta_storage_options())
     table = dt.to_pyarrow_table(partitions=[("tenant", "=", tenant)])
     samples = []
     for etype, payload in zip(table.column("etype").to_pylist(),

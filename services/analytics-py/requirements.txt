@@ -9,3 +9,4 @@ pyarrow>=16.0
 numpy>=1.26
 pyjwt[crypto]>=2.8
 psycopg[binary]>=3.1
+opendal>=0.46

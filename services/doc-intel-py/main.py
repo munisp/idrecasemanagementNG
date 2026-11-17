@@ -20,7 +20,6 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 import psycopg
 from confluent_kafka import Consumer
-from minio import Minio
 from opensearchpy import OpenSearch
 
 from pipeline import bytes_to_pages, classify_text, ooxml_safe, run_pipeline, sniff_doc_kind
@@ -125,12 +124,12 @@ TEMPORAL_SIGNAL_URL = os.environ.get("CASE_API_URL", "http://localhost:8080")
 WORKER_TOKEN = os.environ.get("WORKER_TOKEN", "")
 AUTH_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"} if WORKER_TOKEN else {}
 
-minio = Minio(
-    os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
-    access_key=os.environ.get("MINIO_USER", "idre"),
-    secret_key=os.environ.get("MINIO_PASSWORD", "idre-secret"),
-    secure=False,
-)
+from object_store import make_object_store
+
+# Object storage: OpenDAL storage gateway (STORAGE_GATEWAY_URL) in every
+# real deployment; direct MinIO is the local-dev fallback inside
+# make_object_store.
+minio = make_object_store()
 # The shared OpenSearch cluster's security plugin is on -- constructed with
 # no credentials, every index() call below 401'd (opensearchpy raises
 # AuthenticationException), uncaught, which escaped persist() into main()'s
