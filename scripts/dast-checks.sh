@@ -38,7 +38,7 @@ ADM_TOK=$($MINT admin-tester /tenant/tx PLATFORM_ADMIN)
 echo "=== T0 preflight ==="
 chk T0 "healthz" 200 "$(code $BASE/healthz)"
 chk T0 "metrics NOT on API port" 404 "$(code $BASE/metrics)"
-chk T0 "metrics on 9091 (loopback)" 200 "$(code http://127.0.0.1:9091/metrics)"
+chk T0 "metrics on dedicated listener (loopback)" 200 "$(code ${METRICS_BASE:-http://127.0.0.1:9091}/metrics)"
 
 echo "=== T1 cross-tenant isolation ==="
 chk T1 "tx-tester lists own tenant" 200 "$(code $BASE/v1/tenants/tx/cases -H "Authorization: Bearer $TX_TOK")"
@@ -165,8 +165,13 @@ chk T3 "no SQL leak in garbage-id body" 0 "$(curl -s $BASE/v1/tenants/tx/cases/n
 echo "=== T8 SSRF surface ==="
 # email-check does DNS on user domains by design; it must answer canned
 # verdicts only -- never raw resolver data (IPs, hostnames of internal zones)
-chk T8 "email-check bogus domain: canned verdict" 0 "$(curl -s "$BASE/api/public/email-check?email=dast@nonexistent-dast-domain.example" | python3 -c "import json,sys,re; d=json.load(sys.stdin); print(0 if (d.get('valid') is False and not re.search(r'\b\d{1,3}(\.\d{1,3}){3}\b', json.dumps(d))) else 1)" 2>/dev/null || echo 1)"
-chk T8 "email-check internal target: no IP/hostname leak" 0 "$(curl -s --max-time 10 "$BASE/api/public/email-check?email=dast@localhost" | grep -ciE '\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b|internal|cluster\.local')"
+EC_CODE="$(code "$BASE/api/public/email-check?email=dast@nonexistent-dast-domain.example")"
+if [ "$EC_CODE" = 404 ]; then
+  note "email-check endpoint absent in this lineage (no SSRF surface) — T8 DNS checks skipped"
+else
+  chk T8 "email-check bogus domain: canned verdict" 0 "$(curl -s "$BASE/api/public/email-check?email=dast@nonexistent-dast-domain.example" | python3 -c "import json,sys,re; d=json.load(sys.stdin); print(0 if (d.get('valid') is False and not re.search(r'\b\d{1,3}(\.\d{1,3}){3}\b', json.dumps(d))) else 1)" 2>/dev/null || echo 1)"
+  chk T8 "email-check internal target: no IP/hostname leak" 0 "$(curl -s --max-time 10 "$BASE/api/public/email-check?email=dast@localhost" | grep -ciE '\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b|internal|cluster\.local')"
+fi
 chk T8 "brand probe: url param not fetched/reflected" 0 "$(curl -s --max-time 10 "$BASE/api/public/brand?tenant=tx&url=http://169.254.169.254/latest/meta-data" | grep -ci 'meta-data\|ami-id\|instance-id')"
 note "codebase audit: no user-controlled outbound URL fetch exists (verified by grep: all outbound URLs are config-sourced)"
 

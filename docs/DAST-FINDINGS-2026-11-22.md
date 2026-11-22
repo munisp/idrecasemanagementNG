@@ -107,6 +107,39 @@ config-sourced; no user-controlled fetch parameter exists.
 traversal, no shipped source maps, no hardcoded secrets, auth realm never
 cached. One genuine finding, fixed this wave:
 
+## Third wave (2026-11-23): NG-lineage parity run — 61/61 green (2 lineage-conditional skips)
+
+The suite ran unchanged against the idrecasemanagementNG stack (own
+binaries, own database, alternate ports). The first pass failed 13 checks
+and every one traced to a genuine NG-lineage defect — the run paid for
+itself immediately:
+
+- **NG-1 (HIGH): every case list 500s.** `listCases` joined
+  `escalations.case_id` (text) against `cases.id` (uuid) without the cast
+  the orig lineage already carries — `operator does not exist: text = uuid`
+  on literally every list. Fixed with `c.id::text`.
+- **NG-2 (MEDIUM): valueless cases invisible.** `getCase` coalesced
+  `benchmark_cents/qpa_cents` with no zero floor, so any case with both NULL
+  404'd on read; `listCases` had the same NULL hole and — worse — swallowed
+  scan errors with `err == nil`, silently dropping rows while `total` still
+  counted them (the seeded canary vanished from every list). Fixed with
+  three-way coalesce and a loud `slog.Error` on scan failure.
+- **NG-3 (HIGH): no accessGuard at all.** The NG middleware chain was
+  `authn, tenancy` only: an external party could read any case's documents
+  in its tenant (own-case 404-oracle-proofing didn't exist). Ported
+  `accesspolicy.go` from orig (denials recorded to the server log — NG has
+  no audit sink yet) and wired `s.accessGuard` into the chain; `getCase` now
+  also redacts office internals for external principals, matching orig.
+- **NG-4 (INFO): no email-check endpoint** — the T8 DNS-verdict checks
+  skip conditionally on 404 (no SSRF surface exists to test).
+- **migrate.sh hardened for lineage drift**: skips scripts absent from the
+  deployment's set and auto-includes directory extras (NG's
+  `program-manifest.sql`, `sector-ng.sql`).
+
+Final matrix: NG 61 PASS / 0 FAIL (email-check DNS pair skipped by design);
+orig re-confirmed 63/63 after suite parameterization (METRICS_BASE,
+CANARY_ID, lineage-conditional T8).
+
 ### F4 — MEDIUM: offline API cache survived logout
 
 `portal/sw.js` caches every successful authenticated `/v1/` GET (case data)

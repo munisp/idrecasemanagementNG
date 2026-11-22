@@ -39,11 +39,24 @@ tpa_saved_payments.sql"
 [ "$HAVE_TRGM" = 1 ] && SCRIPTS="$SCRIPTS entity360.sql db-optimization.sql"
 [ "$HAVE_AGE" = 1 ] && SCRIPTS="$SCRIPTS graph-age.sql"
 
+# Deployment-specific extras: any *.sql in this directory that is neither the
+# base schema, a seed, extension-guarded, nor already listed joins the set
+# (e.g. sector packs). Known list first, extras after.
+for extra in "$DIR"/*.sql; do
+  b="$(basename "$extra")"
+  case " $SCRIPTS " in *" $b "*) continue;; esac
+  case "$b" in
+    init-schemas.sql|seed-*.sql|graph-age.sql|entity360.sql|db-optimization.sql) continue;;
+  esac
+  SCRIPTS="$SCRIPTS $b"
+done
+
 PENDING="$SCRIPTS"
 for round in 1 2 3 4 5 6 7 8; do
   NEXT=""
   PROGRESS=0
   for f in $PENDING; do
+    [ -f "$DIR/$f" ] || continue # script sets differ between deployments
     if $PSQL -v ON_ERROR_STOP=1 -q -f "$DIR/$f" >/dev/null 2>&1; then
       PROGRESS=1
     else

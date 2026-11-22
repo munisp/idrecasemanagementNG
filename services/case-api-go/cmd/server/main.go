@@ -492,7 +492,7 @@ func main() {
 
 	// Authenticated, tenant-scoped API.
 	r.Route("/v1/tenants/{tenant}", func(r chi.Router) {
-		r.Use(a.middleware, tenancy)
+		r.Use(a.middleware, tenancy, s.accessGuard)
 		r.Post("/cases/initiate", s.initiateCase)
 		r.Get("/cases/prefill", s.casePrefill)      // prefill suggestions for the initiation form
 		r.Get("/cases/attention", s.casesAttention) // portfolio-level "what needs me most"
@@ -1125,8 +1125,11 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tbl := sanitizeTenant(tenant)
+	// public.escalations.case_id is text while cases.id is uuid: the join
+	// needs the cast or EVERY listCases call 500s (operator text = uuid).
+	// Same defect, same fix as the orig lineage carries.
 	fromClause := fmt.Sprintf(
-		`FROM tenant_%s.cases c LEFT JOIN (SELECT DISTINCT case_id FROM public.escalations WHERE tenant=$1) esc ON esc.case_id = c.id`, tbl)
+		`FROM tenant_%s.cases c LEFT JOIN (SELECT DISTINCT case_id FROM public.escalations WHERE tenant=$1) esc ON esc.case_id = c.id::text`, tbl)
 	var total int
 	if err := s.db.QueryRow(r.Context(),
 		fmt.Sprintf(`SELECT count(*) %s WHERE true%s`, fromClause, where), args...).Scan(&total); err != nil {
@@ -1135,7 +1138,7 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 	}
 	query := fmt.Sprintf(`SELECT c.id, c.case_number, c.status,
 		                 coalesce(c.subject_line, c.service_line) AS service_line,
-		                 coalesce(c.benchmark_cents, c.qpa_cents) AS qpa_cents, c.opened_at,
+		                 coalesce(c.benchmark_cents, c.qpa_cents, 0) AS qpa_cents, c.opened_at,
 		                 c.batch_id::text, coalesce(c.payer_id,''), %s AS triage_lane
 		             %s WHERE true%s
 		             ORDER BY %s %s, c.id DESC LIMIT %d`, triageLaneSQL, fromClause, where, sortCol, sortDir, limit+1)
@@ -1156,12 +1159,15 @@ func (s *server) listCases(w http.ResponseWriter, r *http.Request) {
 		var c Case
 		var batchID *string
 		if err := rows.Scan(&c.ID, &c.CaseNumber, &c.Status, &c.ServiceLine, &c.QPA, &c.OpenedAt,
-			&batchID, &c.PayerID, &c.TriageLane); err == nil {
-			c.Tenant = tenant
-			c.BatchID = batchID
-			c.SLADaysRemaining = slaDaysRemaining(c.OpenedAt, holidays)
-			out = append(out, c)
+			&batchID, &c.PayerID, &c.TriageLane); err != nil {
+			// a row that cannot scan must be loud, not silently invisible
+			slog.Error("listCases scan failed — row dropped from the list", "tenant", tenant, "err", err)
+			continue
 		}
+		c.Tenant = tenant
+		c.BatchID = batchID
+		c.SLADaysRemaining = slaDaysRemaining(c.OpenedAt, holidays)
+		out = append(out, c)
 	}
 	next := ""
 	if len(out) > limit {
@@ -1185,7 +1191,7 @@ func (s *server) getCase(w http.ResponseWriter, r *http.Request) {
 	var internal, agency *string
 	var pdates []byte
 	err := s.db.QueryRow(r.Context(),
-		fmt.Sprintf(`SELECT id, case_number, status, coalesce(subject_line, service_line) AS service_line, coalesce(benchmark_cents, qpa_cents) AS qpa_cents, opened_at,
+		fmt.Sprintf(`SELECT id, case_number, status, coalesce(subject_line, service_line) AS service_line, coalesce(benchmark_cents, qpa_cents, 0) AS qpa_cents, opened_at,
 		                    internal_status, agency_status, details, COALESCE(program_dates,'{}'::jsonb)
 		             FROM tenant_%s.cases WHERE id=$1`, sanitizeTenant(tenant)), id).
 		Scan(&c.ID, &c.CaseNumber, &c.Status, &c.ServiceLine, &c.QPA, &c.OpenedAt, &internal, &agency, &details, &pdates)
@@ -1196,6 +1202,10 @@ func (s *server) getCase(w http.ResponseWriter, r *http.Request) {
 	c.Tenant = tenant
 	var dj map[string]any
 	_ = json.Unmarshal(details, &dj)
+	if p, ok := r.Context().Value(ctxPrincipal{}).(principal); ok && isExternalOnly(p) {
+		// outside accounts see their filing, never office internals
+		dj, internal = filingDetails(dj), nil
+	}
 	var pj map[string]string
 	_ = json.Unmarshal(pdates, &pj)
 	writeJSON(w, http.StatusOK, map[string]any{
