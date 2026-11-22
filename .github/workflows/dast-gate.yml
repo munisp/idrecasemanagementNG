@@ -50,7 +50,6 @@ jobs:
           --health-retries 20
     env:
       PGPASSWORD: idre
-      DAST_HOME: /tmp/dast
       PSQL: psql -h 127.0.0.1 -U idre -d idre
     steps:
       - uses: actions/checkout@v4
@@ -82,12 +81,12 @@ jobs:
       - name: Build platform binaries
         run: |
           set -e
-          mkdir -p "$DAST_HOME/bin"
-          (cd services/case-api-go && go build -o "$DAST_HOME/bin/case-api" ./cmd/server)
+          mkdir -p "/tmp/dast/bin"
+          (cd services/case-api-go && go build -o "/tmp/dast/bin/case-api" ./cmd/server)
           (cd services/vault-rs && cargo build --release --locked)
           (cd services/storage-rs && cargo build --release --locked)
-          cp services/vault-rs/target/release/vault "$DAST_HOME/bin/vault"
-          cp services/storage-rs/target/release/storage "$DAST_HOME/bin/storage"
+          cp services/vault-rs/target/release/vault "/tmp/dast/bin/vault"
+          cp services/storage-rs/target/release/storage "/tmp/dast/bin/storage"
 
       - name: "Schema: init + migrate fixpoint + honeytokens"
         run: |
@@ -98,15 +97,16 @@ jobs:
 
       - name: Boot the stack (vault, storage, case-api, JWKS, temporal stub)
         run: |
-          CASE_API_BIN="$DAST_HOME/bin/case-api" \
-          VAULT_BIN="$DAST_HOME/bin/vault" \
-          STORAGE_BIN="$DAST_HOME/bin/storage" \
+          DAST_HOME=/tmp/dast \
+          CASE_API_BIN="/tmp/dast/bin/case-api" \
+          VAULT_BIN="/tmp/dast/bin/vault" \
+          STORAGE_BIN="/tmp/dast/bin/storage" \
           bash scripts/dast/start-stack.sh
 
       - name: Serve the portal (T11 static surface)
         run: |
           (cd portal && setsid nohup python3 -m http.server 8090 --bind 127.0.0.1 \
-            </dev/null >>"$DAST_HOME/work/portal.log" 2>&1 &)
+            </dev/null >>"/tmp/dast/work/portal.log" 2>&1 &)
 
       - name: Wait for case-api health (fail fast with logs if it never comes)
         run: |
@@ -116,7 +116,7 @@ jobs:
             sleep 2
           done
           echo "case-api never became healthy — stack logs:"
-          for f in "$DAST_HOME"/work/*.log; do echo "=== $f ==="; tail -60 "$f"; done
+          for f in "/tmp/dast"/work/*.log; do echo "=== $f ==="; tail -60 "$f"; done
           exit 1
 
       - name: Resolve seeded canary id (T3 control / T5 / T6 integrity)
@@ -134,7 +134,7 @@ jobs:
 
       - name: Stack logs on failure
         if: failure()
-        run: for f in "$DAST_HOME"/work/*.log; do echo "=== $f ==="; tail -80 "$f" || true; done
+        run: for f in "/tmp/dast"/work/*.log; do echo "=== $f ==="; tail -80 "$f" || true; done
 
       - name: Upload stack logs
         if: failure()
