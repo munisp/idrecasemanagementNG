@@ -146,6 +146,45 @@ case "$UP" in
   *) chk T7 "upload refused (want 415/503 fail-closed)" 503 "$UP";;
 esac
 
+echo "=== T3 same-tenant IDOR depth ==="
+PORTAL_BASE="${PORTAL_BASE:-http://127.0.0.1:8090}"
+CANARY_ID="${CANARY_ID:-00000000-0000-0000-0000-000000000001}"
+PARTY_TOK=$($MINT party-tester /tenant/tx PARTY)
+# positive control: staff reads the seeded case
+chk T3 "staff reads seeded case (control)" 200 "$(code $BASE/v1/tenants/tx/cases/$CANARY_ID -H "Authorization: Bearer $TX_TOK")"
+# staff probes: clean 404, never a 500 with SQL detail
+chk T3 "staff random-uuid case" 404 "$(code $BASE/v1/tenants/tx/cases/11111111-2222-3333-4444-555555555555 -H "Authorization: Bearer $TX_TOK")"
+chk T3 "staff garbage case id" 404 "$(code $BASE/v1/tenants/tx/cases/not-a-uuid -H "Authorization: Bearer $TX_TOK")"
+# external party: own-case gate answers 404 (not 403) so case ids are not oracles
+chk T3 "party reads unlinked seeded case" 404 "$(code $BASE/v1/tenants/tx/cases/$CANARY_ID -H "Authorization: Bearer $PARTY_TOK")"
+chk T3 "party random-uuid case" 404 "$(code $BASE/v1/tenants/tx/cases/11111111-2222-3333-4444-555555555555 -H "Authorization: Bearer $PARTY_TOK")"
+chk T3 "party lists unlinked case documents" 404 "$(code $BASE/v1/tenants/tx/cases/$CANARY_ID/documents -H "Authorization: Bearer $PARTY_TOK")"
+# staff detail must not leak SQL errors on the garbage probe
+chk T3 "no SQL leak in garbage-id body" 0 "$(curl -s $BASE/v1/tenants/tx/cases/not-a-uuid -H "Authorization: Bearer $TX_TOK" | grep -ci 'sqlstate\|syntax error\|pg_')"
+
+echo "=== T8 SSRF surface ==="
+# email-check does DNS on user domains by design; it must answer canned
+# verdicts only -- never raw resolver data (IPs, hostnames of internal zones)
+chk T8 "email-check bogus domain: canned verdict" 0 "$(curl -s "$BASE/api/public/email-check?email=dast@nonexistent-dast-domain.example" | python3 -c "import json,sys,re; d=json.load(sys.stdin); print(0 if (d.get('valid') is False and not re.search(r'\b\d{1,3}(\.\d{1,3}){3}\b', json.dumps(d))) else 1)" 2>/dev/null || echo 1)"
+chk T8 "email-check internal target: no IP/hostname leak" 0 "$(curl -s --max-time 10 "$BASE/api/public/email-check?email=dast@localhost" | grep -ciE '\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b|internal|cluster\.local')"
+chk T8 "brand probe: url param not fetched/reflected" 0 "$(curl -s --max-time 10 "$BASE/api/public/brand?tenant=tx&url=http://169.254.169.254/latest/meta-data" | grep -ci 'meta-data\|ami-id\|instance-id')"
+note "codebase audit: no user-controlled outbound URL fetch exists (verified by grep: all outbound URLs are config-sourced)"
+
+echo "=== T11 PWA surface (portal via $PORTAL_BASE) ==="
+chk T11 "no .git exposure" 404 "$(code $PORTAL_BASE/.git/HEAD)"
+chk T11 "no .env exposure" 404 "$(code $PORTAL_BASE/.env)"
+chk T11 "no compose file exposure" 404 "$(code $PORTAL_BASE/docker-compose.yml)"
+chk T11 "traversal blocked" 404 "$(code --path-as-is $PORTAL_BASE/../../../docker-compose.yml)"
+chk T11 "encoded traversal blocked" 404 "$(code --path-as-is "$PORTAL_BASE/%2e%2e%2f%2e%2e%2fdocker-compose.yml")"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+chk T11 "no source maps shipped" 0 "$(grep -rl sourceMappingURL $REPO_ROOT/portal/js/ 2>/dev/null | wc -l)"
+chk T11 "no hardcoded secrets in portal" 0 "$(grep -rInE 'github_pat|sk_live|whsec_|BEGIN [A-Z ]*PRIVATE KEY|api_key[[:space:]]*[:=]' $REPO_ROOT/portal/ 2>/dev/null | wc -l)"
+chk T11 "sw.js keeps auth realm uncached" 0 "$(grep -c 'realms.*cache\|cache.*realms' $REPO_ROOT/portal/sw.js | head -1)"
+chk T11 "logout purges API cache (F4 fixed)" 1 "$(grep -c 'caches.delete' $REPO_ROOT/portal/js/auth.js)"
+chk T11 "edge sets HSTS (active snippet)" 1 "$(sed -n '/(security_headers)/,/^}/p' $REPO_ROOT/deploy/caddy/Caddyfile | grep -c Strict-Transport-Security)"
+chk T11 "edge sets nosniff" 1 "$(sed -n '/(security_headers)/,/^}/p' $REPO_ROOT/deploy/caddy/Caddyfile | grep -c X-Content-Type-Options)"
+chk T11 "edge sets CSP" 1 "$(sed -n '/(security_headers)/,/^}/p' $REPO_ROOT/deploy/caddy/Caddyfile | grep -c Content-Security-Policy)"
+
 echo
 if [ "$FAIL" -gt 0 ]; then echo "FAILURES PRESENT ($FAIL of $((PASS+FAIL)))"; exit 1; fi
 echo "ALL CHECKS PASSED ($PASS)"

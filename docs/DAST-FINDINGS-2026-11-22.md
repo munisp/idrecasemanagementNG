@@ -85,12 +85,38 @@ noted for canonical-input strictness only.
 
 ## Coverage caveats (honest)
 
-- T3 IDOR covered only cross-tenant and not-found behavior; same-tenant
-  object-level IDOR probes remain for the next run.
-- T8 SSRF: no outbound-fetching endpoint was exercised in this environment.
-- T11 PWA/static surface not probed (API-focused run).
 - Detection scored via application logs, not Wazuh rules 100200–100261.
 - ARTEX planner loop itself not executed (environment-blocked, above).
+- T3/T8/T11 were partial in the first run; deepened 2026-11-23 (below).
+
+## Second wave (2026-11-23): T3/T8/T11 deep run — 63/63 green
+
+**T3 same-tenant IDOR (7 checks).** Positive control holds (staff reads the
+seeded case); staff garbage/random ids answer clean 404s with no SQL leakage;
+external-party probes confirmed the accessGuard `own-case` gate answers
+**404, not 403** on unlinked cases — outside accounts cannot use responses
+as a case-id oracle.
+
+**T8 SSRF (3 checks + code audit).** `email-check` performs DNS on
+user-supplied domains by design; verified it answers canned verdicts only —
+no resolver data, IPs, or internal zone names in responses, including for
+`localhost` targets. Code audit: every outbound URL in case-api is
+config-sourced; no user-controlled fetch parameter exists.
+
+**T11 PWA surface (12 checks).** No `.git`/`.env`/compose exposure, no
+traversal, no shipped source maps, no hardcoded secrets, auth realm never
+cached. One genuine finding, fixed this wave:
+
+### F4 — MEDIUM: offline API cache survived logout
+
+`portal/sw.js` caches every successful authenticated `/v1/` GET (case data)
+in Cache Storage for offline reads, but `Auth.logout()` cleared only
+sessionStorage — the `idre-api-v1` cache with case data persisted after
+logout on a shared device. **Fix**: logout now purges all `idre-api*` caches
+before the IdP redirect (shell cache stays — public assets). Also hardened:
+the active `security_headers` snippet in `deploy/caddy/Caddyfile` now emits
+HSTS (browsers ignore STS over plain HTTP per RFC 6797 §7.2, so the dev :80
+vhost is unaffected; it engages the moment DOMAIN/TLS is live).
 
 ## Remediation (2026-11-23) — VERIFIED
 

@@ -76,7 +76,16 @@ const Auth = (() => {
 
   function logout() {
     sessionStorage.clear();
-    location.href = `${base}/logout?client_id=${cfg.clientId}&post_logout_redirect_uri=${encodeURIComponent(location.origin + "/app.html")}`;
+    // Purge the service worker's offline API cache before leaving: it holds
+    // authenticated GET responses (case data) that must not outlive the
+    // session on a shared device (DAST finding F4). The shell cache stays --
+    // it is public static assets.
+    const wipe = ("caches" in window)
+      ? caches.keys().then((ks) => Promise.all(ks.filter((k) => k.startsWith("idre-api")).map((k) => caches.delete(k))))
+      : Promise.resolve();
+    wipe.finally(() => {
+      location.href = `${base}/logout?client_id=${cfg.clientId}&post_logout_redirect_uri=${encodeURIComponent(location.origin + "/app.html")}`;
+    });
   }
 
   return { login, logout, handleCallback, token, claims };
