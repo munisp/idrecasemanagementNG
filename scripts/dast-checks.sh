@@ -63,6 +63,22 @@ EXP_TOK=$($MINT tx-tester /tenant/tx CASE_MANAGER -60)
 chk T2 "expired token" 401 "$(code $BASE/v1/tenants/tx/cases -H "Authorization: Bearer $EXP_TOK")"
 BADISS_TOK=$($MINT tx-tester /tenant/tx CASE_MANAGER 900 http://evil.example/realms/idre)
 chk T2 "wrong issuer" 401 "$(code $BASE/v1/tenants/tx/cases -H "Authorization: Bearer $BADISS_TOK")"
+BADAUD_TOK=$($MINT tx-tester /tenant/tx CASE_MANAGER 900 http://localhost/auth/realms/idre attacker-api)
+chk T2 "wrong audience" 401 "$(code $BASE/v1/tenants/tx/cases -H "Authorization: Bearer $BADAUD_TOK")"
+HS256_TOK=$(python3 - <<EOF
+import json, time
+import jwt
+pub = json.load(open('$JWKS_DIR/key.json'))['public_pem']
+now = int(time.time())
+# the classic confusion attack: alg flipped to HS256, HMAC secret = the
+# RSA public key from the JWKS (public by definition). Must never verify.
+claims = {'iss': 'http://localhost/auth/realms/idre', 'aud': 'idre-api',
+          'sub': 'tx-tester', 'iat': now, 'exp': now + 900,
+          'groups': ['/tenant/tx'], 'realm_access': {'roles': ['CASE_MANAGER']}, 'typ': 'Bearer'}
+print(jwt.encode(claims, pub, algorithm='HS256', headers={'kid': 'dast-key-1'}))
+EOF
+)
+chk T2 "alg confusion RS256->HS256 (pubkey as HMAC secret)" 401 "$(code $BASE/v1/tenants/tx/cases -H "Authorization: Bearer $HS256_TOK")"
 NONE_TOK=$(python3 -c "
 import base64, json
 def b64(o): return base64.urlsafe_b64encode(o).rstrip(b'=').decode()
@@ -94,6 +110,8 @@ chk T4 "vault seal wrong token" 401 "$(code -X POST $VAULT_ADDR/docs/seal -H "X-
 chk T4 "vault seal correct token" 200 "$(code -X POST $VAULT_ADDR/docs/seal -H "X-Internal-Auth: $VAULT_INTERNAL_TOKEN" -H 'Content-Type: application/json' --data-binary '{"tenant":"tx","key":"dast/probe.txt","data_b64":"aGVsbG8="}')"
 chk T4 "storage list without token" 401 "$(code $STORAGE_ADDR/objects/dast)"
 chk T4 "storage put correct token" 201 "$(code -X PUT $STORAGE_ADDR/objects/dast/probe.txt -H "X-Internal-Auth: $STORAGE_INTERNAL_TOKEN" --data-binary 'dast-probe')"
+chk T4 "vault seal with storage's token (cross-service)" 401 "$(code -X POST $VAULT_ADDR/docs/seal -H "X-Internal-Auth: $STORAGE_INTERNAL_TOKEN" -H 'Content-Type: application/json' --data-binary '{"tenant":"tx","key":"dast/x","data_b64":"aGVsbG8="}')"
+chk T4 "storage put with vault's token (cross-service)" 401 "$(code -X PUT $STORAGE_ADDR/objects/dast/cross.txt -H "X-Internal-Auth: $VAULT_INTERNAL_TOKEN" --data-binary 'cross-service-probe')"
 
 echo "=== T5 honeytoken presence (detection note: no Wazuh in sandbox) ==="
 if curl -s --max-time 10 $BASE/v1/tenants/tx/cases -H "Authorization: Bearer $ADM_TOK" | grep -q CANARY; then
@@ -106,6 +124,7 @@ echo "=== T9 payment edge cases ==="
 chk T9 "stripe webhook bad signature" 401 "$(code -X POST $BASE/api/webhooks/stripe -H 'Stripe-Signature: t=1,v1=bad' --data-binary '{}')"
 chk T9 "stripe webhook no signature" 401 "$(code -X POST $BASE/api/webhooks/stripe --data-binary '{}')"
 chk T9 "checkout unknown invoice (no panic, clean 404)" 404 "$(code -X POST $BASE/invoices/00000000-0000-0000-0000-000000000000/checkout -H "Authorization: Bearer $ADM_TOK")"
+chk T9 "mojaloop webhook when provider unconfigured" 401 "$(code -X POST $BASE/api/webhooks/mojaloop -H 'X-Signature: deadbeef' --data-binary '{"transferId":"dast-t1","state":"COMMITTED"}')"
 
 echo "=== T10 exposed surface ==="
 chk T10 "healthz body has no version detail" 0 "$(curl -s $BASE/healthz | grep -ci 'version\|build\|commit')"

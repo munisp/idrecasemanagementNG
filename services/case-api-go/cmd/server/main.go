@@ -51,7 +51,8 @@ type Config struct {
 	Addr            string // :8080
 	DatabaseURL     string // postgres://...
 	KeycloakJWKS    string // https://keycloak/realms/idre/protocol/openid-connect/certs
-	KeycloakIssuer  string // https://keycloak/realms/idre
+	KeycloakIssuer   string // https://keycloak/realms/idre
+	KeycloakAudience string // expected aud claim; "" skips audience validation (legacy realms with no fixed client aud)
 	TemporalHost    string // temporal-frontend:7233
 	TemporalNS      string // idre
 	TBAddresses     string // tigerbeetle-0:3000,tigerbeetle-1:3000,...
@@ -101,7 +102,8 @@ func configFromEnv() Config {
 		Addr:           get("ADDR", ":8080"),
 		DatabaseURL:    get("DATABASE_URL", "postgres://idre:idre@localhost:5432/idre"),
 		KeycloakJWKS:   get("KEYCLOAK_JWKS_URL", "http://localhost:8085/realms/idre/protocol/openid-connect/certs"),
-		KeycloakIssuer: get("KEYCLOAK_ISSUER", "http://localhost:8085/realms/idre"),
+		KeycloakIssuer:   get("KEYCLOAK_ISSUER", "http://localhost:8085/realms/idre"),
+		KeycloakAudience: get("KEYCLOAK_AUDIENCE", ""),
 		TemporalHost:   get("TEMPORAL_HOST", "localhost:7233"),
 		TemporalNS:     get("TEMPORAL_NAMESPACE", "idre"),
 		TBAddresses:    get("TIGERBEETLE_ADDRESSES", "localhost:3000"),
@@ -194,6 +196,7 @@ type principal struct {
 type authn struct {
 	keys        jwk.Set
 	issuer      string
+	audience    string // enforced when non-empty (KEYCLOAK_AUDIENCE)
 	workerToken string // shared secret for service-to-service calls; "" disables this path
 }
 
@@ -216,11 +219,15 @@ func (a *authn) middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxPrincipal{}, p)))
 			return
 		}
-		tok, err := jwt.ParseString(raw,
+		parseOpts := []jwt.ParseOption{
 			jwt.WithKeySet(a.keys),
 			jwt.WithIssuer(a.issuer),
 			jwt.WithValidate(true),
-		)
+		}
+		if a.audience != "" {
+			parseOpts = append(parseOpts, jwt.WithAudience(a.audience))
+		}
+		tok, err := jwt.ParseString(raw, parseOpts...)
 		if err != nil {
 			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 			return
@@ -467,7 +474,7 @@ func main() {
 			rds.setex("idre:jwks", 300, string(buf))
 		}
 	}
-	a := &authn{keys: keys, issuer: cfg.KeycloakIssuer, workerToken: cfg.WorkerToken}
+	a := &authn{keys: keys, issuer: cfg.KeycloakIssuer, audience: cfg.KeycloakAudience, workerToken: cfg.WorkerToken}
 
 	docs, err := newDocStore(
 		envOr("MINIO_ENDPOINT", "localhost:9000"),

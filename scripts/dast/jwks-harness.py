@@ -4,7 +4,7 @@
 # REAL signature/issuer/tenant-claim path — only the token issuer is harnessed.
 #
 #   python3 jwks-harness.py gen                      # write key.json + jwks.json
-#   python3 jwks-harness.py mint <user> <groups> <roles> [ttl_sec] [issuer]
+#   python3 jwks-harness.py mint <user> <groups> <roles> [ttl_sec] [issuer] [audience]
 #
 # groups: comma-separated (e.g. /tenant/tx,/tenant/ny); roles: comma-separated.
 # ISSUER default matches the dev realm; KID is fixed so JWKS rotation is simple.
@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
 
 ISSUER = "http://localhost/auth/realms/idre"
+AUDIENCE = "idre-api"
 KID = "dast-key-1"
 
 
@@ -43,7 +44,7 @@ def gen(out_dir="."):
     print(f"generated {out_dir}/key.json + {out_dir}/jwks.json (kid={KID})")
 
 
-def mint(user, groups, roles, ttl=900, iss=ISSUER, key_dir=None):
+def mint(user, groups, roles, ttl=900, iss=ISSUER, key_dir=None, aud=AUDIENCE):
     if key_dir is None:
         key_dir = os.path.dirname(os.path.abspath(__file__))
     with open(f"{key_dir}/key.json") as f:
@@ -51,6 +52,7 @@ def mint(user, groups, roles, ttl=900, iss=ISSUER, key_dir=None):
     now = int(time.time())
     claims = {
         "iss": iss,
+        "aud": aud,
         "sub": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"idre-dast:{user}")),
         "preferred_username": user,
         "iat": now,
@@ -68,7 +70,8 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 5 and sys.argv[1] == "mint":
         ttl = int(sys.argv[5]) if len(sys.argv) > 5 else 900
         iss = sys.argv[6] if len(sys.argv) > 6 else ISSUER
-        print(mint(sys.argv[2], sys.argv[3], sys.argv[4], ttl, iss))
+        aud = sys.argv[7] if len(sys.argv) > 7 else AUDIENCE
+        print(mint(sys.argv[2], sys.argv[3], sys.argv[4], ttl, iss, aud=aud))
     else:
         print(__doc__)
         sys.exit(2)

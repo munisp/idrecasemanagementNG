@@ -170,3 +170,41 @@ fixed platform:
   data_b64}`, storage list is `/objects/{bucket}`, and T7 now also accepts
   415 — the executable-extension blocklist refuses `.com` before the scanner
   stage, an even earlier fail-closed.
+
+## Fourth wave (2026-11-23): CI pre-deploy gate — dast-gate.yml live, both repos green
+
+- `.github/workflows/dast-gate.yml` boots the real stack on a GitHub runner
+  (postgres:16 service container, native Go/Rust release binaries, JWKS
+  harness, temporal gRPC stub, portal static server) and runs this suite on
+  every push, PR and manual dispatch. Any FAIL fails the job — merge/deploy
+  is blocked. Logs upload as artifacts on failure.
+- Run #1 failed on a harness misconfiguration, not a platform defect: a
+  job-level `DAST_HOME` export collided with the suite's repo-root use of the
+  same variable, so token mints pointed at a nonexistent path and every
+  authenticated check 401'd. Scoped `DAST_HOME` to the boot step; run #2:
+  **orig 63/63, NG 61/61** — green in ~4 minutes with a warm cargo cache.
+
+## Fifth wave (2026-11-23): pack-delta depth — 5 new checks + audience enforcement
+
+Gap audit of every task-pack bullet against the suite. Residuals closed:
+
+- **F5 (MEDIUM, closed): token audience not validated.** T2 of the pack calls
+  for wrong-audience rejection; the verifier pinned signature + issuer only,
+  so a token minted by the same realm for a different audience would have
+  authenticated. Fix: `KEYCLOAK_AUDIENCE` env — when set, the middleware
+  enforces `aud` via jwx `WithAudience`; when unset, validation is skipped
+  for legacy realms with no fixed client audience (documented on the config
+  field). The harness mint now emits `aud=idre-api` and the DAST boot sets
+  `KEYCLOAK_AUDIENCE=idre-api`.
+- T2 +2 checks: wrong audience → 401; RS256→HS256 algorithm confusion (the
+  public key from the JWKS used as the HMAC secret) → 401.
+- T4 +2 checks: cross-service token confusion — storage's token against
+  vault, vault's token against storage → 401 each.
+- T9 +1 check: mojaloop webhook with the provider unconfigured → 401
+  (verified identical in both lineages).
+- Out of gate scope (noted, not closed): the pack's analytics raw-SQL target
+  lives in `services/analytics-py` (`validate_readonly_sql`), which the gate
+  stack does not boot; T3 Permify-dependent findings remain dev-bypass
+  artifacts per the pack's own known-artifact note.
+
+Suite totals after this wave: **orig 68 checks, NG 66 checks**.

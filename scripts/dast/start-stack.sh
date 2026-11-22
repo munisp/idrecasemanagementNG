@@ -33,6 +33,7 @@ env ADDR=127.0.0.1:8080 \
   DATABASE_URL=postgres://idre:idre@127.0.0.1:5432/idre \
   KEYCLOAK_JWKS_URL=http://127.0.0.1:8085/auth/realms/idre/protocol/openid-connect/certs \
   KEYCLOAK_ISSUER=http://localhost/auth/realms/idre \
+  KEYCLOAK_AUDIENCE=idre-api \
   TEMPORAL_HOST=127.0.0.1:7233 \
   TIGERBEETLE_CLUSTER_ID=0 TIGERBEETLE_ADDRESSES=127.0.0.1:3000 \
   WORKER_TOKEN=dev-worker-token \
