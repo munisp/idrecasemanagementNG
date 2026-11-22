@@ -1,0 +1,145 @@
+# Author: Patrick Munis at newwave
+# dast-gate.yml — live DAST pre-deploy gate.
+#
+# Boots the REAL platform on the runner — postgres service container, native
+# Go/Rust binaries, the JWKS harness and the temporal gRPC stub, no mocks —
+# and executes scripts/dast-checks.sh, the 61-check suite (63 checks minus 2 lineage-conditional SSRF skips — the NG lineage has no email-check endpoint) built from
+# deploy/artex/task-pack.md: cross-tenant isolation (T1), token forgery (T2),
+# same-tenant IDOR + external-party 404-oracle-proofing (T3), internal-token
+# boundaries (T4), honeytoken presence (T5), injection + post-probe DB
+# integrity (T6), upload fail-closed (T7), SSRF (T8), payment webhooks (T9),
+# exposed surface (T10), PWA static surface (T11). Exit 1 on any FAIL —
+# merge/deploy is blocked.
+#
+# Companion gates: ci.yml (build + unit tests), security.yml (SAST/dep
+# audit), deploy-gate.yml (change freeze). This one gates runtime behavior.
+#
+# All credentials below are DISPOSABLE-CI-ONLY values, identical to the
+# disposable-stack dev defaults already committed in scripts/dast/.
+
+name: dast-gate
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: dast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: idre
+          POSTGRES_PASSWORD: idre
+          POSTGRES_DB: idre
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U idre -d idre"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: idre
+      DAST_HOME: /tmp/dast
+      PSQL: psql -h 127.0.0.1 -U idre -d idre
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: services/case-api-go/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python harness deps (JWKS mint + temporal stub)
+        run: pip install -q cryptography PyJWT grpcio
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo builds (vault-rs + storage-rs dominate job time)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            services/vault-rs
+            services/storage-rs
+
+      - name: psql client (schema apply + T6 post-probe integrity check)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Build platform binaries
+        run: |
+          set -e
+          mkdir -p "$DAST_HOME/bin"
+          (cd services/case-api-go && go build -o "$DAST_HOME/bin/case-api" ./cmd/server)
+          (cd services/vault-rs && cargo build --release --locked)
+          (cd services/storage-rs && cargo build --release --locked)
+          cp services/vault-rs/target/release/vault "$DAST_HOME/bin/vault"
+          cp services/storage-rs/target/release/storage "$DAST_HOME/bin/storage"
+
+      - name: "Schema: init + migrate fixpoint + honeytokens"
+        run: |
+          set -e
+          $PSQL -v ON_ERROR_STOP=1 -q -f scripts/init-schemas.sql
+          bash scripts/migrate.sh
+          $PSQL -v ON_ERROR_STOP=1 -q -f scripts/seed-honeytokens.sql
+
+      - name: Boot the stack (vault, storage, case-api, JWKS, temporal stub)
+        run: |
+          CASE_API_BIN="$DAST_HOME/bin/case-api" \
+          VAULT_BIN="$DAST_HOME/bin/vault" \
+          STORAGE_BIN="$DAST_HOME/bin/storage" \
+          bash scripts/dast/start-stack.sh
+
+      - name: Serve the portal (T11 static surface)
+        run: |
+          (cd portal && setsid nohup python3 -m http.server 8090 --bind 127.0.0.1 \
+            </dev/null >>"$DAST_HOME/work/portal.log" 2>&1 &)
+
+      - name: Wait for case-api health (fail fast with logs if it never comes)
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://127.0.0.1:8080/healthz || true)
+            [ "$code" = "200" ] && exit 0
+            sleep 2
+          done
+          echo "case-api never became healthy — stack logs:"
+          for f in "$DAST_HOME"/work/*.log; do echo "=== $f ==="; tail -60 "$f"; done
+          exit 1
+
+      - name: Resolve seeded canary id (T3 control / T5 / T6 integrity)
+        run: |
+          CANARY_ID=$($PSQL -tAc "SELECT id FROM tenant_tx.cases WHERE case_number='CANARY-tx'")
+          [ -n "$CANARY_ID" ] || { echo "canary case missing after seed"; exit 1; }
+          echo "CANARY_ID=$CANARY_ID" >> "$GITHUB_ENV"
+
+      - name: Run the DAST suite (any FAIL fails this job)
+        run: |
+          BASE=http://127.0.0.1:8080 \
+          CANARY_ID="$CANARY_ID" \
+          PGDATABASE=idre PGHOST=127.0.0.1 PGUSER=idre \
+          bash scripts/dast-checks.sh
+
+      - name: Stack logs on failure
+        if: failure()
+        run: for f in "$DAST_HOME"/work/*.log; do echo "=== $f ==="; tail -80 "$f" || true; done
+
+      - name: Upload stack logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-stack-logs
+          path: /tmp/dast/work/
+          retention-days: 14
