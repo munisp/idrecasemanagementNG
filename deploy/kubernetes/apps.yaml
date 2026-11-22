@@ -2,48 +2,12 @@
 # App Deployments with Dapr sidecar performance annotations (Tier 1).
 # The repo previously had no app manifests (compose-only); these are the
 # production shapes referenced by deploy/dapr/configuration.yaml.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: case-api
-  namespace: idre-core
-  labels: { app: case-api, app.kubernetes.io/part-of: idre }
-spec:
-  replicas: 3
-  selector:
-    matchLabels: { app: case-api }
-  template:
-    metadata:
-      labels: { app: case-api }
-      annotations:
-        dapr.io/enabled: "true"
-        dapr.io/app-id: "case-api"
-        dapr.io/app-port: "8080"
-        dapr.io/config: "idre-config"
-        # Sidecar sized for pub/sub fan-out bursts (defaults throttle at 250m/100Mi)
-        dapr.io/sidecar-cpu-request: "100m"
-        dapr.io/sidecar-cpu-limit: "1"
-        dapr.io/sidecar-memory-request: "128Mi"
-        dapr.io/sidecar-memory-limit: "512Mi"
-        dapr.io/max-body-size: "16M"
-        dapr.io/read-buffer-size: "32768"
-        dapr.io/http-stream-request-body: "true"
-    spec:
-      containers:
-        - name: case-api
-          image: ghcr.io/munisp/idre/case-api:latest   # built from services/case-api-go
-          ports: [{ containerPort: 8080 }]
-          env:
-            - name: DATABASE_URL
-              valueFrom: { secretKeyRef: { name: idre-db, key: dsn } }
-            - name: WORKER_TOKEN
-              valueFrom: { secretKeyRef: { name: idre-workers, key: token } }
-            - name: DB_POOL_MAX_CONNS
-              value: "50"
-          resources:
-            requests: { cpu: "500m", memory: 512Mi }
-            limits:   { cpu: "2",    memory: 1Gi }
-          readinessProbe: { httpGet: { path: /healthz, port: 8080 } }
+# case-api is deployed as an Argo Rollouts canary — see
+# deploy/kubernetes/rollout-case-api.yaml (Rollout + stable/canary Services
+# + SLO AnalysisTemplate). Do NOT re-add a plain Deployment here: a
+# Deployment and a Rollout sharing the `app: case-api` selector fight over
+# the same pods. If Argo Rollouts is not installed in a given environment,
+# fall back to the docker-compose path, not a handwritten Deployment.
 ---
 apiVersion: apps/v1
 kind: Deployment

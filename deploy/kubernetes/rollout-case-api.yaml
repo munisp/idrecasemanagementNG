@@ -1,0 +1,136 @@
+# Author: Patrick Munis at newwave
+# Argo Rollouts canary for case-api — the production deploy shape.
+# The plain Deployment for case-api was REMOVED from apps.yaml; apply THIS
+# file instead (requires the Argo Rollouts controller:
+#   kubectl create namespace argo-rollouts
+#   kubectl apply -n argo-rollouts -f \
+#     https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+# ).
+#
+# Why: the 2026-11 outage week (Microsoft 365 capacity upgrade, JPMorgan
+# software bug, NSA Net bad patch) was three self-inflicted outages in five
+# days. A big-bang deploy of 3 replicas turns a bad build into a platform
+# outage; a canary turns it into a 30-second rollback of 10% of traffic.
+#
+# Promotion: 10% -> SLO analysis -> 25% -> SLO analysis -> 50% -> SLO
+# analysis -> 100%. Any analysis failure aborts the rollout and shifts all
+# traffic back to the stable ReplicaSet — no human decision required.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: case-api
+  namespace: idre-core
+  labels: { app: case-api, app.kubernetes.io/part-of: idre }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels: { app: case-api }
+  strategy:
+    canary:
+      canaryService: case-api-canary
+      stableService: case-api
+      scaleDownDelaySeconds: 300       # keep old pods warm for instant rollback
+      abortScaleDownDelaySeconds: 300
+      steps:
+        - setWeight: 10
+        - pause: { duration: 5m }      # bake: let real traffic hit the canary
+        - analysis:
+            templates: [{ templateName: case-api-slo }]
+        - setWeight: 25
+        - pause: { duration: 10m }
+        - analysis:
+            templates: [{ templateName: case-api-slo }]
+        - setWeight: 50
+        - pause: { duration: 10m }
+        - analysis:
+            templates: [{ templateName: case-api-slo }]
+        # implicit: 100%
+  template:
+    metadata:
+      labels: { app: case-api }
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "case-api"
+        dapr.io/app-port: "8080"
+        dapr.io/config: "idre-config"
+        # Sidecar sized for pub/sub fan-out bursts (defaults throttle at 250m/100Mi)
+        dapr.io/sidecar-cpu-request: "100m"
+        dapr.io/sidecar-cpu-limit: "1"
+        dapr.io/sidecar-memory-request: "128Mi"
+        dapr.io/sidecar-memory-limit: "512Mi"
+        dapr.io/max-body-size: "16M"
+        dapr.io/read-buffer-size: "32768"
+        dapr.io/http-stream-request-body: "true"
+    spec:
+      containers:
+        - name: case-api
+          image: ghcr.io/munisp/idre/case-api:latest   # built from services/case-api-go
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: idre-db, key: dsn } }
+            - name: WORKER_TOKEN
+              valueFrom: { secretKeyRef: { name: idre-workers, key: token } }
+            - name: DB_POOL_MAX_CONNS
+              value: "50"
+          resources:
+            requests: { cpu: "500m", memory: 512Mi }
+            limits:   { cpu: "2",    memory: 1Gi }
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 } }
+---
+# Stable service — all production traffic outside of a rollout.
+apiVersion: v1
+kind: Service
+metadata:
+  name: case-api
+  namespace: idre-core
+  labels: { app: case-api, app.kubernetes.io/part-of: idre }
+spec:
+  selector: { app: case-api }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+# Canary service — receives 10/25/50% during an in-flight rollout.
+apiVersion: v1
+kind: Service
+metadata:
+  name: case-api-canary
+  namespace: idre-core
+  labels: { app: case-api, app.kubernetes.io/part-of: idre }
+spec:
+  selector: { app: case-api }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+# SLO gate evaluated at each promotion step. Queries the same app metrics
+# that feed the SLO alerts (deploy/prometheus/idre-alerts.yml), so a canary
+# is held to exactly the standard the pager uses. failureLimit: 1 means a
+# single bad interval aborts — promotion is cheap, an outage is not.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: case-api-slo
+  namespace: idre-core
+spec:
+  metrics:
+    - name: error-rate
+      interval: 30s
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-operated.idre-obs.svc:9090
+          query: |
+            sum(rate(idre_http_requests_total{code=~"5.."}[2m]))
+              /
+            sum(rate(idre_http_requests_total[2m]))
+      successCondition: "len(result) == 0 || result[0] < 0.01"
+    - name: p95-latency
+      interval: 30s
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-operated.idre-obs.svc:9090
+          query: |
+            histogram_quantile(0.95,
+              sum(rate(idre_http_request_duration_seconds_bucket[2m]))
+                by (le))
+      successCondition: "len(result) == 0 || result[0] < 2"

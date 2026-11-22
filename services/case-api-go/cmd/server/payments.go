@@ -76,34 +76,68 @@ func (s *server) postPaymentLedger(tenant, caseID, paymentIntent, party string, 
 
 var stripeHTTP = &http.Client{Timeout: 30 * time.Second}
 
-// stripePost calls the Stripe API with form-encoded params.
+// stripePost calls the Stripe API with form-encoded params, through the
+// stripe circuit breaker: a Stripe outage trips the breaker after 3
+// consecutive failures and subsequent calls fail fast (ErrBreakerOpen) for
+// 30s instead of stacking 30s timeouts. Callers surface 503-with-retry to
+// the user; the invoice stays OPEN, so nothing is lost.
 func (s *server) stripePost(path string, form url.Values) (map[string]any, error) {
 	if s.cfg.StripeSecret == "" {
 		return nil, fmt.Errorf("card payments not configured (STRIPE_SECRET_KEY unset)")
 	}
-	req, err := http.NewRequest("POST", "https://api.stripe.com"+path, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.SetBasicAuth(s.cfg.StripeSecret, "")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := stripeHTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
 	var out map[string]any
-	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("stripe: bad response")
-	}
-	if resp.StatusCode >= 400 {
-		if e, ok := out["error"].(map[string]any); ok {
-			return nil, fmt.Errorf("stripe: %v", e["message"])
+	var clientErr *stripeHTTPError // 4xx: our request's fault — returned to the caller, never trips the breaker
+	err := stripeBreaker.do(func() error {
+		req, err := http.NewRequest("POST", "https://api.stripe.com"+path, strings.NewReader(form.Encode()))
+		if err != nil {
+			return err
 		}
-		return nil, fmt.Errorf("stripe: HTTP %d", resp.StatusCode)
+		req.SetBasicAuth(s.cfg.StripeSecret, "")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := stripeHTTP.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if err := json.Unmarshal(body, &out); err != nil {
+			return fmt.Errorf("stripe: bad response")
+		}
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			if e, ok := out["error"].(map[string]any); ok {
+				clientErr = &stripeHTTPError{code: resp.StatusCode, msg: fmt.Sprint(e["message"])}
+			} else {
+				clientErr = &stripeHTTPError{code: resp.StatusCode}
+			}
+			return nil
+		}
+		if resp.StatusCode >= 500 {
+			return &stripeHTTPError{code: resp.StatusCode} // outage-side: counts toward tripping
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if clientErr != nil {
+		return nil, clientErr
 	}
 	return out, nil
+}
+
+// stripeHTTPError distinguishes client errors (4xx — returned without
+// tripping the breaker) from server-side failures (5xx — counted toward
+// tripping).
+type stripeHTTPError struct {
+	code int
+	msg  string
+}
+
+func (e *stripeHTTPError) Error() string {
+	if e.msg != "" {
+		return "stripe: " + e.msg
+	}
+	return fmt.Sprintf("stripe: HTTP %d", e.code)
 }
 
 // createCheckout opens a Stripe Checkout Session for an open invoice and

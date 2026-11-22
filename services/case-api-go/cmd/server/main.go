@@ -471,9 +471,13 @@ func main() {
 	s.graphBackends = buildGraphBackends(pool, s)
 
 	r := chi.NewRouter()
-	r.Use(chimw.RequestID, chimw.RealIP, chimw.Logger, chimw.Recoverer)
+	r.Use(chimw.RequestID, chimw.RealIP, chimw.Logger, chimw.Recoverer, instrument)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	// /metrics is unauthenticated by design (Prometheus scrape target) and
+	// carries no tenant labels; restrict it at the network layer in prod.
+	r.Get("/metrics", func(w http.ResponseWriter, r *http.Request) { metricsHandler().ServeHTTP(w, r) })
+	s.pollOutboxBacklog()
 
 	// Authenticated, tenant-scoped API.
 	r.Route("/v1/tenants/{tenant}", func(r chi.Router) {

@@ -1,0 +1,80 @@
+# Author: Patrick Munis at newwave
+# SLO + degradation alerts for the IDRE platform. These fire on DEGRADATION
+# regardless of cause — attacker, vendor outage, or self-inflicted change —
+# because the 2026-11 outage week (Microsoft/FAA/JPMorgan/NSA Net) proved
+# attribution always lags impact. Attack-specific detection stays in Wazuh
+# (deploy/wazuh/rules/idre-rules.xml); this file is the availability plane.
+groups:
+  - name: idre-availability
+    rules:
+      - alert: CaseAPIDown
+        expr: up{job="case-api"} == 0
+        for: 1m
+        labels: { severity: page, team: platform }
+        annotations:
+          summary: "case-api is not reachable"
+          runbook: docs/RUNBOOK-incident-comms.md
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(idre_http_requests_total{code=~"5.."}[5m]))
+            /
+          sum(rate(idre_http_requests_total[5m])) > 0.02
+        for: 5m
+        labels: { severity: page, team: platform }
+        annotations:
+          summary: "5xx rate above 2% for 5 minutes"
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(idre_http_request_duration_seconds_bucket[10m]))
+              by (le)) > 2
+        for: 10m
+        labels: { severity: warn, team: platform }
+        annotations:
+          summary: "p95 request latency above 2s for 10 minutes"
+
+      - alert: ExternalBreakerOpen
+        # A vendor (stripe|smtp) circuit breaker is open: their outage is
+        # contained — the platform is degrading gracefully, NOT cascading.
+        # Page anyway: contained vendor outages still need comms per the
+        # incident runbook (status page + tenant notice).
+        expr: idre_breaker_state == 2
+        for: 2m
+        labels: { severity: page, team: platform }
+        annotations:
+          summary: "circuit breaker OPEN for {{ $labels.target }} — vendor outage contained, comms needed"
+
+      - alert: ExternalBreakerFlapping
+        expr: changes(idre_breaker_state[15m]) > 6
+        for: 5m
+        labels: { severity: warn, team: platform }
+        annotations:
+          summary: "breaker for {{ $labels.target }} flapping — vendor instability"
+
+      - alert: ExternalCallErrorRate
+        expr: |
+          sum(rate(idre_external_call_total{result="error"}[5m])) by (target)
+            /
+          sum(rate(idre_external_call_total[5m])) by (target) > 0.5
+        for: 5m
+        labels: { severity: warn, team: platform }
+        annotations:
+          summary: "more than half of {{ $labels.target }} calls failing"
+
+      - alert: OutboxBacklogGrowing
+        # The Postgres->Kafka relay is the event backbone; backlog means
+        # doc-intel, lettergen and analytics silently stall.
+        expr: idre_outbox_unpublished > 1000
+        for: 15m
+        labels: { severity: warn, team: platform }
+        annotations:
+          summary: "outbox backlog above 1000 unpublished events for 15m — check outbox-relay and Kafka"
+
+      - alert: OutboxBacklogCritical
+        expr: idre_outbox_unpublished > 10000
+        for: 15m
+        labels: { severity: page, team: platform }
+        annotations:
+          summary: "outbox backlog critical — event backbone effectively down"

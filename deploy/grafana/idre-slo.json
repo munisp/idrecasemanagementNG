@@ -1,0 +1,51 @@
+{
+  "title": "IDRE Platform SLO",
+  "uid": "idre-slo",
+  "tags": ["idre", "slo"],
+  "timezone": "utc",
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Availability (5xx ratio, 1h)",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "1 - sum(rate(idre_http_requests_total{code=~\"5..\"}[1h])) / sum(rate(idre_http_requests_total[1h]))", "legendFormat": "availability"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "yellow", "value": 0.99}, {"color": "green", "value": 0.999}]}}}
+    },
+    {
+      "id": 2, "type": "stat", "title": "p95 latency (10m)",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(idre_http_request_duration_seconds_bucket[10m])) by (le))", "legendFormat": "p95"}],
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 1}, {"color": "red", "value": 2}]}}}
+    },
+    {
+      "id": 3, "type": "stat", "title": "Outbox backlog",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "idre_outbox_unpublished", "legendFormat": "unpublished"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 1000}, {"color": "red", "value": 10000}]}}}
+    },
+    {
+      "id": 4, "type": "stat", "title": "Breakers (0=closed 1=half 2=open)",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "idre_breaker_state", "legendFormat": "{{target}}"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 1}, {"color": "red", "value": 2}]}}}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Request rate by code",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "targets": [{"expr": "sum(rate(idre_http_requests_total[5m])) by (code)", "legendFormat": "{{code}}"}]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "External calls (stripe/smtp) by result",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "targets": [{"expr": "sum(rate(idre_external_call_total[5m])) by (target, result)", "legendFormat": "{{target}} {{result}}"}]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Top routes by request rate",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
+      "targets": [{"expr": "topk(10, sum(rate(idre_http_requests_total[5m])) by (route))", "legendFormat": "{{route}}"}]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

@@ -1,0 +1,7 @@
+# Author: Patrick Munis at newwave
+apiVersion: 1
+providers:
+  - name: idre
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

@@ -45,7 +45,10 @@ spec:
           annotations:
             summary: "Consumer lag {{ $value }} on {{ $labels.topic }} ({{ $labels.consumergroup }})"
         - alert: OutboxBacklog
-          expr: idre_outbox_unpublished_total > 8000
+          # App-exported gauge idre_outbox_unpublished (sums ALL tenant
+          # schemas) is authoritative; the postgres-exporter metric below is
+          # a legacy single-schema sample kept for backward compat.
+          expr: max(idre_outbox_unpublished or idre_outbox_unpublished_total) > 8000
           for: 10m
           labels: { severity: warning, team: platform }
           annotations:
@@ -79,6 +82,65 @@ spec:
           expr: opensearch_thread_pool_rejected_count{pool="write"} > 0
           for: 10m
           labels: { severity: warning, team: data }
+    # Availability plane (mirrors deploy/prometheus/idre-alerts.yml for the
+    # compose path). These fire on DEGRADATION regardless of cause — the
+    # 2026-11 outage week proved attribution always lags impact.
+    - name: slo
+      interval: 30s
+      rules:
+        - alert: CaseAPIDown
+          expr: up{job="case-api"} == 0
+          for: 1m
+          labels: { severity: critical, team: platform }
+          annotations:
+            summary: "case-api is not reachable"
+            runbook: "docs/RUNBOOK-incident-comms.md"
+        - alert: HighErrorRate
+          expr: |
+            sum(rate(idre_http_requests_total{code=~"5.."}[5m]))
+              /
+            sum(rate(idre_http_requests_total[5m])) > 0.02
+          for: 5m
+          labels: { severity: critical, team: platform }
+          annotations:
+            summary: "5xx rate above 2% for 5 minutes"
+        - alert: HighLatencyP95
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(idre_http_request_duration_seconds_bucket[10m]))
+                by (le)) > 2
+          for: 10m
+          labels: { severity: warning, team: platform }
+          annotations:
+            summary: "p95 request latency above 2s for 10 minutes"
+    - name: external
+      interval: 30s
+      rules:
+        - alert: ExternalBreakerOpen
+          # A vendor (stripe|smtp) breaker open = their outage is contained
+          # and the platform degrades gracefully. Page anyway: contained
+          # outages still need comms per the incident runbook.
+          expr: idre_breaker_state == 2
+          for: 2m
+          labels: { severity: critical, team: platform }
+          annotations:
+            summary: "circuit breaker OPEN for {{ $labels.target }} — vendor outage contained, comms needed"
+            runbook: "docs/RUNBOOK-incident-comms.md"
+        - alert: ExternalBreakerFlapping
+          expr: changes(idre_breaker_state[15m]) > 6
+          for: 5m
+          labels: { severity: warning, team: platform }
+          annotations:
+            summary: "breaker for {{ $labels.target }} flapping — vendor instability"
+        - alert: ExternalCallErrorRate
+          expr: |
+            sum(rate(idre_external_call_total{result="error"}[5m])) by (target)
+              /
+            sum(rate(idre_external_call_total[5m])) by (target) > 0.5
+          for: 5m
+          labels: { severity: warning, team: platform }
+          annotations:
+            summary: "more than half of {{ $labels.target }} calls failing"
 ---
 # postgres-exporter custom queries feeding the money/pipeline rules above.
 apiVersion: v1
@@ -101,10 +163,13 @@ data:
       metrics:
         - tenant: { usage: LABEL }
         - total: { usage: COUNTER }
+    # LEGACY sample — single-schema only. The authoritative backlog signal is
+    # the app-exported gauge idre_outbox_unpublished (case-api sums ALL
+    # tenant_<st>.outbox schemas every 15s). Keep this block only as a
+    # template for per-tenant depth queries; add one block per schema (or
+    # drop it) alongside scripts/gen-keda-outbox-query.sh regeneration.
     idre_outbox_unpublished:
       query: |
         SELECT count(*) AS total FROM tenant_tx.outbox WHERE published_at IS NULL
       metrics:
         - total: { usage: GAUGE }
-      # NOTE: per-tenant outbox depth needs one query block per schema, or a
-      # relay-exported gauge — regenerate alongside scripts/gen-keda-outbox-query.sh

@@ -261,6 +261,28 @@ services:
     volumes: ["./ref:/ref:ro"]   # mount Census TIGER GeoJSON here for load_us_states
     depends_on: [postgres, kafka, minio-init]
 
+  prometheus:  # SLO/degradation metrics plane (alerts: deploy/prometheus/idre-alerts.yml)
+    image: prom/prometheus:v2.55.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/idre-alerts.yml:/etc/prometheus/idre-alerts.yml:ro
+    ports: ["127.0.0.1:9090:9090"]
+    depends_on: [case-api]
+
+  grafana:  # SLO dashboard auto-provisioned (deploy/grafana/idre-slo.json)
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports: ["127.0.0.1:3000:3000"]
+    volumes:
+      - ./deploy/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./deploy/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./deploy/grafana/idre-slo.json:/var/lib/grafana/dashboards/idre-slo.json:ro
+    depends_on: [prometheus]
+
   # ---- platform services (build locally) -------------------------------------
   portal:  # fallback static host — the Caddy edge serves the PWA publicly;
     # this nginx tier is kept only for direct debugging on localhost

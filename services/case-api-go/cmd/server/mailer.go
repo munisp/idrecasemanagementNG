@@ -68,8 +68,17 @@ func writeMailHeaders(b *strings.Builder, from string, to, cc []string, subject 
 	fmt.Fprintf(b, "Subject: %s\r\n", subject)
 }
 
-// deliver runs the SMTP transaction for an already-composed message.
+// deliver runs the SMTP transaction for an already-composed message,
+// through the smtp circuit breaker: a dead relay trips after 5 consecutive
+// failures and sends fail fast (ErrBreakerOpen) for 60s. Callers queue and
+// retry (outbox/reminder paths) or surface a retryable error — mail is
+// deferred, never silently dropped.
 func (s *server) deliver(from string, to, cc []string, msg []byte) error {
+	return smtpBreaker.do(func() error { return s.dialAndSend(from, to, cc, msg) })
+}
+
+// dialAndSend is the pre-breaker deliver: connection setup + SMTP dialogue.
+func (s *server) dialAndSend(from string, to, cc []string, msg []byte) error {
 	cfg := s.cfg
 	all := append(append([]string{}, to...), cc...)
 	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)

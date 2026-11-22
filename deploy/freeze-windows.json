@@ -1,0 +1,61 @@
+{
+  "_comment": "Author: Patrick Munis at newwave. Machine-readable freeze calendar (docs/CHANGE-FREEZE.md). CI deploy jobs read this and refuse to promote during a hard-freeze window unless the change ticket carries the freeze-exception label. Dates recur annually; the on-call lead refreshes them each October against current CMS guidance.",
+  "version": 1,
+  "windows": [
+    {
+      "name": "cms-open-enrollment",
+      "type": "hard",
+      "start": "MM-DD:11-01",
+      "end": "MM-DD:01-15",
+      "reason": "CMS Open Enrollment — peak dispute volume, public scrutiny of state IDRE portals"
+    },
+    {
+      "name": "federal-annual-reporting",
+      "type": "hard",
+      "start": "MM-DD:12-01",
+      "end": "MM-DD:01-31",
+      "reason": "Annual IDRE reporting to the Departments (HHS/Treasury/DOL); tenants finalizing submissions"
+    },
+    {
+      "name": "holiday",
+      "type": "hard",
+      "start": "MM-DD:12-22",
+      "end": "MM-DD:01-02",
+      "reason": "Minimal staffing on platform and tenant side; incident MTTR doubles"
+    },
+    {
+      "name": "plan-year-rate-filing",
+      "type": "soft",
+      "start": "MM-DD:05-01",
+      "end": "MM-DD:08-01",
+      "reason": "Issuer/TPA attestation season — Tuesdays-only deploys, no DB migrations"
+    },
+    {
+      "name": "q1-close",
+      "type": "soft",
+      "start": "MM-DD:03-25",
+      "end": "MM-DD:03-31",
+      "reason": "Quarter close — settlement reconciliation load"
+    },
+    {
+      "name": "q2-close",
+      "type": "soft",
+      "start": "MM-DD:06-24",
+      "end": "MM-DD:06-30",
+      "reason": "Quarter close — settlement reconciliation load"
+    },
+    {
+      "name": "q3-close",
+      "type": "soft",
+      "start": "MM-DD:09-24",
+      "end": "MM-DD:09-30",
+      "reason": "Quarter close — settlement reconciliation load"
+    }
+  ],
+  "rules": {
+    "hard": { "deploys": false, "migrations": false, "infra_changes": false },
+    "soft": { "deploys": "tuesday-only", "migrations": false, "infra_changes": "cab-approval" },
+    "exception_label": "freeze-exception",
+    "exception_categories": ["emergency-security-patch", "data-loss-or-compliance-risk"]
+  }
+}
