@@ -1,0 +1,51 @@
+# Author: Patrick Munis at newwave
+# Deploy freeze gate — enforcement for docs/CHANGE-FREEZE.md. Every promote
+# to staging/production must pass this job first: call it with `uses:` from
+# a deploy workflow, or run it standalone via workflow_dispatch before a
+# manual deploy. It fails (blocking the deploy) inside a freeze window
+# unless the exception criteria are met.
+name: deploy-gate
+
+on:
+  workflow_call:
+    inputs:
+      change_type:
+        type: string
+        required: true
+        description: deploy | migration | infra
+      freeze_exception:
+        type: boolean
+        required: false
+        default: false
+        description: change ticket carries the freeze-exception label
+      cab_approval:
+        type: boolean
+        required: false
+        default: false
+        description: infra change has CAB approval (soft freeze only)
+  workflow_dispatch:
+    inputs:
+      change_type:
+        type: choice
+        required: true
+        options: [deploy, migration, infra]
+      freeze_exception:
+        type: boolean
+        required: false
+        default: false
+      cab_approval:
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  freeze-window:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check freeze window
+        run: |
+          args=(--change "${{ inputs.change_type }}")
+          [ "${{ inputs.freeze_exception }}" = "true" ] && args+=(--exception)
+          [ "${{ inputs.cab_approval }}" = "true" ] && args+=(--cab-approval)
+          python3 scripts/check-freeze-window.py "${args[@]}"

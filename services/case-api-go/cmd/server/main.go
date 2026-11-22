@@ -474,9 +474,12 @@ func main() {
 	r.Use(chimw.RequestID, chimw.RealIP, chimw.Logger, chimw.Recoverer, instrument)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	// /metrics is unauthenticated by design (Prometheus scrape target) and
-	// carries no tenant labels; restrict it at the network layer in prod.
-	r.Get("/metrics", func(w http.ResponseWriter, r *http.Request) { metricsHandler().ServeHTTP(w, r) })
+	// Metrics run on a DEDICATED listener (default :9091), never on the API
+	// port: the API port is published to the host in compose and reachable
+	// through the edge in k8s, while 9091 is bound internally only (not
+	// published in compose; Cilium-locked to the observability namespace in
+	// k8s). Unauthenticated by design, no tenant labels anywhere.
+	go serveMetrics(envOr("METRICS_PORT", "9091"))
 	s.pollOutboxBacklog()
 
 	// Authenticated, tenant-scoped API.

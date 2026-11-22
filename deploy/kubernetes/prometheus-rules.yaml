@@ -9,7 +9,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: idre-platform
-  namespace: idre-obs
+  namespace: idre-observ
 spec:
   groups:
     - name: money

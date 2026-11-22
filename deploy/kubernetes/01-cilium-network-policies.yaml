@@ -51,6 +51,13 @@ spec:
         - matchLabels: { io.kubernetes.pod.namespace: idre-core }
       toPorts:
         - ports: [{ port: "8080", protocol: TCP }]
+    # Metrics: the dedicated 9091 listener is scrapeable ONLY from the
+    # observability namespace (Prometheus). The API port stays unreachable
+    # from idre-observ, and 9091 stays unreachable from everywhere else.
+    - fromEndpoints:
+        - matchLabels: { io.kubernetes.pod.namespace: idre-observ }
+      toPorts:
+        - ports: [{ port: "9091", protocol: TCP }]
   egress:
     - toEndpoints:  # postgres (CNPG), keycloak, temporal — same namespace
         - matchLabels: { io.kubernetes.pod.namespace: idre-core }

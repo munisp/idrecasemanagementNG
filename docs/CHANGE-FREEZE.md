@@ -50,9 +50,12 @@ Everything else waits. "The demo is Monday" is not an exception.
 
 ## Enforcement (not just policy)
 
-- The freeze calendar lives in `deploy/freeze-windows.json`; CI deploy jobs
-  read it and refuse to promote during a hard-freeze window unless the
-  ticket carries the `freeze-exception` label.
+- The freeze calendar lives in `deploy/freeze-windows.json` and is enforced
+  by `scripts/check-freeze-window.py`, which every deploy runs through the
+  `deploy-gate` workflow (`.github/workflows/deploy-gate.yml`, reusable via
+  `workflow_call`). The job fails inside a hard freeze unless the exception
+  flag is set, and applies soft-freeze rules (Tuesdays-only deploys, no
+  migrations, CAB approval for infra) automatically.
 - Argo Rollouts auto-abort (see `rollout-case-api.yaml`) provides the last
   line of defense even for permitted changes: a change that degrades the
   SLO rolls itself back without waiting for a human.

@@ -1,0 +1,47 @@
+# Author: Patrick Munis at newwave
+# Alertmanager routing for the IDRE platform. Placeholders __ALERT_*__ are
+# substituted from the container environment at startup (see the alertmanager
+# service entrypoint in docker-compose.yml) — no secrets in the repo.
+#
+# Routing mirrors docs/RUNBOOK-incident-comms.md: critical pages the on-call
+# immediately and repeats every 2h until resolved; warning goes to the team
+# mailbox with a 4h repeat. Inhibit rules keep a page from being buried
+# under its own downstream warnings (e.g. CaseAPIDown suppresses
+# HighErrorRate for the same window).
+global:
+  smtp_smarthost: "__ALERT_SMTP_HOST__"
+  smtp_from: "__ALERT_SMTP_FROM__"
+  smtp_auth_username: "__ALERT_SMTP_USER__"
+  smtp_auth_password: "__ALERT_SMTP_PASS__"
+  smtp_require_tls: true
+
+route:
+  receiver: team-warnings
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity =~ "critical|page"]
+      receiver: oncall-page
+      repeat_interval: 2h
+
+receivers:
+  - name: oncall-page
+    email_configs:
+      - to: "__ALERT_ONCALL_EMAIL__"
+        headers: { subject: "[IDRE PAGE] {{ .GroupLabels.alertname }}" }
+  - name: team-warnings
+    email_configs:
+      - to: "__ALERT_TEAM_EMAIL__"
+        headers: { subject: "[IDRE WARN] {{ .GroupLabels.alertname }}" }
+
+inhibit_rules:
+  # A down API explains its own error-rate/latency alerts — one page, not five.
+  - source_matchers: [alertname = "CaseAPIDown"]
+    target_matchers: [alertname =~ "HighErrorRate|HighLatencyP95"]
+    equal: []
+  # A critical outbox backlog supersedes the growing warning.
+  - source_matchers: [alertname = "OutboxBacklogCritical"]
+    target_matchers: [alertname = "OutboxBacklogGrowing"]
+    equal: []

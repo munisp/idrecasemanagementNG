@@ -8,11 +8,16 @@ global:
 rule_files:
   - /etc/prometheus/idre-alerts.yml
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: case-api
     metrics_path: /metrics
     static_configs:
-      - targets: ["case-api:8080"]
+      - targets: ["case-api:9091"]  # dedicated metrics listener — never the API port
         labels: { service: case-api }
 
   # The supporting services expose their own metrics natively:

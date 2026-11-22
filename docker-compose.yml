@@ -268,7 +268,31 @@ services:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/prometheus/idre-alerts.yml:/etc/prometheus/idre-alerts.yml:ro
     ports: ["127.0.0.1:9090:9090"]
-    depends_on: [case-api]
+    depends_on: [case-api, alertmanager]
+
+  alertmanager:  # pages/warnings per docs/RUNBOOK-incident-comms.md
+    image: prom/alertmanager:v0.27.1
+    environment:  # substituted into the config template at startup; no secrets in the repo
+      ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-localhost:25}
+      ALERT_SMTP_FROM: ${ALERT_SMTP_FROM:-idre-alerts@localhost}
+      ALERT_SMTP_USER: ${ALERT_SMTP_USER:-}
+      ALERT_SMTP_PASS: ${ALERT_SMTP_PASS:-}
+      ALERT_ONCALL_EMAIL: ${ALERT_ONCALL_EMAIL:-oncall@localhost}
+      ALERT_TEAM_EMAIL: ${ALERT_TEAM_EMAIL:-platform@localhost}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        sed -e "s|__ALERT_SMTP_HOST__|$${ALERT_SMTP_HOST}|g"
+        -e "s|__ALERT_SMTP_FROM__|$${ALERT_SMTP_FROM}|g"
+        -e "s|__ALERT_SMTP_USER__|$${ALERT_SMTP_USER}|g"
+        -e "s|__ALERT_SMTP_PASS__|$${ALERT_SMTP_PASS}|g"
+        -e "s|__ALERT_ONCALL_EMAIL__|$${ALERT_ONCALL_EMAIL}|g"
+        -e "s|__ALERT_TEAM_EMAIL__|$${ALERT_TEAM_EMAIL}|g"
+        /etc/alertmanager/alertmanager.yml.tmpl > /tmp/alertmanager.yml
+        && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/tmp/alertmanager
+    volumes:
+      - ./deploy/prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml.tmpl:ro
+    ports: ["127.0.0.1:9093:9093"]
 
   grafana:  # SLO dashboard auto-provisioned (deploy/grafana/idre-slo.json)
     image: grafana/grafana:11.4.0

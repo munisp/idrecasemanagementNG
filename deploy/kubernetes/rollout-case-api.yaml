@@ -66,7 +66,9 @@ spec:
       containers:
         - name: case-api
           image: ghcr.io/munisp/idre/case-api:latest   # built from services/case-api-go
-          ports: [{ containerPort: 8080 }]
+          ports:
+            - { containerPort: 8080, name: http }
+            - { containerPort: 9091, name: metrics }   # dedicated listener; scrape-only via Cilium + ServiceMonitor
           env:
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: idre-db, key: dsn } }
@@ -88,7 +90,9 @@ metadata:
   labels: { app: case-api, app.kubernetes.io/part-of: idre }
 spec:
   selector: { app: case-api }
-  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+    - { name: metrics, port: 9091, targetPort: 9091 }
 ---
 # Canary service — receives 10/25/50% during an in-flight rollout.
 apiVersion: v1
@@ -99,7 +103,28 @@ metadata:
   labels: { app: case-api, app.kubernetes.io/part-of: idre }
 spec:
   selector: { app: case-api }
-  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+    - { name: metrics, port: 9091, targetPort: 9091 }
+---
+# ServiceMonitor: the prometheus-operator scrapes case-api pods on the
+# dedicated metrics port. Lives in idre-observ with a namespace selector so
+# the operator (which watches its own namespace for monitors) picks it up.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: case-api
+  namespace: idre-observ
+  labels: { app: case-api, app.kubernetes.io/part-of: idre }
+spec:
+  namespaceSelector:
+    matchNames: [idre-core]
+  selector:
+    matchLabels: { app: case-api }
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
 ---
 # SLO gate evaluated at each promotion step. Queries the same app metrics
 # that feed the SLO alerts (deploy/prometheus/idre-alerts.yml), so a canary
@@ -117,7 +142,7 @@ spec:
       failureLimit: 1
       provider:
         prometheus:
-          address: http://prometheus-operated.idre-obs.svc:9090
+          address: http://prometheus-operated.idre-observ.svc:9090
           query: |
             sum(rate(idre_http_requests_total{code=~"5.."}[2m]))
               /
@@ -128,7 +153,7 @@ spec:
       failureLimit: 1
       provider:
         prometheus:
-          address: http://prometheus-operated.idre-obs.svc:9090
+          address: http://prometheus-operated.idre-observ.svc:9090
           query: |
             histogram_quantile(0.95,
               sum(rate(idre_http_request_duration_seconds_bucket[2m]))
