@@ -1,0 +1,77 @@
+# Author: Patrick Munis at newwave
+# ARTEX autonomous DAST overlay (https://github.com/BaaRai/ARTEX, AGPL-3.0).
+# ARTEX is an internal testing TOOL pointed at our own disposable stack —
+# it is not part of the platform and is never deployed with it.
+#
+# Bring up the platform first, then the overlay IN THE SAME COMPOSE PROJECT
+# so ARTEX joins the platform network and reaches services by name:
+#   docker compose up -d                                  # platform
+#   bash scripts/seed-artex-test-users.sh                 # test identities
+#   docker compose -f docker-compose.yml \
+#     -f deploy/artex/docker-compose.artex.yml up -d      # + ARTEX
+#
+# Then: http://localhost:8787 (setup token: docker compose logs artex | grep "Setup token")
+# Full operating procedure: docs/RUNBOOK-artex-dast.md
+services:
+  artex-db:  # ARTEX's OWN database — never the platform postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: artex
+      POSTGRES_PASSWORD: ${ARTEX_DB_PASSWORD:?set ARTEX_DB_PASSWORD in .env}
+      POSTGRES_DB: artex
+    volumes: ["artex-pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U artex -d artex"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  artex:
+    image: ghcr.io/baarai/artex:${ARTEX_IMAGE_TAG:-latest}
+    # Agent processes run as an unprivileged executor: no setuid program or
+    # file capability may raise them back to root.
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      artex-db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      ARTEX_PG_HOST: artex-db
+      ARTEX_PG_PORT: "5432"
+      ARTEX_PG_USER: artex
+      ARTEX_PG_PASSWORD: ${ARTEX_DB_PASSWORD:?set ARTEX_DB_PASSWORD in .env}
+      ARTEX_PG_DBNAME: artex
+      ARTEX_PG_SSLMODE: disable
+      # LLM: the platform's own Ollama (no external provider, no keys).
+      # The LLM PROFILE is configured once in the UI (System -> LLM) pointing
+      # at http://ollama:11434 — PRIVATE_ENDPOINTS permits the model-list
+      # fetch to that private address; BASE_URL/MODEL pre-fill the fields.
+      ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:-http://ollama:11434}
+      ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:-qwen2.5:3b}
+      ARTEX_LLM_PRIVATE_ENDPOINTS: ${ARTEX_LLM_PRIVATE_ENDPOINTS:-ollama:11434}
+      ARTEX_JWT_KEY_DIR: /app/keys
+      ARTEX_SECRET_KEY: ${ARTEX_SECRET_KEY:-}   # empty = generated at first start into keys volume
+      # Run budgets: local inference is free but time isn't — cap runaway
+      # exploration. Unset/0 = unlimited.
+      ARTEX_TASK_BUDGET_TOKENS: ${ARTEX_TASK_BUDGET_TOKENS:-2000000}
+      ARTEX_INTENT_BUDGET_TOKENS: ${ARTEX_INTENT_BUDGET_TOKENS:-250000}
+      # Untrusted-output boundary stays ON (empty = on): tool output is data,
+      # never instructions — the target platform's API responses must not be
+      # able to steer the agent.
+      ARTEX_UNTRUSTED_BOUNDARY: ""
+      # No update checks: the stack must make zero unsolicited external calls.
+      ARTEX_UPDATE_CHECK: "0"
+    ports:
+      - "127.0.0.1:8787:8787"   # web UI — host-local only
+      - "127.0.0.1:8788:8788"   # recording MITM proxy — host-local only
+    volumes:
+      - artex-data:/app/data
+      - artex-keys:/app/keys
+    restart: unless-stopped
+
+volumes:
+  artex-pgdata:
+  artex-data:
+  artex-keys:
