@@ -9,6 +9,7 @@
 # groups: comma-separated (e.g. /tenant/tx,/tenant/ny); roles: comma-separated.
 # ISSUER default matches the dev realm; KID is fixed so JWKS rotation is simple.
 import json
+import os
 import sys
 import time
 import uuid
@@ -42,7 +43,9 @@ def gen(out_dir="."):
     print(f"generated {out_dir}/key.json + {out_dir}/jwks.json (kid={KID})")
 
 
-def mint(user, groups, roles, ttl=900, iss=ISSUER, key_dir="."):
+def mint(user, groups, roles, ttl=900, iss=ISSUER, key_dir=None):
+    if key_dir is None:
+        key_dir = os.path.dirname(os.path.abspath(__file__))
     with open(f"{key_dir}/key.json") as f:
         priv = json.load(f)["private_pem"]
     now = int(time.time())

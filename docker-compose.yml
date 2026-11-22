@@ -29,7 +29,14 @@ services:
       - -c
       - idle_in_transaction_session_timeout=60000
     ports: ["5432:5432"]
-    volumes: ["pgdata:/var/lib/postgresql/data", "./scripts/init-schemas.sql:/docker-entrypoint-initdb.d/init.sql"]
+    # First boot runs docker-initdb.sh: base schemas + the full ordered
+    # migration set (scripts/migrate.sh), so a fresh stack converges with no
+    # manual SQL (DAST finding F1). Existing deployments: run
+    # `bash scripts/migrate.sh` once — it is idempotent.
+    volumes:
+      - "pgdata:/var/lib/postgresql/data"
+      - "./scripts/docker-initdb.sh:/docker-entrypoint-initdb.d/00-init.sh:ro"
+      - "./scripts:/platform-scripts:ro"
 
   redis:
     image: redis:7

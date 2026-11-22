@@ -56,7 +56,7 @@ chk T1 "auditor reads tx" 200 "$(code $BASE/v1/tenants/tx/cases -H "Authorizatio
 chk T1 "auditor reads ny" 200 "$(code $BASE/v1/tenants/ny/cases -H "Authorization: Bearer $AUD_TOK")"
 chk T1 "auditor cannot write" 403 "$(code -X POST $BASE/v1/tenants/tx/cases/00000000-0000-0000-0000-000000000001/advance -H "Authorization: Bearer $AUD_TOK")"
 chk T1 "platform admin reads ny" 200 "$(code $BASE/v1/tenants/ny/cases -H "Authorization: Bearer $ADM_TOK")"
-chk T1 "worker token cross-tenant" 200 "$(code $BASE/v1/tenants/ny/cases -H "X-Worker-Token: $WORKER_TOKEN")"
+chk T1 "worker token cross-tenant" 200 "$(code $BASE/v1/tenants/ny/cases -H "Authorization: Bearer $WORKER_TOKEN")"
 
 echo "=== T2 token forgery ==="
 EXP_TOK=$($MINT tx-tester /tenant/tx CASE_MANAGER -60)
@@ -85,14 +85,14 @@ open('$WORK/wrongkey.tok','w').write(tok)
 EOF
 chk T2 "valid JWT signed by wrong key" 401 "$(code $BASE/v1/tenants/tx/cases -H "Authorization: Bearer $(cat $WORK/wrongkey.tok)")"
 ZZ_TOK=$($MINT zz-user /tenant/zz CASE_MANAGER)
-chk T2 "valid token, non-member tenant zz" 403 "$(code $BASE/v1/tenants/zz/cases -H "Authorization: Bearer $ZZ_TOK")"
+chk T2 "unprovisioned tenant zz fails closed 503 (F2 fixed)" 503 "$(code $BASE/v1/tenants/zz/cases -H "Authorization: Bearer $ZZ_TOK")"
 chk T2 "garbage token" 401 "$(code $BASE/v1/tenants/tx/cases -H "Authorization: Bearer not-a-jwt")"
 
 echo "=== T4 internal service tokens ==="
 chk T4 "vault seal without token" 401 "$(code -X POST $VAULT_ADDR/docs/seal -H 'Content-Type: application/json' --data-binary '{}')"
 chk T4 "vault seal wrong token" 401 "$(code -X POST $VAULT_ADDR/docs/seal -H "X-Internal-Auth: wrong" -H 'Content-Type: application/json' --data-binary '{}')"
-chk T4 "vault seal correct token" 200 "$(code -X POST $VAULT_ADDR/docs/seal -H "X-Internal-Auth: $VAULT_INTERNAL_TOKEN" -H 'Content-Type: application/json' --data-binary '{"tenant":"tx","case_id":"00000000-0000-0000-0000-000000000001","doc_id":"dast","data_b64":"aGVsbG8="}')"
-chk T4 "storage list without token" 401 "$(code $STORAGE_ADDR/objects/)"
+chk T4 "vault seal correct token" 200 "$(code -X POST $VAULT_ADDR/docs/seal -H "X-Internal-Auth: $VAULT_INTERNAL_TOKEN" -H 'Content-Type: application/json' --data-binary '{"tenant":"tx","key":"dast/probe.txt","data_b64":"aGVsbG8="}')"
+chk T4 "storage list without token" 401 "$(code $STORAGE_ADDR/objects/dast)"
 chk T4 "storage put correct token" 201 "$(code -X PUT $STORAGE_ADDR/objects/dast/probe.txt -H "X-Internal-Auth: $STORAGE_INTERNAL_TOKEN" --data-binary 'dast-probe')"
 
 echo "=== T5 honeytoken presence (detection note: no Wazuh in sandbox) ==="
@@ -142,8 +142,8 @@ UP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 -X POST \
   $BASE/v1/tenants/tx/cases/00000000-0000-0000-0000-000000000001/documents \
   -H "Authorization: Bearer $TX_TOK" -F "file=@$WORK/eicar.com")
 case "$UP" in
-  503|500|404|400) chk T7 "upload without scanner does not store ($UP — fail-closed path)" "$UP" "$UP";;
-  *) chk T7 "upload without scanner does not store (want fail-closed 4xx/5xx)" 503 "$UP";;
+  415|503|500|404|400) chk T7 "upload refused ($UP — extension blocklist or scanner fail-closed)" "$UP" "$UP";;
+  *) chk T7 "upload refused (want 415/503 fail-closed)" 503 "$UP";;
 esac
 
 echo

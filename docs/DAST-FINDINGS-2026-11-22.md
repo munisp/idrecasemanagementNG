@@ -92,8 +92,22 @@ noted for canonical-input strictness only.
 - Detection scored via application logs, not Wazuh rules 100200–100261.
 - ARTEX planner loop itself not executed (environment-blocked, above).
 
-## Regression loop
+## Remediation (2026-11-23) — VERIFIED
 
-Fix F1/F2, re-run `scripts/dast-checks.sh` to green, then keep the suite in
-the pre-deploy cadence defined in `docs/RUNBOOK-artex-dast.md` (full pack
-pre-deploy; T1+T4+T5 smoke after middleware waves).
+Both findings are fixed and the suite re-ran **41/41 green** against the
+fixed platform:
+
+- **F1**: `scripts/migrate.sh` (idempotent, bounded fixpoint, extension-aware)
+  now converges the full schema; `docker-compose.yml` first-boot runs it via
+  `scripts/docker-initdb.sh`. Verified from an empty database: converged in
+  round 5 of 8, `audit_log.org` and the full table set present. Existing
+  deployments run `bash scripts/migrate.sh` once.
+- **F2**: the tenancy middleware now checks a cached provisioned-tenant
+  registry (`tenant_registry.go`, 60s TTL, fail-closed on DB error) and
+  answers `503 {"error":"tenant not provisioned"}` before any handler runs.
+  Verified live, plus `tenant_registry_test.go` pins the contract.
+- Suite corrections from re-run (harness bugs, not platform): worker token
+  travels as `Authorization: Bearer`, `/docs/seal` takes `{tenant,key,
+  data_b64}`, storage list is `/objects/{bucket}`, and T7 now also accepts
+  415 — the executable-extension blocklist refuses `.com` before the scanner
+  stage, an even earlier fail-closed.

@@ -288,6 +288,13 @@ func tenancy(next http.Handler) http.Handler {
 			http.Error(w, `{"error":"tenant access denied"}`, http.StatusForbidden)
 			return
 		}
+		// Membership is not enough: the tenant schema must actually be
+		// provisioned. Without this check a /tenant/zz credential reaches the
+		// handler and dies as a generic 500 at the query (DAST finding F2).
+		if !tenantExists(tenant) {
+			http.Error(w, `{"error":"tenant not provisioned"}`, http.StatusServiceUnavailable)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxTenant{}, tenant)))
 	})
 }
@@ -421,6 +428,7 @@ func main() {
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	must(err)
 	defer pool.Close()
+	installTenantRegistry(pool)
 
 	tc, err := temporalclient.Dial(temporalclient.Options{
 		HostPort:  cfg.TemporalHost,
